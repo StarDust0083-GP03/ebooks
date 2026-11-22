@@ -1,0 +1,13 @@
+_site/
+node_modules
+node_modules/
+**/node_modules
+**/node_modules/
+__pycache__/
+**/__pycache__/
+*.pyc
+.DS_Store
+books/*/wiki/exports/
+books/*/sources/repos/
+books/*/source/
+*.zip

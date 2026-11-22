@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从无阻塞执行切片、RAP 响应式工具协议到堆叠沙箱与跨主机热迁移，解剖 hydro-project/infinity 的 Rust Agent 运行时架构"><meta name="author" content="独立源码研究">
+<title>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱 · Infinity 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">∞</span><span>Infinity 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 13</div><div class="rail-title">零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</div><ol><li><a href="#教学模型与上游-rust-源码的逐项映射">教学模型与上游 Rust 源码的逐项映射</a></li><li><a href="#核心代码走读">核心代码走读</a></li><li><a href="#运行全部-19-个单元测试">运行全部 19 个单元测试</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 13 章</div><h1>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</h1><div class="chapter-meta">hydro-project/infinity 快照 e1a3e4b36e5f · 约 12 分钟</div></header><div class="prose"><p>看懂一份五万多行 Rust 运行时的最好办法，是把它的核心不变量抽离出来，用几百行没有外部依赖的代码重新搭一遍，再写一组能把每个边界条件都打疼的单元测试。</p>
+<p>仓库的 <code>examples/mini_infinity.py</code>（零第三方依赖，仅用 Python 3.10+ 标准库）和 <code>examples/test_mini_infinity.py</code>（19 个单元测试）精确复刻了前面章节拆解过的五组核心机制，方便在没有 Rust 编译器、没有 AWS 账号也没有真实大模型 Key 的环境下单步调试。</p>
+<h2 id="教学模型与上游-rust-源码的逐项映射">教学模型与上游 Rust 源码的逐项映射<a class="anchor" href="#教学模型与上游-rust-源码的逐项映射" aria-label="链接到本节">#</a></h2>
+<p>为了防止教学代码跑偏成脱离源码的伪代码，每个类和方法都严格对应上游源码里的真实边界：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th><code>examples/mini_infinity.py</code> 组件</th>
+<th>对应的上游 Rust 模块</th>
+<th>复现的核心不变量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ThreadRef</code></td>
+<td><code>crates/infinity-protocol/src/lib.rs</code></td>
+<td><code>&quot;{remote}/{id}&quot;</code> 复合解析、非法斜杠拒绝、<code>prefixed</code>/<code>strip</code>、本地优先于远程的 <code>Ord</code> 排序</td>
+</tr>
+<tr>
+<td><code>ConversationStore</code> / <code>StateStore</code></td>
+<td><code>crates/infinity-agent-core/src/traits.rs</code>、<code>stores.rs</code></td>
+<td>祖先链回溯、<code>Fresh</code> 上下文截断传递、按 <code>up_to_order</code> 位置索引加载压缩摘要</td>
+</tr>
+<tr>
+<td><code>HistoryManager</code></td>
+<td><code>crates/infinity-agent-core/src/event_processor.rs</code></td>
+<td><code>unvalidated_items</code> -&gt; <code>pending_items</code> -&gt; <code>sync()</code> 三阶段顺序断言、<code>turn_buffer</code> 文本合并与尾推理裁剪、<code>match_tool_result</code> 逆向尾扫去重、<code>safe_spawn_point</code>、<code>recover_from_overflow</code> 与穿透压缩的 <code>find_tool_call</code></td>
+</tr>
+<tr>
+<td><code>MiniInfinityRuntime</code> / <code>DeferQueue</code></td>
+<td><code>crates/infinity-agent-core/src/system/{thread,defer,local/router}.rs</code></td>
+<td>先 <code>sync()</code> 落盘后派发异步工具、<code>spawn_thread</code> 同步回环加 <code>child_of</code> 栈校验、订阅事件自动拆子线程 vs <code>associative</code> 内联加 <code>final</code> 清理、活跃工具延迟队列 vs 被动 <code>sleep</code> 自由打断、未知/已停线程准入拒绝、<code>ErrorClass</code> 驱动重试</td>
+</tr>
+<tr>
+<td><code>StackedSandboxManager</code></td>
+<td><code>crates/sandbox-core/src/server.rs</code>、<code>sandbox-local/src/backend.rs</code></td>
+<td>按 <code>base_thread_id</code> 堆叠子工作区、<code>squash_sandbox</code> 合并回父书签而不触碰宿主文件、沿祖先链检查 <code>write-orig</code> 写权限授权</td>
+</tr>
+</tbody></table></div>
+<h2 id="核心代码走读">核心代码走读<a class="anchor" href="#核心代码走读" aria-label="链接到本节">#</a></h2>
+<p>挑三段最能体现 Infinity 架构精髓的逻辑来看。</p>
+<h3 id="1-三阶段历史与溢出止损">1. 三阶段历史与溢出止损<a class="anchor" href="#1-三阶段历史与溢出止损" aria-label="链接到本节">#</a></h3>
+<p>在 <code>HistoryManager</code> 里，<code>append_known_safe</code> 直接复现了 Rust 版的顺序性断言：在模型尚未验证当前新输入之前，绝不允许提交模型输出；而 <code>sync()</code> 只刷 <code>pending_items</code>，且只把天然不幂等的 <code>user</code> 与 <code>subscription_event</code> 写入持久化去重集：</p>
+<pre><code class="language-python">def append_known_safe(self, message: InfinityMessage, message_id: str) -&gt; None:
+    assert not self.turn_buffer, &quot;bug: append_known_safe with non-empty turn_buffer&quot;
+    assert not self.unvalidated_items, (
+        &quot;bug: committing model output while unvalidated inputs exist&quot;
+    )
+    self.history.append(message)
+    self.pending_items.append((message, message_id))
+
+def recover_from_overflow(self) -&gt; tuple[Literal[&quot;retry&quot;, &quot;dropped&quot;], int]:
+    if len(self.unvalidated_items) == 1 and self.replace_unvalidated_tool_results(
+        TOOL_RESULT_TOO_LARGE_PLACEHOLDER
+    ):
+        return (&quot;retry&quot;, 0)
+    self.replace_unvalidated_tool_results(TOOL_CALL_INTERRUPTED_TEXT)
+    dropped = self.drop_unvalidated_user_inputs()
+    return (&quot;dropped&quot;, dropped)
+</code></pre>
+<p>注意 <code>replace_unvalidated_tool_results</code> 里对已经等于占位符的正文跳过不计的细节：这样如果单条超大工具结果换完占位符再试一次仍然触发溢出，第二次调用会自动落入 <code>dropped</code> 分支，不会无限重试。</p>
+<h3 id="2-落盘屏障与同步回环">2. 落盘屏障与同步回环<a class="anchor" href="#2-落盘屏障与同步回环" aria-label="链接到本节">#</a></h3>
+<p>在 <code>MiniInfinityRuntime.process_one</code> 里，同步工具（<code>spawn_thread</code>）在 <code>while True</code> 补全循环内部直接执行并把结果喂回同一轮切片，而异步工具则跳出循环、<strong>先执行 <code>hm.sync()</code></strong>，再登记派发记录：</p>
+<pre><code class="language-python"># Commit barrier BEFORE dispatching async tool (durability invariant)
+hm.sync()
+persisted_len_before_dispatch = len(self.conv.threads[tid].messages)
+
+if pending_async_call is not None:
+    self.dispatched_async_calls.append(
+        (tid, pending_async_call.tool_call_id, pending_async_call.tool_name,
+         pending_async_call.tool_args, persisted_len_before_dispatch)
+    )
+</code></pre>
+<p>测试用例 <code>test_commit_barrier_persists_tool_call_before_async_dispatch</code> 会断言派发发生那一刻 <code>persisted_len_before_dispatch == 2</code>（用户输入和工具调用均已持久化），直接把落盘屏障做成了可验证断言。</p>
+<h3 id="3-堆叠沙箱与祖先链写授权">3. 堆叠沙箱与祖先链写授权<a class="anchor" href="#3-堆叠沙箱与祖先链写授权" aria-label="链接到本节">#</a></h3>
+<p><code>StackedSandboxManager</code> 用纯内存字典模拟文件系统快照，还原了两个关键约束：第一，父线程和两个并行子线程各自修改互不覆盖，子线程完成后通过 <code>squash_sandbox</code> 把差量合回父书签，宿主 <code>host_files</code> 全程保持原样；第二，<code>check_write_allowed</code> 检查目标路径时，落在自己沙箱内直接放行，落在宿主仓库根目录下则沿着 <code>thread_chain</code> 逐级向上检查是否已授予 <code>write-orig</code>，未授权时返回 <code>needs_user_choice:write-orig</code> 触发前端确认：</p>
+<pre><code class="language-python">def check_write_allowed(self, thread_chain: list[str], target_path: str) -&gt; tuple[bool, str]:
+    norm = str(PurePosixPath(target_path))
+    leaf = self.workspaces[thread_chain[-1]]
+    if norm == leaf.sandbox_root or norm.startswith(leaf.sandbox_root + &quot;/&quot;):
+        return True, &quot;inside_sandbox&quot;
+    if norm == self.repo_root or norm.startswith(self.repo_root + &quot;/&quot;):
+        if any(
+            tid in self.workspaces and self.workspaces[tid].write_orig_granted
+            for tid in thread_chain
+        ):
+            return True, &quot;write_orig_granted&quot;
+        return False, &quot;needs_user_choice:write-orig&quot;
+    ...
+</code></pre>
+<h2 id="运行全部-19-个单元测试">运行全部 19 个单元测试<a class="anchor" href="#运行全部-19-个单元测试" aria-label="链接到本节">#</a></h2>
+<p>在仓库根目录执行标准库 <code>unittest</code> 发现命令即可完成全部核验：</p>
+<pre><code class="language-bash">python3 -m unittest discover -s examples -v
+</code></pre>
+<p>19 条用例覆盖了五大测试类：</p>
+<ul>
+<li><code>TestThreadRef</code>（2 项）：复合解析、前缀增删、本地优先排序与非法输入拦截。</li>
+<li><code>TestHistoryManagerThreePhase</code>（6 项）：未验证项跳过落盘与顺序断言、轮次缓冲合并与尾推理裁剪、无持久 ID 的工具结果尾扫去重、单工具结果溢出重试一次防死循环、含用户输入溢出丢弃并遗忘去重 ID、<code>safe_spawn_point</code> 截断规则。</li>
+<li><code>TestInheritanceAndCompaction</code>（3 项）：位置索引压缩保护早先派生的子线程切片、<code>Fresh</code> 边界向孙线程传递、<code>find_tool_call</code> 穿透压缩视图。</li>
+<li><code>TestRuntimeSliceDeferralAndSubscriptions</code>（6 项）：落盘屏障先于异步派发、<code>spawn_thread</code> 同步回环与 <code>child_of</code> 栈拦截、活跃工具延迟队列 vs 被动 <code>sleep</code> 立即打断、订阅自动子线程 vs <code>associative</code> 内联与 <code>final</code> 清理、未知/已停线程准入拦截、<code>ErrorClass</code> 驱动瞬时/限流重试与致命报错不重试。</li>
+<li><code>TestStackedSandboxes</code>（2 项）：双并行子沙箱压缩汇流且宿主不动、沙箱内写放行与祖先链 <code>write-orig</code> 授权传递。</li>
+</ul>
+<p>这份教学模型有意省略了网络传输、真实 <code>jj</code>/<code>git</code> 命令行调用以及 Tokio 异步调度器，目的是把状态机的核心不变量剥离到肉眼一眼能看穿的厚度。如果你想对照核查书里提到的任何一个上游文件、类型或指标，可以翻到后面的附录索引。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="12-tradeoffs-and-limits.html"><small>上一章</small><strong>失败模式、安全边界与架构取舍</strong></a><a class="next" href="appendix-sources.html"><small>下一章</small><strong>附录：源码索引、实测统计与核心术语对照</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：为什么一台树莓派能装下七万五千个 Agent</a><a href="../chapters/01-blocking-trap.html"><span>01</span>阻塞式 Agent 的死结与无阻塞切片不变量</a><a href="../chapters/02-workspace-topology.html"><span>02</span>21 个 Crate 的分层版图与类型化 ID 体系</a><a href="../chapters/03-slice-and-history.html"><span>03</span>切片执行循环与三阶段 HistoryManager</a><a href="../chapters/04-rap-protocol.html"><span>04</span>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</a><a href="../chapters/05-threading-compaction.html"><span>05</span>线程树、上下文继承与位置索引压缩</a><a href="../chapters/06-local-actor-deferral.html"><span>06</span>单线程本地调度器、延迟队列与抢占打断</a><a href="../chapters/07-provider-error-boundary.html"><span>07</span>模型供应协议、跨进程隔离与错误分类契约</a><a href="../chapters/08-stacked-sandboxes.html"><span>08</span>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</a><a href="../chapters/09-daemon-remote-migration.html"><span>09</span>本地守护进程、SSH 远程代理与跨主机热迁移</a><a href="../chapters/10-serverless-aws.html"><span>10</span>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</a><a href="../chapters/11-clients-and-hydro-dataflow.html"><span>11</span>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</a><a href="../chapters/12-tradeoffs-and-limits.html"><span>12</span>失败模式、安全边界与架构取舍</a><a href="../chapters/13-mini-infinity.html"><span>13</span>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：源码索引、实测统计与核心术语对照</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · hydro-project/infinity · 快照 e1a3e4b36e5f · 2026-11-05</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

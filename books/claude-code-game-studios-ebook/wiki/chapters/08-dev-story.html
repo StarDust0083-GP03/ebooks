@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从需求、配置、角色到 Hook 与验收，解剖 Claude Code Game Studios 的工作流"><meta name="author" content="独立源码研究">
+<title>实施链路：/dev-story 怎么把故事变成代码 · Claude Code 游戏工作室</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">G</span><span>Claude Code 游戏工作室</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 08</div><div class="rail-title">实施链路：/dev-story 怎么把故事变成代码</div><ol><li><a href="#场景-别信模型写的漂亮总结-先看硬盘上有没有文件">场景：别信模型写的漂亮总结，先看硬盘上有没有文件</a></li><li><a href="#第一步-先用脚本把故事读成事实表">第一步：先用脚本把故事读成事实表</a></li><li><a href="#第二步-按系统算档位-不拿全局-rigor-一刀切">第二步：按系统算档位，不拿全局 rigor 一刀切</a></li><li><a href="#第三步-前置门禁-不通过直接写-blocked-不派代理">第三步：前置门禁（不通过直接写 BLOCKED，不派代理）</a></li><li><a href="#第四步-代码根不瞎猜">第四步：代码根不瞎猜</a></li><li><a href="#第五步-按表派人-蒸馏简报">第五步：按表派人 + 蒸馏简报</a></li><li><a href="#第六步-先验硬盘产物-再做解析-看图和同种子回放">第六步：先验硬盘产物，再做解析、看图和同种子回放</a></li><li><a href="#第七步-收尾账本">第七步：收尾账本</a></li><li><a href="#常见误解">常见误解</a></li><li><a href="#练习">练习</a></li><li><a href="#答案提示">答案提示</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 08 章</div><h1>实施链路：<code>/dev-story</code> 怎么把故事变成代码</h1><div class="chapter-meta">CCGS v1.3.0 快照 2026-11-09 · 约 26 分钟</div></header><div class="prose"><h2 id="场景-别信模型写的漂亮总结-先看硬盘上有没有文件">场景：别信模型写的漂亮总结，先看硬盘上有没有文件<a class="anchor" href="#场景-别信模型写的漂亮总结-先看硬盘上有没有文件" aria-label="链接到本节">#</a></h2>
+<p>你手里已经有一份就绪的故事 <code>production/epics/stealth/story-003-melee-parry.md</code>：Core 层、Logic 类型、ADR 已批准、前置依赖都已关闭。敲下 <code>/dev-story production/epics/stealth/story-003-melee-parry.md</code>。</p>
+<p>接下来发生的事，拆开看其实是两条并行推进的线：<strong>一条管“往模型脑子里喂什么上下文”，另一条管“硬盘上到底落了什么文件、跑出了什么结果”</strong>。v1.3.0 还在这条链路上补齐了 Web 引擎的冒烟检查、Grow 项目的同种子回放，以及让程序员老实招供自己擅自拍了哪些板（<code>Own calls</code>）。</p>
+<h2 id="第一步-先用脚本把故事读成事实表">第一步：先用脚本把故事读成事实表<a class="anchor" href="#第一步-先用脚本把故事读成事实表" aria-label="链接到本节">#</a></h2>
+<p>技能不会一上来就靠记忆猜故事在哪，而是先调 <code>.claude/scripts/story-facts.sh &lt;story-path&gt;</code> 抓出一张 TSV 事实表：状态、类型、架构层、TR-ID、ADR、验收标准条数、测试证据状态、前置依赖。要是你敲 <code>/dev-story</code> 没带参数，它先看 <code>active.md</code> 检查点里的当前任务向你确认；检查点里也没有，就跑 <code>story-facts.sh --all</code> 把所有 <code>TODO</code> 故事列成选项让你选。</p>
+<p>记住仓库那条铁律：脚本只吐观察结果，绝不下结论。盘里一个故事都没有时，直接停止并告诉你先去跑 <code>/create-stories</code>，不乱猜。</p>
+<h2 id="第二步-按系统算档位-不拿全局-rigor-一刀切">第二步：按系统算档位，不拿全局 <code>rigor</code> 一刀切<a class="anchor" href="#第二步-按系统算档位-不拿全局-rigor-一刀切" aria-label="链接到本节">#</a></h2>
+<p>正文开头 <code>!</code> 注入的配置里已经带齐了 <code>workflow</code>、<code>qa.level</code>、<code>gate_level</code>、<code>specialists</code>、<code>perf_budgets</code>、<code>system_overrides</code>。注意 <code>/dev-story</code> 决定前置检查有多严时，看的是<strong>当前故事所属系统的 <code>workflow</code> 档位</strong>：从故事的 <code>GDD:</code> 路径提取系统名，先查 <code>system_overrides</code> 里有没有单独给这个系统加码，没有再退回全局 <code>workflow</code>。</p>
+<p>所以你可以整仓跑 <code>minimal</code> 快速推进，唯独把战斗系统钉在 <code>full</code>——写到战斗故事时，Phase 2 自动严查注册表和 Accepted ADR，写别的系统照样轻装上阵。第一条回复就会明确印出 <code>Tier: workflow &lt;value&gt;</code>，绝不把 <code>rigor</code> 或 <code>qa.level</code> 混进来用。</p>
+<h2 id="第三步-前置门禁-不通过直接写-blocked-不派代理">第三步：前置门禁（不通过直接写 BLOCKED，不派代理）<a class="anchor" href="#第三步-前置门禁-不通过直接写-blocked-不派代理" aria-label="链接到本节">#</a></h2>
+<p>Phase 2 照着三列表拦门：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>前置输入</th>
+<th><code>full</code></th>
+<th><code>standard</code></th>
+<th><code>minimal</code></th>
+</tr>
+</thead>
+<tbody><tr>
+<td>TR 需求注册表</td>
+<td>缺失直接停（让你先 <code>/architecture-review</code>）</td>
+<td>可选</td>
+<td>不要求</td>
+</tr>
+<tr>
+<td>故事点名的 ADR</td>
+<td>缺失 / <code>Proposed</code> / <code>Deprecated</code> / <code>Superseded</code> 直接停</td>
+<td>故事点名了才查</td>
+<td>故事点名了才查</td>
+</tr>
+<tr>
+<td>控制清单</td>
+<td>缺失发警告，继续</td>
+<td>缺失发警告，继续</td>
+<td>不要求</td>
+</tr>
+</tbody></table></div>
+<p>这里有两处很实的防呆：</p>
+<ul>
+<li><strong>ADR 默认不打开原文</strong>：先调 <code>adr-status.sh &lt;ADR-ID&gt;</code> 拿状态和版本号，跟故事里的 <code>ADR Version</code> 对得上就直接信故事摘要；对不上才去读 <code>references/version-mismatch.md</code>。</li>
+<li><strong>依赖故事逐个核查</strong>：对每个前置依赖跑 <code>story-facts.sh</code>，只要不是 <code>COMPLETE</code>，立刻停下来问你三个选项——自担风险硬上、先停下做依赖、还是其实做完了只是忘了改状态（选第三个也会先问你“能把依赖故事改成 Complete 吗”再动手）。</li>
+</ul>
+<p>只要上面任何一项触发了停止，<strong>绝不派程序员代理</strong>，直接跳去 Phase 7 写一条 <code>BLOCKED</code> 检查点收尾。通过了则进 Phase 3，只问一次能不能把故事标成 <code>In Progress</code>（如果你拒绝，它不改状态文件，但照样往下写代码，并在总结里诚实记一笔 <code>Story not marked In Progress — declined</code>）。</p>
+<h2 id="第四步-代码根不瞎猜">第四步：代码根不瞎猜<a class="anchor" href="#第四步-代码根不瞎猜" aria-label="链接到本节">#</a></h2>
+<p>写代码前必须先算清代码往哪放。按 <code>.claude/docs/code-root-resolution.md</code>（详见第 13 章），先查 <code>project.yaml</code> 的 <code>engine.code_root</code>（填错了直接报 <code>invalid</code> 不回退），再查 <code>engine.name</code> 对应 <code>.claude/engines/engines.tsv</code> 的行，再查旧版 <code>technical-preferences.md</code>，最后才在 <code>src/</code>、<code>Assets/</code>、<code>Source/</code> 恰好只存在一个时做无歧义推断。</p>
+<p><strong>要是怎么都解析不出来，或者配置非法，直接罢工不写</strong>。绝不偷懒默认往 <code>src/</code> 塞——因为在 Unity 里往 <code>src/</code> 写代码根本不参与编译，写几百行全白干；测试放错目录更坑，Unity 测试运行器直接给你绿油油地印出一行 <code>0 tests, Passed</code>。</p>
+<h2 id="第五步-按表派人-蒸馏简报">第五步：按表派人 + 蒸馏简报<a class="anchor" href="#第五步-按表派人-蒸馏简报" aria-label="链接到本节">#</a></h2>
+<p>Phase 4 的选人规则很简单：Config/Data 类型的故事根本不用派代理，直接在主会话里列出 <code>旧值 → 新值</code>，征得你同意就改数据文件跳去 Phase 6；代码故事按架构层和类型派给对应的通用程序员（Foundation → <code>engine-programmer</code>，UI → <code>ui-programmer</code>，Visual/Feel → <code>gameplay-programmer</code>，AI → <code>ai-programmer</code>，网络 → <code>network-programmer</code>）。</p>
+<p>写完后再把改动文件交给引擎专家过一遍引擎 API 坑点（只审查、吐出“文件 + 行号 + 问题 + 修法”，不直接改代码；破验收标准的打回给程序员修一次）。槽位直接读配置里的 <code>specialists</code>（靠 <code>code</code> 槽位区分 Godot GDScript 和 Godot C#）。注意 v1.3.0 对 <strong>Web 引擎</strong> 的处理：Web 没有单独的引擎专家角色，直接由 <code>lead-programmer</code> 对照 <code>docs/engine-reference/web/</code> 顶上。</p>
+<p>Phase 5 写给程序员的简报特别讲究，绝不把几十 KB 的文档整篇粘贴进去，而是精准投喂：</p>
+<ul>
+<li>给路径：故事文件、TR 注册表精确匹配行、控制清单对应层章节、命名规范、性能预算、测试路径；</li>
+<li>给内联：故事里的 ADR 摘要和实施说明（<strong>故意不给 ADR 原文路径</strong>）；</li>
+<li>缺什么就明说：Phase 2 没用到的输入（比如 <code>minimal</code> 下没有注册表），明确告诉子代理“这档位本来就没有，别浪费回合满仓库瞎找”，顺手也通知你一句；</li>
+<li>按 <code>qa.level</code> 定测试要求：<code>minimal</code> 时必须白纸黑字写一句“<strong>不要写测试文件</strong>”（省略不说，模型以为你忘了，会顺手照着通用角色规范把单测写了）；<code>standard</code> / <code>full</code> 要求每条验收标准至少配一个确定性测试（禁随机种子、禁时间敏感断言、禁外部 I/O）；</li>
+<li><strong>v1.3.0 新增的两条代码规矩</strong>：新增玩法数值必须写进数据文件（Grow 出来的 Web 项目放 <code>data/config.json</code> 并在 <code>data/config-notes.md</code> 记一行），不准硬编码；同时禁止写只用一次的过度抽象、禁止给不可能发生的分支加防御、禁止为了过测试硬写特判；最后要求程序员在汇报里<strong>老实交待 <code>Own calls</code>——凡是设计和故事没写死、由它自己拍板定的数值、时机、颜色、边界行为和界面文案，逐条报出位置</strong>，等着 <code>/story-done</code> 交给人类裁决。</li>
+</ul>
+<h2 id="第六步-先验硬盘产物-再做解析-看图和同种子回放">第六步：先验硬盘产物，再做解析、看图和同种子回放<a class="anchor" href="#第六步-先验硬盘产物-再做解析-看图和同种子回放" aria-label="链接到本节">#</a></h2>
+<p>Phase 6 是整条实施链路里最硬核的一段，一共卡了五道关：</p>
+<ol>
+<li><strong>先看有没有半途而废</strong>：子代理撞上 <code>maxTurns</code> 或者半截停掉，必须大字报 <code>INCOMPLETE</code>，列出已有进展和断点，绝不准顶着“Implementation Complete”蒙混过关。</li>
+<li><strong>触发器 0——先看硬盘文件，再信汇报</strong>：不管子代理总结写得多天花乱坠，它点名改过的文件要是硬盘上压根不存在，直接判这一步失败，拉起子代理指着缺失文件返工。</li>
+<li><strong>检查测试文件在不在</strong>：<code>standard</code> / <code>full</code> 下查 Logic/Integration 故事的测试文件有没有落盘（依然只查存在性，绝不替你吹牛说“测试全过了”）。</li>
+<li><strong>引擎级解析与冒烟检查</strong>：<ul>
+<li><strong>Godot</strong>：必须先跑 <code>godot --headless --path . --import</code>，再跑 <code>godot --headless --path . -s res://.claude/scripts/godot-parse-check.gd -- res://&lt;改动的 .gd&gt;</code>（看 <code>PARSE FAIL:</code>）。明令禁止拿 <code>--check-only</code> 敷衍，也禁止只跑 <code>--import</code> 就敢说解析过了。</li>
+<li><strong>Web（v1.3.0 新增）</strong>：只要 <code>package.json</code> 里有 <code>smoke</code> 脚本，每个故事做完必跑 <code>npm run smoke</code>（包含 <code>tsc --noEmit</code> 类型检查、单文件构建和 Playwright <code>@boot</code> 启动测试）。明确点破：光跑 <code>npm run build:single</code> 只证明编译过，不证明网页能打开；绝不跑 <code>commands.run</code>（那是永不退出的 dev server）。</li>
+<li><strong>没装引擎或没跑 <code>npm ci</code></strong>：老老实实报 <code>parse NOT VERIFIED — &lt;原因&gt;</code>，严禁读两眼代码就嘴硬“看着应该能编译”。</li>
+</ul>
+</li>
+<li><strong>运行观察（Run and Observe）+ 同种子回放（v1.3.0 新增）</strong>：<ul>
+<li>凡是玩家看得见的东西（不只限 UI 和 Visual/Feel，哪怕 Logic 故事改了画面也算），<strong>哪怕在 <code>qa.level: minimal</code> 也不豁免</strong>：直接进改动场景截屏存到 <code>production/qa/evidence/&lt;story-slug&gt;/</code>，用 <code>review-receipts.sh hash</code> 把改动文件的内容哈希打进 <code>stamp.txt</code>，再亲自打开图片对照验收标准看一遍。最后只能输出一行纯文本 <code>Run result:</code>（<code>OBSERVED</code> / <code>NOT VERIFIED</code> / <code>N/A</code>，且 <code>N/A</code> 必须说清为什么真的不可见，拿“这是个 Logic 故事”糊弄会被 <code>/story-done</code> 直接拒收）。</li>
+<li><strong>如果是从 <code>/prototype</code> Grow 出来的 Web 工程</strong>（检测 <code>production/qa/evidence/grow-&lt;name&gt;/replay.args</code> 存在），每个故事做完不管什么类型，都要再跑一遍 <code>npm run build:single</code> + <code>bash .claude/scripts/one-shot-grow.sh replay &lt;name&gt; --as story</code>，拿同一颗随机种子和同一串按键把游戏重跑一遍，把新截图 <code>story.png</code> 和基准图摆在一起看：<ul>
+<li><code>match yes</code> → <code>Same-seed run: SAME — nothing broke</code>；</li>
+<li><strong><code>match no</code>（或冒出新报错）</strong>：不管开没开 <code>autonomous</code> 自动模式，<strong>强制停下来把差异和两张截图甩给你看</strong>——问你“这个故事改了同种子回放结果，是你想要的吗？”你点头才调 <code>one-shot-grow.sh accept &lt;name&gt;</code> 刷新基准；你说不是，故事直接打回 <code>INCOMPLETE</code> 等修复。</li>
+</ul>
+</li>
+</ul>
+</li>
+</ol>
+<h2 id="第七步-收尾账本">第七步：收尾账本<a class="anchor" href="#第七步-收尾账本" aria-label="链接到本节">#</a></h2>
+<p>Phase 7 按固定模板出总结（包含改动文件、测试证据、验证命令和退出码、逐条验收标准、偏差、引擎风险、阻塞项、以及 v1.3.0 新增的 <code>Own calls</code>），用 <code>md-section.sh replace</code> 把实际改动文件覆写进故事的 <code>## Files</code>（绝不走 shell 重定向，免得绕过写入检查 Hook），再用 <code>session-state.sh checkpoint</code> 覆写 <code>active.md</code> 检查点（带上 <code>Run result:</code>、<code>Same-seed run:</code> 和 <code>Own calls:</code> 传给下一棒 <code>/story-done</code>），最后落上标准收尾块。</p>
+<h2 id="常见误解">常见误解<a class="anchor" href="#常见误解" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>误解一：<code>/dev-story</code> 跑完就等于故事验收通过了。</strong> 不是。它只管把代码写出来、过解析/冒烟/截屏和同种子回放，并把真相打包进检查点；真正逐条核对验收标准和签字关闭是下一章 <code>/story-done</code> 的事。</li>
+<li><strong>误解二：测试文件存在就代表单元测试全绿。</strong> 在 Godot / Unity / Unreal 路线下，<code>/dev-story</code> 明确提醒你：“去跑你的测试套件确认新测试通过，再敲 <code>/story-done</code>——它只查测试文件在不在，不替你跑。”</li>
+<li><strong>误解三：Grow 出来的项目改了一个新功能，同种子回放报 <code>match no</code> 就说明写炸了。</strong> 不一定。新功能本来就可能改变游戏流程，所以框架不是直接判死刑，而是把“具体哪一行状态、哪一帧画面变了”亮到你面前，由你拍板这是“预期新行为（更新基准）”还是“改坏了老逻辑（打回返工）”。</li>
+</ul>
+<h2 id="练习">练习<a class="anchor" href="#练习" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>在 <code>qa.level: minimal</code> 下，为什么 <code>/dev-story</code> 的程序员简报必须显式写一句“不要写测试文件”，而不能把测试那一节直接删掉？</li>
+<li>为什么在 Web 工程的 Phase 6 里，规则专门强调“光跑 <code>npm run build:single</code> 不算通过解析检查，必须跑 <code>npm run smoke</code>”？</li>
+<li>设想一个 Grow 出来的塔防游戏，你刚做完“新增冰冻塔”的故事，同种子回放（老按键脚本压根没造冰冻塔）却报了 <code>match no</code> 且显示第 12 秒怪物位置偏了。你应该选 accept 还是打回？这说明同种子回放抓住了什么问题？</li>
+</ol>
+<h2 id="答案提示">答案提示<a class="anchor" href="#答案提示" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>因为 <code>.claude/agents/gameplay-programmer.md</code> 里写着“必须为所有玩法逻辑写单元测试”。如果简报里干脆不提测试，子代理就会照通用人设去写单测，导致行为跟 <code>minimal</code> 档位打架。</li>
+<li><code>build:single</code> 只证明 TypeScript 编译和打包没报错，看不出页面在真实浏览器里能不能启动、会不会一进页面就抛运行时异常白屏；<code>npm run smoke</code> 会把打包产物拉进 Playwright 跑 <code>@boot</code> 冒烟，才算验了启动。</li>
+<li>必须打回。老按键脚本根本没触发新功能，同种子回放结果本应 100% 一致；位置偏移说明你在写冰冻塔时意外动到了随机数消耗顺序（<code>rng()</code> 调用次序）或公共寻路/帧步进逻辑，这就是回归 bug，同种子回放正好把它抓了个现行。</li>
+</ol>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="07-artifacts.html"><small>上一章</small><strong>产物模型：一页简报与故事、需求、ADR 三张网</strong></a><a class="next" href="09-story-done.html"><small>下一章</small><strong>验收：/story-done 如何堵死“基本完成”</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：先看清这东西到底是怎么跑起来的</a><a href="../chapters/01-requirements.html"><span>01</span>需求：一个人写游戏，为什么还要套规矩</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：一个会话，四种约束</a><a href="../chapters/03-onboarding.html"><span>03</span>入门：先玩一把（<code>/prototype</code>）与 Studio Mode（<code>/start</code>）双轨入口</a><a href="../chapters/04-config.html"><span>04</span>配置求值：一个 <code>rigor</code> 如何长出六个设置</a><a href="../chapters/05-agents.html"><span>05</span>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</a><a href="../chapters/06-skill-protocol.html"><span>06</span>Skill 协议：一条斜杠命令怎么从解析走到交接</a><a href="../chapters/07-artifacts.html"><span>07</span>产物模型：一页简报与故事、需求、ADR 三张网</a><a href="../chapters/08-dev-story.html"><span>08</span>实施链路：<code>/dev-story</code> 怎么把故事变成代码</a><a href="../chapters/09-story-done.html"><span>09</span>验收：<code>/story-done</code> 如何堵死“基本完成”</a><a href="../chapters/10-hooks.html"><span>10</span>Hook：十五个检查点里，到底谁真的能拦住</a><a href="../chapters/11-registries.html"><span>11</span>注册表：跨文档事实怎么管才不漂移</a><a href="../chapters/12-teams.html"><span>12</span>协作：团队流水线、默认塌缩与“透镜折叠”</a><a href="../chapters/13-engine.html"><span>13</span>引擎与品类适配：统一引擎表、Web 一等公民与品类库</a><a href="../chapters/14-context.html"><span>14</span>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</a><a href="../chapters/15-security.html"><span>15</span>安全边界：能聊天、有 Hook，不等于有沙箱</a><a href="../chapters/16-verification.html"><span>16</span>验证与演进：Markdown 写的框架，怎么证明自己没改坏</a><a href="../chapters/17-mini-studio.html"><span>17</span>最小实验：用两百行 Python 亲手跑通四条核心约束</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.3.0 源码索引、实测数据、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · CCGS v1.3.0 · 快照 abc0de79d6ce · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

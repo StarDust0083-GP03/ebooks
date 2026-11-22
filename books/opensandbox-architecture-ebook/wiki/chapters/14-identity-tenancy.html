@@ -1,0 +1,79 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>身份与多租户：三种凭据，两层边界 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="14-identity-tenancy"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#三种互不替代的凭据">三种互不替代的凭据</a></li><li><a href="#多租户-仅限-kubernetes-身份留在提供方">多租户：仅限 Kubernetes，身份留在提供方</a></li><li><a href="#命名空间配额与两个明确未覆盖的盲区">命名空间配额与两个明确未覆盖的盲区</a></li><li><a href="#源码入口">源码入口</a></li></ol></details><article class="content"><h1 id="身份与多租户-三种凭据-两层边界">身份与多租户：三种凭据，两层边界</h1><p>多团队共用一套沙箱平台时，最容易混为一谈的是「管理权限」和「进入权限」。很多接入方拿到控制面的 API key，顺手就拿它去直连沙箱里的 <code>execd</code>，或者以为在 Kubernetes 里开了多租户配置，资源配额和预热池也就自动按租户隔开了。</p>
+<p>OpenSandbox 的身份模型恰恰反过来：<strong>每一层只守自己那一亩三分地，不造一个包打天下的全局授权中心。</strong></p>
+<h2 id="三种互不替代的凭据">三种互不替代的凭据</h2><table>
+<thead>
+<tr>
+<th>凭据</th>
+<th>携带方式</th>
+<th>保护对象</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>生命周期 API key</td>
+<td><code>OPEN-SANDBOX-API-KEY</code> 请求头</td>
+<td>控制面管理操作（创建、列举、删除、暂停、续期、模板、快照）</td>
+</tr>
+<tr>
+<td><code>execd</code> 访问令牌</td>
+<td><code>X-EXECD-ACCESS-TOKEN</code> 请求头或 PTY 子协议</td>
+<td>沙箱内部数据面（命令、文件、代码、PTY、指标）</td>
+</tr>
+<tr>
+<td>endpoint 凭据（<code>secureAccess</code> / <code>f1.</code> 签名 / sidecar auth）</td>
+<td><code>GET /endpoints/{port}</code> 响应头打包下发</td>
+<td>经网关触达沙箱应用端口或调用 egress 策略接口</td>
+</tr>
+</tbody></table>
+<p>文档在数据面契约里直截了当地提醒：不要硬编码 <code>execd</code> 地址，也不要假设持有生命周期 API key 就能直接进入沙箱。单租户部署只需要在配置里填一把 <code>server.api_key</code>，除 <code>/health</code>、<code>/version</code>、<code>/docs</code>、<code>/redoc</code>、<code>/openapi.json</code> 外的接口全部校验此头；未配 key 时必须通过交互式 <code>YES</code> 或 <code>OPENSANDBOX_INSECURE_SERVER=YES</code> 显式确认，防止无鉴权实例静默上线。配置报错日志在 <code>1.3.0-rc.1</code> 做了脱敏加固，包括 <code>OPENSANDBOX_SECURE_ACCESS_KEYS</code> 在内的安全签名密钥不再被校验报错回显出来。</p>
+<h2 id="多租户-仅限-kubernetes-身份留在提供方">多租户：仅限 Kubernetes，身份留在提供方</h2><p>多租户是可选能力，且<strong>只支持 Kubernetes 运行时</strong>（Docker 模式下配置 <code>[tenants]</code> 会在启动期直接致命退出）。</p>
+<p>租户表不写死在服务器主配置里，而是通过 <code>TenantProvider</code> 对接已有身份系统，支持两种实现：</p>
+<ul>
+<li><strong>file 提供方</strong>：读取本地 TOML，变更约 2 秒热重载；</li>
+<li><strong>http 提供方</strong>：拉取远端身份接口并按 TTL 缓存；当远端不可达且缓存超过 <code>max_stale_seconds</code> 时返回 <code>503 TENANT_PROVIDER_UNAVAILABLE</code>。<code>1.3.0-rc.2</code> 修补了一处配置边界漏洞：如果远端返回的 <code>ttl</code> 为 <code>null</code>、负数、<code>NaN</code> 或 <code>Infinity</code>，不再导致查询报错或把过期租户永久锁死在缓存里，而是安全回退到 30 秒默认 TTL。</li>
+</ul>
+<p>启动期有三条硬断言把配置锁死：<code>[tenants]</code> 与 <code>server.api_key</code> 互斥，同时存在直接拒绝启动；不同租户的 API key 必须唯一；所有可枚举的租户命名空间在启动阶段就校验存在且可访问（Fast Sandbox 的 CR reader 保持惰性初始化，在首次读取时核验集群凭据与权限，不拖垮纯容器部署）。</p>
+<p>请求进入开启多租户的服务器后按六步流转：</p>
+<ol>
+<li><code>middleware/auth.py</code> 经 <code>TenantProvider</code> 将 <code>OPEN-SANDBOX-API-KEY</code> 解析为 <code>TenantEntry</code>（未知 key 返 <code>401</code>）；</li>
+<li>租户名与目标命名空间写入当前请求作用域的 <code>ContextVar</code>；</li>
+<li>创建、查询、列举、删除等生命周期操作全部绑定到解析出的命名空间；</li>
+<li><code>list</code> 仅返回已认证租户命名空间内的对象；</li>
+<li>服务器代理路由（<code>/sandboxes/{id}/proxy/...</code>）在多租户模式下同样强制校验 API key（区别于单租户默认行为）；</li>
+<li>创建时在工作负载上打上 <code>opensandbox.io/tenant=&lt;name&gt;</code> 标签。当多个租户刻意共享同一个命名空间时，读、删、代理请求对其他租户的带标签沙箱返回 <code>404</code> 实现软隔离，历史未打标签的旧沙箱在自然过期前仍保持可见，避免升级瞬间把存量任务变成黑洞。</li>
+</ol>
+<p>在 Fast Sandbox 分支里，带请求上下文的操作从 <code>ContextVar</code> 读租户命名空间，而没有 HTTP 上下文的后台任务（janitor、空闲暂停扫描、快照 watch 收敛）则回落到按沙箱 ID 反查对象归属。此外，Fast Sandbox 节点与控制面之间在 <code>1.3.0-rc.2</code> 落地了 <strong>FSEP-0003 Fastlet 控制面鉴权</strong>：Fastlet 使用 Kubernetes ServiceAccount 令牌访问控制 API，由控制器经 JWKS 验签并默认只放行同命名空间调用方，把节点到控制面的通道也纳入了强身份校验。</p>
+<h2 id="命名空间配额与两个明确未覆盖的盲区">命名空间配额与两个明确未覆盖的盲区</h2><p>多租户文档对控制面自身能做什么交代得很坦率：<strong>服务器本身不执行资源配额或网络隔离，硬隔离全部委托给 Kubernetes 原生对象</strong>。每租户命名空间通过 <code>ResourceQuota</code> 管 CPU、内存、存储与 Pod 总数上限，通过 <code>LimitRange</code> 设容器默认限额，通过 <code>RoleBinding</code> 控 API 权限，再叠加每沙箱的 egress sidecar 管出向流量。同时 <code>1.3.0-rc.1</code> 修复了开发者控制台（Console）的租户过滤视图，不再把集群系统 Pod 和事件混进单租户视图里。</p>
+<p>但有两个现实边界必须在架构评审时提前摆上桌面：</p>
+<ul>
+<li><strong><code>/v1/pools</code> 池管理路由目前不是租户作用域的</strong>，所有请求统一落在服务器配置的默认命名空间里。预热池当前属于集群共享基础设施；确实需要每租户独立池管理的环境，只能按租户拆成多套独立的服务器实例。</li>
+<li><strong>局部身份特性不等于租户边界</strong>。<code>execd</code> 的 <code>/v1/filesystem/{uid}/{gid}</code> 只解决单沙箱内多会话的文件属主隔离，没有独立 mount namespace；<code>secureAccess</code> 的 endpoint 头证明调用方有权访问该端口，但不区分支配它的具体人类身份；Credential Vault 隔的是密钥明文而非租户。每一层都有明确边界，不能混用。</li>
+</ul>
+<h2 id="源码入口">源码入口</h2><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>server/opensandbox_server/middleware/auth.py</code></td>
+<td>API key 校验、租户解析与 <code>ContextVar</code> 注入</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/tenants/file_provider.py</code></td>
+<td>本地文件租户提供方与热重载逻辑</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/tenants/</code></td>
+<td>HTTP 租户提供方、异常 TTL 30 秒回退与启动期命名空间校验</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/api/pool.py</code></td>
+<td>池管理路由默认命名空间行为</td>
+</tr>
+<tr>
+<td><code>docs/guides/multi-tenancy.md</code></td>
+<td>六步请求流、共享命名空间软隔离与 Kubernetes 配额分工</td>
+</tr>
+</tbody></table>
+</article><nav class="pager" aria-label="篇章导航"><a href="13-lifecycle-state.html"><small>上一篇</small>状态机：暂停、恢复、快照模式与绝对过期</a><a href="15-isolation.html"><small>下一篇</small>隔离与加固：从 runc、进程降权到 microVM</a></nav></main><script src="../assets/wiki.js"></script></body></html>

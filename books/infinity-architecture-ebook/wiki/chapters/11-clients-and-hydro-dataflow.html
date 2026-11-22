@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从无阻塞执行切片、RAP 响应式工具协议到堆叠沙箱与跨主机热迁移，解剖 hydro-project/infinity 的 Rust Agent 运行时架构"><meta name="author" content="独立源码研究">
+<title>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人 · Infinity 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">∞</span><span>Infinity 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 11</div><div class="rail-title">多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</div><ol><li><a href="#infinity-agent-cli-内联视口-无头派活与插件管理">infinity-agent-cli：内联视口、无头派活与插件管理</a></li><li><a href="#infinity-acp-把守护进程会话接进-zed-等编辑器">infinity acp：把守护进程会话接进 Zed 等编辑器</a></li><li><a href="#用-hydro-数据流写-slack-机器人-infinity-slack-dataflow">用 Hydro 数据流写 Slack 机器人：infinity-slack-dataflow</a></li><li><a href="#为什么多套前端能共用同一条总线">为什么多套前端能共用同一条总线</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 11 章</div><h1>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</h1><div class="chapter-meta">hydro-project/infinity 快照 e1a3e4b36e5f · 约 16 分钟</div></header><div class="prose"><p>很多 Agent 项目把核心状态机和终端 UI 揉成一团：流式输出直接 <code>println!</code>，确认弹窗直接读 <code>stdin</code>，结果后来想加一个桌面 Web 端、接进 Zed 编辑器或者挂到公司 Slack 频道里时，不得不把半套逻辑复制粘贴三遍。</p>
+<p>Infinity 因为从底层把 <code>infinity-daemon</code> 做成了统一的长连接枢纽（Unix Socket + WebSocket），外围接入层反而可以按各自平台的交互习惯独立演进。仓库里目前并存着四套真实前端：<code>infinity-agent-cli</code> 里的终端 TUI、同一二进制里的 <code>infinity acp</code> 编辑器协议服务、<code>infinity-web</code>/<code>infinity-ui</code> 桌面端，以及由 <code>infinity-slack-bot</code> 和 <code>infinity-slack-dataflow</code> 组成的 Slack 机器人。</p>
+<h2 id="infinity-agent-cli-内联视口-无头派活与插件管理">infinity-agent-cli：内联视口、无头派活与插件管理<a class="anchor" href="#infinity-agent-cli-内联视口-无头派活与插件管理" aria-label="链接到本节">#</a></h2>
+<p><code>crates/infinity-agent-cli/</code>（10,294 行）是本地开发者的主入口，同时承担了三类工作：</p>
+<ol>
+<li><strong>内联终端 TUI（<code>inline_viewport.rs</code>、<code>terminal.rs</code>、<code>modifier_diff.rs</code>、<code>choice_picker.rs</code>、<code>model_picker.rs</code>、<code>session_picker.rs</code>、<code>quit_picker.rs</code>）</strong>，采用内联视口渲染，不接管全屏备用缓冲区，并针对宽字符、窗口缩放竞态和文本折行写了 8 组 <code>insta</code> + <code>vt100</code>/<code>alacritty_terminal</code> 快照测试。按下 <code>Ctrl+D</code> 退出时，CLI 发送 <code>ClientMessage::SoftDetach</code>：如果代理刚好空闲，守护进程直接收尾关闭；如果代理正在后台忙，守护进程回传 <code>DisconnectNotIdle</code>，CLI 弹出 <code>quit_picker</code> 让用户二选一是脱离挂后台（<code>Disconnect</code>）还是彻底停机（<code>ShutdownSession</code>）。</li>
+<li><strong>脚本化与无头模式</strong>，除了交互式启动，CLI 支持 <code>-i &quot;prompt&quot;</code> 带初始指令进入、<code>-s &lt;session-id&gt;</code> 直连已有会话、<code>--local</code> 跳过守护进程在进程内直跑，以及适合自动化流水线的 <code>-H &quot;prompt&quot;</code> 无头模式：把任务交给后台守护进程立刻返回退出码，稍后再用 <code>/load</code> 或桌面 Web UI 验收沙箱 Diff。</li>
+<li><strong>自举插件管理（<code>install.rs</code>）</strong>，<code>infinity provider install</code>、<code>infinity rap install</code> 和 <code>infinity update</code> 默认从 crates.io（也支持 <code>--git</code> 与 <code>--path</code>）拉取编译外部供应器和 RAP 服务，并自动维护 <code>~/.infinity/providers.json</code> 与 RAP 服务配置表。</li>
+</ol>
+<h2 id="infinity-acp-把守护进程会话接进-zed-等编辑器">infinity acp：把守护进程会话接进 Zed 等编辑器<a class="anchor" href="#infinity-acp-把守护进程会话接进-zed-等编辑器" aria-label="链接到本节">#</a></h2>
+<p>现代编辑器正在向 <strong>ACP（Agent Client Protocol）</strong> 收敛，让编辑器侧栏的 Agent 面板可以通过标准 stdio JSON-RPC 接入任意后端代理。执行 <code>infinity acp</code> 启动的就是 <code>crates/infinity-agent-cli/src/acp_server.rs</code>。</p>
+<p><code>acp_server.rs</code> 的架构定位很纯粹：它自己不跑大模型，也不管沙箱，只做 ACP stdio 协议与 <code>infinity-daemon</code> Unix Socket 协议之间的无状态翻译桥。编辑器发来列会话、加载历史、新建会话、发提示词、切模型等指令，桥接层转成对应的 <code>ClientMessage</code> 发给本地守护进程，再把守护进程推回来的流式文本、思考过程、工具调用和 Diff 视图实时映射成 ACP 更新帧送回编辑器面板。</p>
+<p>这里有一条和第 2 章呼应的边界纪律：在 <code>0.2.0</code> 的类型化 ID 重构中，团队特意把外部 ACP 协议侧的会话 ID 保留为原生 <code>String</code>（且保持 <code>acp-sessions.json</code> 持久化格式不变），只在 <code>acp_server.rs</code> 边界处与内部的 <code>ThreadRef</code> 互相转换，不让外部协议的弱类型侵入守护进程内部。</p>
+<h2 id="用-hydro-数据流写-slack-机器人-infinity-slack-dataflow">用 Hydro 数据流写 Slack 机器人：infinity-slack-dataflow<a class="anchor" href="#用-hydro-数据流写-slack-机器人-infinity-slack-dataflow" aria-label="链接到本节">#</a></h2>
+<p>仓库里最能体现 UC Berkeley Hydro 团队技术底色的两个 crate，是 <code>infinity-slack-bot</code>（2,371 行）和 <code>infinity-slack-dataflow</code>（1,817 行）。</p>
+<p>Slack 机器人的状态同步一向容易写得支离破碎：一边要消费 Slack Socket Mode 的消息、斜杠命令、按钮点击和 App Home 打开事件，另一边要同时监听守护进程发来的流式分片、人工选择弹窗和会话断开通知；用户点下一个确认按钮时，既要把按钮消息更新成已选状态、停掉旧的流式输出，又要向守护进程发送 <code>AnswerChoice</code>，还得防止随后守护进程回传 <code>UserChoiceComplete</code> 时重复改写同一条 Slack 消息。</p>
+<p>团队没有用一堆互相嵌套的 <code>tokio::select!</code> 和共享通道回调去硬凑，而是直接用自家研发的 Rust 分布式数据流框架 <strong><code>hydro_lang</code></strong>，把整个 Slack 机器人的核心逻辑写成了一个纯粹的、可离线模拟测试的数据流图（<code>crates/infinity-slack-dataflow/src/flow.rs</code>）：</p>
+<pre><code class="language-rust">// crates/infinity-slack-dataflow/src/flow.rs
+pub fn slack_dataflow&lt;&#39;a, P: &#39;a&gt;(
+    slack_events: Stream&lt;SlackEvent, Process&lt;&#39;a, P&gt;, Unbounded&gt;,
+    daemon_events: Stream&lt;DaemonEvent, Process&lt;&#39;a, P&gt;, Unbounded&gt;,
+) -&gt; (
+    Stream&lt;SlackAction, Process&lt;&#39;a, P&gt;, Unbounded&gt;,
+    Stream&lt;DaemonCommand, Process&lt;&#39;a, P&gt;, Unbounded&gt;,
+)
+</code></pre>
+<p>整套业务逻辑就是从两个输入流 <code>(slack_events, daemon_events)</code> 到两个输出流 <code>(slack_actions, daemon_commands)</code> 的声明式变换管线：</p>
+<ul>
+<li><strong>入口过滤与分叉</strong>，先用 <code>filter</code> 过滤机器人自身回声与未授权用户，再通过 <code>partition</code> 逐层把事件无拷贝地拆成四条互斥支路：交互按钮点击、斜杠命令（如 <code>/model</code> 弹 Slack Modal 选择器或纯文本列表）、App Home 首次打开（每用户只钉一次推荐提示词），以及常规聊天消息。</li>
+<li><strong>按钮点击的三路扇出</strong>，一条 <code>button_clicks</code> 流同时派生出三条动作流：<code>button_stop_actions</code> 立刻结束当前活跃流式输出（让模型接下来的新回复落在新消息里），<code>button_update_actions</code> 把原按钮块改写成带勾选标记的确认文本，<code>button_commands</code> 解析 <code>action_id</code>（格式 <code>choice_{choice_id}_{selected_index}</code>），先从共享状态中摘除 <code>choice_messages</code> 防止重复更新，再发出 <code>DaemonCommand::AnswerChoice</code>。</li>
+<li><strong>离线模拟测试</strong>，核心编排完全与真实 Slack HTTP/WebSocket 和守护进程 Socket I/O 解耦（真实网络壳子留在 <code>infinity-slack-bot</code> 里的 <code>slack_io.rs</code> 和 <code>daemon_io.rs</code>），<code>crates/infinity-slack-dataflow/tests/dataflow_sim.rs</code> 可以直接在进程内喂入模拟事件流、断言输出动作流，把整套复杂的多步 Slack 交互逻辑用确定性单元测试覆盖干净。</li>
+</ul>
+<h2 id="为什么多套前端能共用同一条总线">为什么多套前端能共用同一条总线<a class="anchor" href="#为什么多套前端能共用同一条总线" aria-label="链接到本节">#</a></h2>
+<p>把 CLI TUI、桌面 Web、ACP 编辑器和 Slack 机器人横向摆在一起，会发现它们共享了同一组极简契约：</p>
+<ul>
+<li>所有前端都不直接操作 <code>ConversationStore</code>，只通过 <code>ClientMessage</code>/<code>DaemonMessage</code>（或 WebSocket 同构 JSON）与守护进程对话。</li>
+<li>所有人机交互中断点（<code>OAuthRequired</code>、<code>UserChoiceRequired</code>、<code>UserChoiceDismissed</code>）都是运行时和 RAP 协议的一等消息，因此 TUI 渲染成方向键选择器、Web 渲染成 <code>ChoicePicker.tsx</code> 卡片、Slack 渲染成 Block Kit 按钮，底层沙箱的 <code>write-orig</code> 审批逻辑一行代码都不用改。</li>
+<li><code>DisplaySegment</code>（<code>Text</code>、<code>Diff</code>、<code>Image</code>）和 <code>ViewUpdate</code> 把模型消费的原始文本与前端展示的富媒体视图分开传输，客户端按自身渲染能力降级即可（例如终端渲染不出图片就自动跳过 <code>Image</code> 片段回退到后续 <code>Text</code> 片段）。</li>
+</ul>
+<p>一路看下来，Infinity 的设计非常连贯，但它绝不是没有边界和短板的银弹。下一章我们专门翻出源码里的 <code>TODO</code>、显式拒绝分支、安全边界与架构代价，做一次冷静的工程复盘。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="10-serverless-aws.html"><small>上一章</small><strong>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</strong></a><a class="next" href="12-tradeoffs-and-limits.html"><small>下一章</small><strong>失败模式、安全边界与架构取舍</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：为什么一台树莓派能装下七万五千个 Agent</a><a href="../chapters/01-blocking-trap.html"><span>01</span>阻塞式 Agent 的死结与无阻塞切片不变量</a><a href="../chapters/02-workspace-topology.html"><span>02</span>21 个 Crate 的分层版图与类型化 ID 体系</a><a href="../chapters/03-slice-and-history.html"><span>03</span>切片执行循环与三阶段 HistoryManager</a><a href="../chapters/04-rap-protocol.html"><span>04</span>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</a><a href="../chapters/05-threading-compaction.html"><span>05</span>线程树、上下文继承与位置索引压缩</a><a href="../chapters/06-local-actor-deferral.html"><span>06</span>单线程本地调度器、延迟队列与抢占打断</a><a href="../chapters/07-provider-error-boundary.html"><span>07</span>模型供应协议、跨进程隔离与错误分类契约</a><a href="../chapters/08-stacked-sandboxes.html"><span>08</span>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</a><a href="../chapters/09-daemon-remote-migration.html"><span>09</span>本地守护进程、SSH 远程代理与跨主机热迁移</a><a href="../chapters/10-serverless-aws.html"><span>10</span>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</a><a href="../chapters/11-clients-and-hydro-dataflow.html"><span>11</span>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</a><a href="../chapters/12-tradeoffs-and-limits.html"><span>12</span>失败模式、安全边界与架构取舍</a><a href="../chapters/13-mini-infinity.html"><span>13</span>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：源码索引、实测统计与核心术语对照</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · hydro-project/infinity · 快照 e1a3e4b36e5f · 2026-11-05</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

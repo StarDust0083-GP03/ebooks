@@ -1,0 +1,83 @@
+# 数据管道与 Checkpoint
+
+训练需要持续送入正确数据，也需要把可恢复状态交给存储。两条链分别决定设备是否空等，以及失败后会退回哪里。文件写出来和训练能够恢复，是不同的验收标准。
+
+## 数据路径
+
+校对文本从远端分片进入读取 worker，经过解码、分词或 packing，在主机内存形成 batch，再传到设备。任何一段供给不足都可能让后面停顿。
+
+可分别测远端读取、worker 处理、就绪队列和主机到设备拷贝。若就绪队列长期为空而设备有空隙，应先检查供给；如果队列充足却传输迟缓，再看内存、拷贝与依赖。
+
+## Sharding 与顺序
+
+数据并行副本需要有明确的样本分配，避免无意重复或遗漏。shuffle 种子、epoch、分片清单和 packing 规则共同决定数据顺序，worker 数变化也可能改变读取方式。
+
+这些配置应与数据版本一起保存。吞吐比较中若同时改变 packing，样本数相同也不一定代表有效 token 数相同。
+
+### 从同一 step 恢复，为什么还可能读到不同数据
+
+第 420 次更新结束，不足以说明第几个分片的哪个位置被消费。若模型恢复到这里，而 sampler 回到开头，程序可以继续运行，却会重新读取旧样本。
+
+恢复合同要说明数据游标、随机状态和已预取数据怎样处理。对于无法做到严格等价的流式数据，明确允许重复或跳过的范围，而不是用“已 resume”掩盖差异。
+
+## Checkpoint 保存什么
+
+可继续训练的状态通常包含参数、优化器、步数和学习率计划，还要考虑 RNG、数值缩放、数据位置以及模型与并行配置。代码和数据版本引用用于解释这份状态属于哪种运行。
+
+参数文件只够回答“模型现在是什么值”，不足以回答“下一次应读什么、怎样更新”。保存前按恢复目标列清单，避免到事故后才发现缺了关键状态。
+
+## 分布式 Checkpoint
+
+让单个 rank 汇总全部状态，可能造成巨大的内存峰值和写入瓶颈。分布式保存由多个参与者写各自分片，metadata 描述全局 tensor 与片段位置。
+
+若计划改变 world size 恢复，格式和恢复器必须支持重新切分。长期格式不能只留下“rank 3 的文件”而失去全局形状和归属含义。
+
+## 一致性与原子提交
+
+一次保存可先写临时对象，再确认分片与元数据满足完整性条件，最后发布提交记录。读取方只选择已经提交的版本，`latest` 也应指向可用版本。
+
+底层存储的重命名和一致性语义不同，不能假设对象存储具有本地文件系统一样的原子操作。协议必须按实际存储能力实现。
+
+### 完成标记为什么要最后写
+
+假设八个分片只完成七个，目录和多数文件都已出现。若恢复器凭目录名选最新，就会读到不完整状态。提交记录要在完整性验证后才可见，失败尝试不应覆盖已知可用的指针。
+
+校验还要覆盖预期对象集合、尺寸或校验值，以及 metadata 是否匹配。仅检查“存在八个文件”无法排除写错内容或混入旧分片。
+
+<figure class="diagram" tabindex="0" data-review-figure="infra-checkpoint-commit">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 476" role="img" aria-labelledby="infra-checkpoint-commit-title infra-checkpoint-commit-desc" style="display:block;width:100%;min-width:620px;height:auto">
+<title id="infra-checkpoint-commit-title">分片出现，不等于检查点已提交</title>
+<desc id="infra-checkpoint-commit-desc">写临时对象：8 个预期分片及其 metadata；检查完整性：只完成 7 个时，不发布新版本；发布提交记录：完整集合、尺寸或校验值全部通过；恢复只选已提交版本：新尝试失败时仍可回到旧可用点。流程为协议示意；具体原子性取决于目标存储。</desc>
+<rect width="960" height="476" fill="var(--paper,#faf8f1)"/>
+<g font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif"><text x="40" y="48" font-size="28" fill="var(--ink,#243b48)" text-anchor="start">分片出现，不等于检查点已提交</text><path d="M176 144 L176 164" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 157 L176 164 L181 157" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="88" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">写临时对象</text><text x="344" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">8 个预期分片及其 metadata</text><path d="M176 224 L176 244" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 237 L176 244 L181 237" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="168" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">检查完整性</text><text x="344" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">只完成 7 个时，不发布新版本</text><path d="M176 304 L176 324" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 317 L176 324 L181 317" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="248" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">发布提交记录</text><text x="344" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">完整集合、尺寸或校验值全部通过</text><rect x="40" y="328" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#e5ede9))" stroke="var(--forest,var(--accent,#29564c))"/><text x="56" y="363" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">恢复只选已提交版本</text><text x="344" y="363" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">新尝试失败时仍可回到旧可用点</text><path d="M40 412H920" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="40" y="448" font-size="18" fill="var(--muted,#536772)" text-anchor="start">流程为协议示意；具体原子性取决于目标存储。</text></g>
+</svg>
+<figcaption>图：流程为协议示意；具体原子性取决于目标存储。</figcaption>
+</figure>
+
+## 同步与异步保存
+
+同步方案在保存完成前暂停训练，边界清晰但会产生停顿。异步方案先形成稳定快照并完成必要 staging，再由后台写出，缩短设备等待。
+
+如果后台直接读取继续变化的参数，得到的可能不是任一真实步骤的状态。稳定快照需要额外内存、拷贝和并发控制，多个保存任务堆积时也必须有背压。
+
+## 保存频率怎么算
+
+若故障在两个保存点之间近似均匀发生，单次失败平均丢失工作约为间隔的一半。间隔变短能减少回退，却提高正常保存开销；真实决策还要加入故障率、恢复时间与任务价值。
+
+可以先测一次保存暂停和写出持续时间，再为候选间隔估计正常成本与失败损失，最后用演练修正假设。不能只复制别处的 cron 周期。
+
+## 推理也需要持久化吗
+
+在线引擎往往通过重新加载模型恢复服务，不对每条生成维护可搬迁的 GPU 检查点。长时档案处理任务可以在应用层保存输入、已完成单元和业务结果，再在失败后重试未完成部分。
+
+若要从生成中途精确续写，还涉及历史状态、采样随机性和引擎格式，复杂度明显更高。先确认业务是否确实需要这种语义。
+
+### 保存频率在正常开销与失败损失之间取舍
+
+设一次同步暂停 30 秒，间隔 30 分钟，粗略正常暂停比例约 1.67%；改为每 10 分钟保存则约 5%。在均匀失败假设下，单次平均回退从 15 分钟降到 5 分钟。这个教学比较没有加入后台写入和恢复耗时。
+
+最终应实际加载保存结果，核对步数、下一批数据和优化器状态，并执行几步验证。保存日志的成功消息只能证明某个保存路径返回，不能替代恢复验收。
+
+## 源码入口
+
+数据与保存可从 `torchtitan/components/data/`、`torchtitan/components/checkpointer/` 追起，Megatron 的分布式状态格式在 `megatron/core/dist_checkpointing/`。结合 PyTorch Distributed Checkpoint 文档，按状态声明、规划、写入和重分片顺序阅读，确认目标版本实际支持的恢复条件。

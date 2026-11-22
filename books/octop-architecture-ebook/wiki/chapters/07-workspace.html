@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 Octop v1.0.3b7 源码的架构解剖：单进程宿主、托管专家、多层存储、多副本租约与安全边界"><meta name="author" content="独立源码研究">
+<title>工作区后端：内容访问、对象存储与容器挂载边界 · Octop 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">O</span><span>Octop 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 07</div><div class="rail-title">工作区后端：内容访问、对象存储与容器挂载边界</div><ol><li><a href="#内容文件与系统运行材料两条路">内容文件与系统运行材料两条路</a></li><li><a href="#多后端适配与-v1-0-3b3-b6-的新边界">多后端适配与 v1.0.3b3~b6 的新边界</a></li><li><a href="#容器挂载的两次修正-为什么-b6-一刀切-b7-又放开了条件">容器挂载的两次修正：为什么 b6 一刀切，b7 又放开了条件</a></li><li><a href="#别把-root-dir-当成真正的操作系统沙箱">别把 root_dir 当成真正的操作系统沙箱</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 07 章</div><h1>工作区后端：内容访问、对象存储与容器挂载边界</h1><div class="chapter-meta">Octop v1.0.3b7 快照 2026-11-18 · 约 14 分钟</div></header><div class="prose"><p>把一位专家的存储从本地目录切到腾讯云 COS、AWS S3 或火山引擎 TOS 之后，如果某条业务代码还顺手写着 <code>Path(workspace_dir) / &quot;SOUL.md&quot;</code> 直接读磁盘，最坏的情况不会报错，而是静默分叉：页面显示规则已经改好了，模型跑起来读到的却还是本地残留的旧文件。</p>
+<p>Octop 在 <code>docs/agent-backend-file-io.md</code> 和 <code>AGENTS.md</code> 里把这条红线立得很硬：凡是专家工作区里的内容文件（<code>SOUL.md</code>、<code>skills/</code>、聊天上传的 <code>inbound/</code> 附件、专家生成的产出文件），读写一律走 <code>HarnessAgent.workspace</code>（即 <code>octop-harness</code> 提供的 <code>BackendWorkspace</code>），宿主业务代码禁止直接对 <code>~/.octop/agents/&lt;id&gt;/</code> 调用 <code>Path.read_text</code> 或 <code>Path.write_text</code>，也禁止在业务层按后端类型分叉拼接路径。</p>
+<h2 id="内容文件与系统运行材料两条路">内容文件与系统运行材料两条路<a class="anchor" href="#内容文件与系统运行材料两条路" aria-label="链接到本节">#</a></h2>
+<p>工作区目录里住着两类生命周期截然不同的文件：</p>
+<ul>
+<li><strong>内容文件</strong>走 <code>BackendWorkspace</code>，调用方统一传工作区相对路径（如 <code>SOUL.md</code>、<code>skills/foo/SKILL.md</code>），目录列举默认用 <code>&quot;.&quot;</code>，HTTP 路由收到前端传来的前导斜杠路径时先经 <code>workspace_api_path()</code> 归一化。用户上传聊天附件时，文件经 <code>api/common/attachments.py</code> 和 <code>api/routers/uploads.py</code> 落到 <code>{workspace}/inbound/</code>，后续聊天准备阶段只认受控的工作区路径引用，不拿浏览器临时预览 URL 当文件权威。</li>
+<li><strong>系统运行材料</strong>放在 <code>{workspace}/.octop/</code> 下（老专家的认证文件兼容 <code>{workspace}/.octop-auth</code>），包括 harness 托管的本地状态、<code>sessions/*.jsonl</code> 回退文件以及托管专家的链接清单。这个 <code>system_files_path</code> 对用户不可配置，在工作区首次初始化时自动建出。</li>
+</ul>
+<p>即使内容平面已经切到远程对象存储，本机上的 <code>workspace_dir</code> 有时仍作为系统运行锚点存在。看到磁盘上有同名文件夹，不能想当然以为里面的文件就是权威副本。</p>
+<h2 id="多后端适配与-v1-0-3b3-b6-的新边界">多后端适配与 v1.0.3b3~b6 的新边界<a class="anchor" href="#多后端适配与-v1-0-3b3-b6-的新边界" aria-label="链接到本节">#</a></h2>
+<p><code>src/octop/infra/backend/adapter.py</code> 和 <code>resolver.py</code> 把控制面里保存的存储后端配置行，翻译成 <code>octop-harness</code> 识别的 backend spec。截至 <code>v1.0.3b7</code>，Octop 支持的后端覆盖本地文件系统、<code>local_shell</code>、PostgreSQL 文件后端、S3、腾讯云 COS、<strong>火山引擎 TOS</strong>（<code>v1.0.3b3</code> 新增 <code>tos_backend.py</code>，可选依赖 <code>tos&gt;=2.9,&lt;3</code>）、Docker 沙箱、OpenSandbox（<code>v1.0.3b3</code> 补齐了文件操作桥接 <code>opensandbox_mkdir.py</code>）以及把多个后端按路径前缀拼起来的 <code>composite</code> 组合后端。</p>
+<p>这里最容易混淆的一点，是把远程文件存储和远程代码执行混为一谈。把文件存进 COS 或 TOS 解决的是持久化位置和跨副本共享，并不能隔离 shell 命令执行；而 Docker 和 OpenSandbox 才涉及容器进程、资源配额（<code>memory</code>、<code>cpus</code>、<code>pids_limit</code>、<code>allow_network</code>）和执行边界。</p>
+<p>另外从 <code>v1.0.3b6</code> 起，管理员可以在全局配置里<strong>限制创建专家时允许选择的存储后端</strong>，并且 <code>v1.0.3b3</code> 修复了创建专家时强制校验允许的存储根路径。在多副本 Kubernetes 集群里，这个开关非常实用：管理员可以直接禁掉容易随 Pod 销毁丢数据的本机临时盘，强制新建专家落在 PostgreSQL、S3/COS/TOS 或 OpenSandbox 上。</p>
+<h2 id="容器挂载的两次修正-为什么-b6-一刀切-b7-又放开了条件">容器挂载的两次修正：为什么 b6 一刀切，b7 又放开了条件<a class="anchor" href="#容器挂载的两次修正-为什么-b6-一刀切-b7-又放开了条件" aria-label="链接到本节">#</a></h2>
+<p><code>v1.0.3b6</code> 到 <code>v1.0.3b7</code> 在 Docker 专家挂载宿主机目录这件事上经历了一次极具代表性的安全取舍，值得直接翻 <code>src/octop/infra/backend/docker_spec.py</code> 细看。</p>
+<p>问题的起点很直白：如果 Octop 直接装在宿主机上（比如开发者的 Linux/macOS 机器或一台共享虚机），而 Docker 专家的配置允许传任意 <code>volumes</code> 给宿主机 Docker daemon，那普通用户只要在配置里把 <code>/</code> 或 <code>/etc</code> 挂进容器，就能借沙箱读穿整台宿主机，沙箱隔离形同虚设。因此 <code>v1.0.3b6</code> 直接把 Docker 专家的宿主机目录挂载全拦掉了。</p>
+<p>但一刀切马上伤及了另一类正当部署：用户把 Octop 自己就跑在 Docker 容器里（通过 <code>-v /host/projects:/workspace</code> 提前由运维选定了允许暴露的宿主机目录），再把 Docker socket 挂进去跑 Docker 专家。在这种场景下，如果不把 <code>volumes</code> 透传给 Docker daemon，容器里的 Docker 专家压根碰不到运维已经明确授权的那几个项目目录。</p>
+<p>于是 <code>v1.0.3b7</code> 在 <code>docker_spec.py</code> 的 <code>omit_docker_volumes()</code> 里改成了按部署环境区分：</p>
+<pre><code class="language-python">def omit_docker_volumes(spec: Any) -&gt; Any:
+    if running_in_container():
+        return spec
+    if not isinstance(spec, dict):
+        return spec
+    kind = str(spec.get(&quot;type&quot;) or &quot;&quot;).strip().lower()
+    if kind == &quot;docker&quot;:
+        if &quot;volumes&quot; not in spec:
+            return spec
+        logger.warning(&quot;ignoring docker backend volumes; host mounts are not allowed&quot;)
+        out = dict(spec)
+        out.pop(&quot;volumes&quot;, None)
+        return out
+    if kind == &quot;composite&quot;:
+        # 递归剔除 default 和 routes 下每个子后端里的 volumes
+        ...
+</code></pre>
+<p>逻辑非常干净：<code>volumes</code> 键可以原样留在存储配置里，但在真正装配给 harness 或做健康探测（<code>enrich_docker_backend_spec</code>）时，只有当 <code>running_in_container()</code> 为真（即 Octop 自身运行在 Docker/Podman 容器中，宿主机可见目录已由运维在容器编排层把关）才保留挂载；只要是裸机宿主安装，无论顶层是 <code>docker</code> 还是 <code>composite</code> 里的子路由，一律剥掉 <code>volumes</code> 并打告警日志。</p>
+<p>同时，<code>docker_spec.py</code> 还控制着后台存储浏览页面的可见性（<code>docker_spec_previewable()</code>）：非 Docker 后端默认可浏览，Docker 后端只有在 <code>sandbox_scope == &quot;fixed&quot;</code> 或显式设了 <code>previewable=True</code> 时，才允许管理员的 <code>/admin/backend</code> 树浏览其文件，而专家自己的工作区预览不受此限。</p>
+<h2 id="别把-root-dir-当成真正的操作系统沙箱">别把 root_dir 当成真正的操作系统沙箱<a class="anchor" href="#别把-root-dir-当成真正的操作系统沙箱" aria-label="链接到本节">#</a></h2>
+<p>最后看一眼 <code>src/octop/infra/utils/host_dirs.py</code> 里一个极诚实的判断函数 <code>host_jail_enforced()</code>：</p>
+<pre><code class="language-python">def host_jail_enforced() -&gt; bool:
+    if os.name != &quot;posix&quot;:
+        return False
+    return _bwrap_on_path()
+</code></pre>
+<p>这段注释说得非常透彻：只有在 Linux 且系统 <code>PATH</code> 里存在 <code>bwrap</code>（bubblewrap）时，非根目录的 <code>root_dir</code> 才具备真正的操作系统级隔离。在 Windows、macOS 或没装 <code>bwrap</code> 的 Linux 上，配置一个受限的 <code>root_dir</code> 只能约束 Agent 自身文件工具的路径参数（同时 POSIX 下拒绝 <code>/proc</code>、<code>/sys</code>、<code>/dev</code>、<code>/etc</code>、<code>/root</code> 等敏感前缀），但子进程依然跑在 Octop 服务用户的真实操作系统权限下，UI 绝不能把它包装成安全沙箱。分清路径参数检查和内核级沙箱的差别，才不会在安全评审时给团队留下虚假安全感。</p>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/agent-backend-file-io.md"><code>docs/agent-backend-file-io.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/backend/adapter.py"><code>src/octop/infra/backend/adapter.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/backend/resolver.py"><code>src/octop/infra/backend/resolver.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/backend/docker_spec.py"><code>src/octop/infra/backend/docker_spec.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/backend/tos_backend.py"><code>src/octop/infra/backend/tos_backend.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/utils/host_dirs.py"><code>src/octop/infra/utils/host_dirs.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/api/routers/chat/turn.py"><code>src/octop/api/routers/chat/turn.py</code></a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="06-storage.html"><small>上一章</small><strong>存储与历史：六类数据平面、下线归档与安全清理</strong></a><a class="next" href="08-turn-path.html"><small>下一章</small><strong>一次对话：从 WebSocket 入队到工具熔断与推送</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：看懂一个 Agent 宿主如何拼起来</a><a href="../chapters/01-requirements.html"><span>01</span>需求推导：脱离模型 SDK 之后要守住什么</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：单进程宿主与四套可复用运行库</a><a href="../chapters/03-lifecycle.html"><span>03</span>启动与退出：装配顺序、延迟绑库与有序收尾</a><a href="../chapters/04-agent-runtime.html"><span>04</span>Agent 装配：原生专家、托管专家与中间件顺序</a><a href="../chapters/05-identity.html"><span>05</span>身份与会话：四种标识与共享专家的线程隔离</a><a href="../chapters/06-storage.html"><span>06</span>存储与历史：六类数据平面、下线归档与安全清理</a><a href="../chapters/07-workspace.html"><span>07</span>工作区后端：内容访问、对象存储与容器挂载边界</a><a href="../chapters/08-turn-path.html"><span>08</span>一次对话：从 WebSocket 入队到工具熔断与推送</a><a href="../chapters/09-memory-rag.html"><span>09</span>记忆与知识库：命名空间维护、图谱扩展与重排序</a><a href="../chapters/10-extensions.html"><span>10</span>工具与扩展：Skill、Plugin、Connector 与 MCP OAuth</a><a href="../chapters/11-teams.html"><span>11</span>多 Agent 团队：共享展示时间线，隔离执行状态</a><a href="../chapters/12-security.html"><span>12</span>安全边界：MFA、权限分离、审批串行与云凭证隔离</a><a href="../chapters/13-dashboard.html"><span>13</span>前端状态机：离线订阅、五道恢复门与历史竞态</a><a href="../chapters/14-interop.html"><span>14</span>跨端协作：托管 ACP 回环与 Bridge 实例隧道</a><a href="../chapters/15-operations.html"><span>15</span>部署与运维：Electron 壳、镜像分层与多副本租约</a><a href="../chapters/16-tradeoffs.html"><span>16</span>架构取舍：单机够用到何时，复杂度卡在哪里</a><a href="../chapters/17-mini-host.html"><span>17</span>代码实战：用两百行标准库模型验证六条边界</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.0.3b7 源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Octop v1.0.3b7 · 快照 ecd2cdbce3a5 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

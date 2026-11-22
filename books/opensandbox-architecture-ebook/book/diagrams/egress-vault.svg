@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="860" viewBox="0 0 1100 860" role="img" aria-labelledby="ev-title ev-desc">
+<title id="ev-title">出向网络两层执行、Credential Vault Exchange 与 Subject 状态机</title>
+<desc id="ev-desc">展示 DNS 代理、nftables 包过滤、平台规则优先级、Vault Exchange 动态凭据解析及 Fast Sandbox subject 状态机。</desc>
+<style>text{font-family:"Noto Sans CJK SC",system-ui,sans-serif;fill:#252820}.name{font-size:20px;font-weight:650}.label{font-size:16px;fill:#29564c;font-weight:500}.sub{font-size:15px;fill:#586354}.warn{font-size:15px;fill:#8c4a1c;font-weight:550}.node{fill:#faf7ef;stroke:#a5ad9e;stroke-width:1.4}.active{fill:#edf2e9;stroke:#29564c;stroke-width:2}.amber{fill:#f9f1e4;stroke:#b86b2a;stroke-width:1.6}.edge{fill:none;stroke:#29564c;stroke-width:1.6}.return{fill:none;stroke:#72846b;stroke-width:1.5;stroke-dasharray:6 5}.warnwire{fill:none;stroke:#b86b2a;stroke-width:1.6;stroke-dasharray:5 4}</style>
+<defs>
+<marker id="ev-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 1 L9 5 L0 9" fill="#29564c"/></marker>
+<marker id="ev-warn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 1 L9 5 L0 9" fill="#b86b2a"/></marker>
+</defs>
+<rect width="1100" height="860" fill="#faf7ef"/>
+<text x="40" y="36" class="sub">出向安全三层：DNS 过滤 → nftables 包级默认拒绝 → 可选透明 MITM 与动态 Vault Exchange</text>
+
+<!-- Row 1: Sandbox -> DNS & nftables -> MITM -> External -->
+<path class="edge" d="M220 156 H286" marker-end="url(#ev-arrow)"/>
+<text x="253" y="140" class="label" text-anchor="middle">出向包</text>
+
+<path class="edge" d="M550 156 H616" marker-end="url(#ev-arrow)"/>
+<text x="583" y="140" class="label" text-anchor="middle">80/443</text>
+
+<path class="edge" d="M870 156 H926" marker-end="url(#ev-arrow)"/>
+<text x="898" y="140" class="label" text-anchor="middle">已认证</text>
+
+<!-- Vault Exchange connection -->
+<path class="edge" d="M745 240 V318" marker-end="url(#ev-arrow)"/>
+<text x="760" y="286" class="label">UDS / 受信 HTTPS 动态换取</text>
+
+<!-- Platform rules connection -->
+<path class="return" d="M418 318 V240" marker-end="url(#ev-arrow)"/>
+<text x="434" y="286" class="sub">优先级压制用户策略</text>
+
+<g data-box="1" id="ev-sbx"><rect class="node" x="40" y="88" width="180" height="148" rx="6"/>
+<text x="130" y="124" class="name" text-anchor="middle">沙箱工作负载</text>
+<text x="130" y="156" class="sub" text-anchor="middle">无 NET_ADMIN 权限</text>
+<text x="130" y="184" class="sub" text-anchor="middle">仅持假密钥/占位符</text>
+<text x="130" y="212" class="sub" text-anchor="middle">不接触真实凭据</text></g>
+
+<g data-box="1" id="ev-l12"><rect class="active" x="290" y="88" width="260" height="148" rx="6"/>
+<text x="420" y="124" class="name" text-anchor="middle">DNS 代理 + nftables</text>
+<text x="420" y="156" class="sub" text-anchor="middle">尾点归一化（pypi.org.）</text>
+<text x="420" y="184" class="sub" text-anchor="middle">DNS 学得 IP 带有限租约</text>
+<text x="420" y="212" class="sub" text-anchor="middle">默认丢弃未标记出向包</text></g>
+
+<g data-box="1" id="ev-mitm"><rect class="active" x="620" y="88" width="250" height="148" rx="6"/>
+<text x="745" y="124" class="name" text-anchor="middle">透明 MITM 代理</text>
+<text x="745" y="156" class="sub" text-anchor="middle">仅在绑定匹配时注入</text>
+<text x="745" y="184" class="sub" text-anchor="middle">路径歧义守卫（403/断开）</text>
+<text x="745" y="212" class="sub" text-anchor="middle">异常一律 fail-closed</text></g>
+
+<g data-box="1" id="ev-ext"><rect class="node" x="930" y="88" width="130" height="148" rx="6"/>
+<text x="995" y="146" class="name" text-anchor="middle">上游服务</text>
+<text x="995" y="178" class="sub" text-anchor="middle">模型 API</text>
+<text x="995" y="204" class="sub" text-anchor="middle">制品库</text></g>
+
+<!-- Row 2: Platform Rules + Vault Exchange -->
+<g data-box="1" id="ev-rules"><rect class="node" x="40" y="322" width="520" height="150" rx="6"/>
+<text x="60" y="354" class="name">规则求值顺序与平台覆写</text>
+<text x="60" y="384" class="label">1. deny.always → 2. allow.always → 3. ports.cap</text>
+<text x="60" y="414" class="sub">4. 用户 networkPolicy（首条命中） → 5. defaultAction</text>
+<text x="60" y="444" class="sub">每分钟热重载，校验失败保留旧规则；FSB 支持 TCP 端口规则</text></g>
+
+<g data-box="1" id="ev-vault"><rect class="amber" x="590" y="322" width="470" height="150" rx="6"/>
+<text x="610" y="354" class="name">Credential Vault Exchange（OSEP-0025）</text>
+<text x="610" y="384" class="sub">· 按请求实时解析动态凭据，Vault 不落盘、不缓存明文</text>
+<text x="610" y="414" class="sub">· 透传出向头给解析器（≤64 头、单值 ≤8 KiB，超限 407）</text>
+<text x="610" y="444" class="warn">· 支持 SigV4 / ACS 重签；调用方 Ed25519 鉴权仍待实现</text></g>
+
+<!-- Row 3: Fast Sandbox Subject State Machine -->
+<rect x="40" y="504" width="1020" height="232" rx="8" fill="#f5f1e6" stroke="#d9d2c3" stroke-width="1.2"/>
+<text x="64" y="538" class="name">Fast Sandbox 共享 Egress · Subject 状态机与实验性 Credential-Bound 排水围栏</text>
+<text x="64" y="564" class="sub">每 Fastlet 一个共享 egress 进程，按 attachment 源 IP 分发，策略可以迟到但绝不提前放行</text>
+
+<path class="edge" d="M224 632 H330" marker-end="url(#ev-arrow)"/>
+<text x="277" y="616" class="label" text-anchor="middle">SET_BINDING</text>
+
+<path class="edge" d="M526 632 H706" marker-end="url(#ev-arrow)"/>
+<text x="616" y="616" class="label" text-anchor="middle">data-plane-ready</text>
+<text x="616" y="656" class="sub" text-anchor="middle">Hook 等 ≤50 ms 确认</text>
+
+<path class="warnwire" d="M865 676 V706 H144 V676" marker-end="url(#ev-warn)"/>
+<text x="504" y="698" class="warn" text-anchor="middle">REMOVE_BINDING / Unload / Suspend：排水围栏 + 拆连接（未确认前禁止复用源 IP）</text>
+
+<g data-box="1" id="sub-abs"><rect class="node" x="64" y="592" width="160" height="80" rx="6"/>
+<text x="144" y="626" class="name" text-anchor="middle">absent</text>
+<text x="144" y="652" class="sub" text-anchor="middle">槽位未注册</text></g>
+
+<g data-box="1" id="sub-den"><rect class="amber" x="334" y="592" width="192" height="80" rx="6"/>
+<text x="430" y="626" class="name" text-anchor="middle">denying</text>
+<text x="430" y="652" class="warn" text-anchor="middle">deny-first 阻断出向</text></g>
+
+<g data-box="1" id="sub-act"><rect class="active" x="710" y="592" width="310" height="80" rx="6"/>
+<text x="865" y="626" class="name" text-anchor="middle">active</text>
+<text x="865" y="652" class="sub" text-anchor="middle">不可变 dispatch 快照 · 禁 HTTP/2</text></g>
+
+<line x1="40" y1="770" x2="1060" y2="770" stroke="#d9d2c3"/>
+<text x="40" y="802" class="sub">注：credential-bound 拦截模式（OSEP-0023）当前仍为实验开关（默认 all），不可直接用于生产。</text>
+<text x="40" y="832" class="sub">源码入口：components/egress/pkg/policy/、fastsandbox_actions.go、oseps/0023、oseps/0025</text>
+</svg>

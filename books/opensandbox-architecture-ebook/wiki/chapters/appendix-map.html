@@ -1,0 +1,325 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>附录 A：源码阅读地图 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="appendix-map"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#三条阅读路线">三条阅读路线</a></li><li><a href="#按职责划分的核心入口">按职责划分的核心入口</a></li><li><a href="#文档与契约目录">文档与契约目录</a></li></ol></details><article class="content"><h1 id="附录-a-源码阅读地图">附录 A：源码阅读地图</h1><p>以下路径与行数均核对于 <code>opensandbox-group/OpenSandbox</code> 的 <code>release-1.3.0-rc.2</code> 提交 <code>45043e7f0df258b6b76ef6753dd9b1819d59a332</code>（2026-11-19）。</p>
+<h2 id="三条阅读路线">三条阅读路线</h2><p><strong>路线一，快速跑通调用方视角</strong>，依次浏览 <code>README.md</code>、<code>docs/getting-started/index.md</code>、<code>docs/getting-started/configuration.md</code>、<code>docs/api/index.md</code>、目标语言 SDK 的 README 与 <code>cli/README.md</code>，弄清创建参数、endpoint 携带请求头、快照模式和命令 SSE 解析方式。</p>
+<p><strong>路线二，评估或自建执行层</strong>，先通读 <code>docs/architecture/index.md</code>、控制面 <code>server.md</code> / <code>operator.md</code>、数据面 <code>execd.md</code> / <code>node-agent.md</code>、网络 <code>ingress.md</code> / <code>egress.md</code>、<code>docs/api/implementation-compatibility.md</code> 与 <code>ROADMAP.md</code>，再按目标拓扑细读 <code>single-host-network.md</code> 或 <code>docs/architecture/fast-sandbox/*</code>。</p>
+<p><strong>路线三，动手改源码或接新后端</strong>，顺着每章末尾的源码入口和下方按职责切分的路径表深入对应包目录。</p>
+<h2 id="按职责划分的核心入口">按职责划分的核心入口</h2><h3 id="控制面-python-server">控制面（Python，<code>server/</code>）</h3><table>
+<thead>
+<tr>
+<th>路径</th>
+<th align="right">行数</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>server/opensandbox_server/main.py</code></td>
+<td align="right">367</td>
+<td>lifespan 启动断言、中间件与路由挂载</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/startup_guard.py</code></td>
+<td align="right">117</td>
+<td>无 API key 时的确认守卫</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/config.py</code></td>
+<td align="right">~1300</td>
+<td>全局配置模型与默认开启的 <code>runtime.execd_run_as_init</code></td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/api/lifecycle.py</code></td>
+<td align="right">547</td>
+<td>生命周期与快照路由及校验顺序</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/api/diagnostics.py</code></td>
+<td align="right">112</td>
+<td>必填 <code>scope</code> 的日志、事件与上下文路由（取代已删 <code>devops.py</code>）</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/api/pool.py</code></td>
+<td align="right">279</td>
+<td>池管理路由、<code>WorkloadProvider</code> 懒装配与 <code>501</code> 拒绝</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/api/proxy.py</code></td>
+<td align="right">844</td>
+<td>维护模式控制面代理、<code>Location</code> 重写与 WebSocket</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/api/schema.py</code></td>
+<td align="right">2054</td>
+<td>OpenAPI 契约的 Pydantic 落地（含 <code>Snapshot.mode</code>）</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/sandbox_service.py</code></td>
+<td align="right">345</td>
+<td>跨运行时抽象接口与共用元数据校验</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/factory.py</code></td>
+<td align="right">66</td>
+<td><code>runtime.type</code> 到服务实现的装配</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/composite_service.py</code></td>
+<td align="right">184</td>
+<td><code>fsb-</code> 前缀分发与快照后端分流</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/validators.py</code></td>
+<td align="right">673</td>
+<td>请求侧集中校验与 <code>subPath</code> 防遍历</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/snapshot_service.py</code></td>
+<td align="right">999</td>
+<td>公开快照状态机、<code>mode</code> 持久化与恢复扫描</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/repositories/</code></td>
+<td align="right">多文件</td>
+<td>SQLite 与 PostgreSQL 两套目录存储</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/tenants/</code></td>
+<td align="right">多文件</td>
+<td>file / http 租户提供方与异常 TTL 回退</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/integrations/idle_pause/</code></td>
+<td align="right">多文件</td>
+<td>空闲暂停扫描、分布式锁与执行</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/integrations/renew_intent/</code></td>
+<td align="right">多文件</td>
+<td>访问续期意图产生与消费</td>
+</tr>
+</tbody></table>
+<h3 id="docker-后端">Docker 后端</h3><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>server/opensandbox_server/services/docker/docker_service.py</code></td>
+<td>生命周期主流程与 <code>_sandbox_lifecycle_lock</code> 续期锁</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/docker/container_ops.py</code></td>
+<td><code>execd</code> 暂存、<code>EXECD_INIT=1</code> 注入与磁盘/PID 限额</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/docker/networking.py</code></td>
+<td>网络模式、<code>publish_host</code> 与 sidecar 绑定</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/docker/port_allocator.py</code></td>
+<td>宿主端口分配与回收</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/docker/metadata.py</code></td>
+<td><code>opensandbox.io/</code> 保留标签校验</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/docker/snapshot_runtime.py</code></td>
+<td>本地 <code>docker commit</code> 与暂停态快照</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/docker/windows_profile.py</code></td>
+<td>Windows 容器行为特化</td>
+</tr>
+</tbody></table>
+<h3 id="kubernetes-后端与控制器">Kubernetes 后端与控制器</h3><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>server/opensandbox_server/services/k8s/workload_provider.py</code></td>
+<td><code>WorkloadProvider</code> SPI 与池服务扩展点（446 行）</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/k8s/batchsandbox_provider.py</code></td>
+<td><code>Completed -&gt; SANDBOX_COMPLETED</code> 映射与 pause/resume 校验（1217 行）</td>
+</tr>
+<tr>
+<td><code>kubernetes/apis/sandbox/v1alpha1/batchsandbox_types.go</code></td>
+<td><code>BatchSandbox</code> 规格、状态与 <code>Completed</code> 终态</td>
+</tr>
+<tr>
+<td><code>kubernetes/apis/sandbox/v1alpha1/pool_types.go</code></td>
+<td>两级容量规格与回收策略</td>
+</tr>
+<tr>
+<td><code>kubernetes/apis/sandbox/v1alpha1/sandboxsnapshot_types.go</code></td>
+<td>内部与公开快照 CRD</td>
+</tr>
+<tr>
+<td><code>kubernetes/internal/controller/batchsandbox_controller.go</code></td>
+<td>Pod 扩缩、任务调度、<code>resourceVersion</code> 状态更新与过期清理</td>
+</tr>
+<tr>
+<td><code>kubernetes/internal/controller/pool_controller.go</code></td>
+<td>暖缓冲收敛、分配注解与模板滚动</td>
+</tr>
+<tr>
+<td><code>kubernetes/internal/controller/sandboxsnapshot_controller.go</code></td>
+<td>commit Job 与镜像 digest 验收</td>
+</tr>
+</tbody></table>
+<h3 id="fast-sandbox-适配">Fast Sandbox 适配</h3><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>server/opensandbox_server/services/fast_sandbox/service.py</code></td>
+<td>模板沙箱创建、暂停/恢复与签名端点</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/fast_sandbox/snapshot_runtime.py</code></td>
+<td>FastPath <code>full</code>/<code>rootfsOnly</code> 提交与 watch 收敛（497 行）</td>
+</tr>
+<tr>
+<td><code>manifests/charts/fast-sandbox/values.yaml</code></td>
+<td><code>fastpathHTTPPort</code>、<code>fastletProxy.resources</code> 与镜像版本</td>
+</tr>
+<tr>
+<td><code>docs/architecture/fast-sandbox/</code></td>
+<td>架构、调度、网络、检查点、存储、Firecracker 与性能说明</td>
+</tr>
+</tbody></table>
+<h3 id="数据面-go-components-execd">数据面（Go，<code>components/execd/</code>）</h3><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>components/execd/pkg/runtime/initmode_linux.go</code></td>
+<td>OSEP-0018 单一 <code>waitid</code> reaper、信号转发与 PID 1 退出（801 行）</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/runtime/hardening_linux.go</code></td>
+<td><code>opensandbox-launcher</code> 降权链与能力探测（685 行）</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/runtime/output_limits.go</code></td>
+<td>16 MiB UTF-8 边界行切分</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/web/controller/command.go</code></td>
+<td>前台 SSE、<code>CommandTimeout</code> 与后台日志</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/web/controller/filesystem_upload.go</code></td>
+<td>同目录暂存与原子 <code>rename</code></td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/web/controller/pty_ws.go</code></td>
+<td>PTY 持有者/观看者模型与子协议鉴权</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/telemetry/init.go</code></td>
+<td>OTLP CPU/内存/磁盘指标导出与 2 秒挂载超时</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/isolation/</code></td>
+<td>bubblewrap 隔离会话</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/binding/</code></td>
+<td>池化复用时的 per-allocation 原子绑定</td>
+</tr>
+</tbody></table>
+<h3 id="网络-观测与实验性兼容层">网络、观测与实验性兼容层</h3><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>components/ingress/pkg/proxy/header.go</code></td>
+<td>路由头、续期头、<code>skip</code> 哨兵与逐跳头清单</td>
+</tr>
+<tr>
+<td><code>components/ingress/pkg/proxy/connectivity/tracker.go</code></td>
+<td>上游连接分类与 <code>network-readiness</code> 影子信号</td>
+</tr>
+<tr>
+<td><code>components/egress/pkg/policy/policy.go</code></td>
+<td>规则模型、端口范围与尾点域名归一化</td>
+</tr>
+<tr>
+<td><code>components/egress/pkg/policy/always_rules.go</code></td>
+<td>平台 <code>deny.always</code>/<code>allow.always</code> 与端口地板</td>
+</tr>
+<tr>
+<td><code>components/egress/pkg/credentialvault/</code></td>
+<td>Vault 存储、Exchange 解析与脱敏</td>
+</tr>
+<tr>
+<td><code>components/egress/mitmscripts/</code></td>
+<td>请求改写、64 头透传上限与路径歧义守卫</td>
+</tr>
+<tr>
+<td><code>components/egress/fastsandbox_actions.go</code></td>
+<td>Fast Sandbox subject 状态机、<code>data-plane-ready</code> 与排水围栏</td>
+</tr>
+<tr>
+<td><code>components/nodeagent/pkg/marker/</code></td>
+<td>三态 <code>finalized</code> 完整性标记</td>
+</tr>
+<tr>
+<td><code>components/nodeagent/pkg/pipeline/</code></td>
+<td>有界队列、背压与 <code>vm-console</code> / 日志投递</td>
+</tr>
+<tr>
+<td><code>components/e2b-shim/</code></td>
+<td>OSEP-0027 实验性 E2B 兼容骨架（仅配置与探针，暂无业务路由）</td>
+</tr>
+</tbody></table>
+<h2 id="文档与契约目录">文档与契约目录</h2><table>
+<thead>
+<tr>
+<th>目录</th>
+<th>当前规模（v1.3.0-rc.2）</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>specs/</code></td>
+<td>4 份 OpenAPI 契约</td>
+<td>生命周期（124 KB）、execd（119 KB）、egress（29 KB）、诊断（16 KB）</td>
+</tr>
+<tr>
+<td><code>docs/architecture/</code></td>
+<td>分层架构说明</td>
+<td>control-plane、data-plane、network、fast-sandbox</td>
+</tr>
+<tr>
+<td><code>docs/guides/</code></td>
+<td>25 篇运维指南</td>
+<td>含新增 <code>privilege-reduction.md</code>、<code>network-security.md</code> 等</td>
+</tr>
+<tr>
+<td><code>oseps/</code></td>
+<td>28 份设计提案</td>
+<td>覆盖 <code>0001</code> 至 <code>0028</code>（详见附录 B）</td>
+</tr>
+<tr>
+<td><code>sdks/</code> 与 <code>cli/</code></td>
+<td>5 语言 SDK + MCP + <code>osb</code> CLI</td>
+<td>均与 <code>specs/</code> 契约保持同步</td>
+</tr>
+</tbody></table>
+</article><nav class="pager" aria-label="篇章导航"><a href="19-wrap-up.html"><small>上一篇</small>完结篇：跟着一次请求走完全书</a><a href="appendix-sources.html"><small>下一篇</small>附录 B：来源、版本与事实边界</a></nav></main><script src="../assets/wiki.js"></script></body></html>

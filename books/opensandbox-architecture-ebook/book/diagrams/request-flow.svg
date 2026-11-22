@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="980" viewBox="0 0 1080 980" role="img" aria-labelledby="request-flow-title request-flow-desc"><title id="request-flow-title">BatchSandbox 池化：创建到执行的成功路径</title><desc id="request-flow-desc">控制面创建资源，控制器分配暖 Pod，客户端解析 endpoint 后直接调用 execd。</desc><style>text{font-family:"Noto Sans CJK SC",system-ui,sans-serif;fill:#252820}.name{font-size:21px;font-weight:650}.label{font-size:17px;fill:#29564c}.sub{font-size:17px;fill:#586354}.node{fill:#faf7ef;stroke:#a5ad9e;stroke-width:1.4}.active{fill:#edf2e9;stroke:#29564c;stroke-width:2}.edge{fill:none;stroke:#29564c;stroke-width:1.6}.return{fill:none;stroke:#72846b;stroke-width:1.5;stroke-dasharray:6 5}</style><defs><marker id="request-flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 1 L9 5 L0 9" fill="#29564c"/></marker></defs><rect width="1080" height="980" fill="#faf7ef"/>
+<text x="40" y="32" class="sub" text-anchor="start">池化成功路径 · 资源 watch、任务执行器下发作逻辑归并</text>
+<line x1="140" y1="124" x2="140" y2="864" stroke="#b8bfae" stroke-dasharray="5 5"/>
+<line x1="400" y1="124" x2="400" y2="864" stroke="#b8bfae" stroke-dasharray="5 5"/>
+<line x1="660" y1="124" x2="660" y2="864" stroke="#b8bfae" stroke-dasharray="5 5"/>
+<line x1="920" y1="124" x2="920" y2="864" stroke="#b8bfae" stroke-dasharray="5 5"/>
+<path class="edge" d="M140 180 H400" marker-end="url(#request-flow-arrow)"/>
+<text x="270.0" y="164" class="label" text-anchor="middle">POST /v1/sandboxes</text>
+<path class="edge" d="M400 260 H660" marker-end="url(#request-flow-arrow)"/>
+<text x="530.0" y="244" class="label" text-anchor="middle">创建资源 → 触发 reconcile</text>
+<path class="edge" d="M660 340 H920" marker-end="url(#request-flow-arrow)"/>
+<text x="790.0" y="324" class="label" text-anchor="middle">分配暖 Pod / 下发绑定</text>
+<path class="return" d="M660 420 H400" marker-end="url(#request-flow-arrow)"/>
+<text x="530.0" y="404" class="label" text-anchor="middle">工作负载状态（watch）</text>
+<path class="return" d="M400 500 H140" marker-end="url(#request-flow-arrow)"/>
+<text x="270.0" y="484" class="label" text-anchor="middle">创建响应：已分配</text>
+<path class="edge" d="M140 580 H400" marker-end="url(#request-flow-arrow)"/>
+<text x="270.0" y="564" class="label" text-anchor="middle">GET /endpoints/44772</text>
+<path class="return" d="M400 660 H140" marker-end="url(#request-flow-arrow)"/>
+<text x="270.0" y="644" class="label" text-anchor="middle">可达地址 + 必需请求头</text>
+<path class="edge" d="M140 740 H920" marker-end="url(#request-flow-arrow)"/>
+<text x="530.0" y="724" class="label" text-anchor="middle">健康检查后 POST /command</text>
+<path class="return" d="M920 820 H140" marker-end="url(#request-flow-arrow)"/>
+<text x="530.0" y="804" class="label" text-anchor="middle">SSE：输出与终止事件</text>
+<g data-box="1" id="q-0"><rect class="node" x="40" y="60" width="200" height="64" rx="6"/>
+<text x="140.0" y="92" class="name" text-anchor="middle">客户端</text>
+</g>
+<g data-box="1" id="q-1"><rect class="active" x="300" y="60" width="200" height="64" rx="6"/>
+<text x="400.0" y="92" class="name" text-anchor="middle">生命周期服务器</text>
+</g>
+<g data-box="1" id="q-2"><rect class="node" x="560" y="60" width="200" height="64" rx="6"/>
+<text x="660.0" y="92" class="name" text-anchor="middle">K8s 控制器</text>
+</g>
+<g data-box="1" id="q-3"><rect class="node" x="820" y="60" width="200" height="64" rx="6"/>
+<text x="920.0" y="92" class="name" text-anchor="middle">execd</text>
+</g>
+<text x="140" y="148" class="sub" text-anchor="middle">请求方</text>
+<text x="400" y="148" class="sub" text-anchor="middle">控制面</text>
+<text x="660" y="148" class="sub" text-anchor="middle">资源收敛</text>
+<text x="920" y="148" class="sub" text-anchor="middle">数据面</text>
+<line x1="40" y1="890" x2="1040" y2="890" stroke="#d9d2c3"/>
+<text x="40" y="922" class="sub" text-anchor="start">Pool 模板预置网络控制；创建响应不保证应用就绪，执行前必须健康检查。</text>
+<text x="40" y="954" class="sub" text-anchor="start">容量耗尽的请求：有界等待 → 429 → 本次流程结束，不进入后续成功路径。</text>
+</svg>

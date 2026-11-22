@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从时间总线、分支路由、rutis 跨语言数据面到权限与压缩重放，源码级解剖 arcships/dim Agent v4 架构"><meta name="author" content="独立源码研究">
+<title>在会话里给自己写插件与热重载自演化 · Dim 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">D</span><span>Dim 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 07</div><div class="rail-title">在会话里给自己写插件与热重载自演化</div><ol><li><a href="#plugin-authoring-技能-把装配规矩装进目录">plugin-authoring 技能：把装配规矩装进目录</a></li><li><a href="#从写代码到热重载的完整链路">从写代码到热重载的完整链路</a></li><li><a href="#一个真实的源码观察-alpha-期的文档版本漂移">一个真实的源码观察：Alpha 期的文档版本漂移</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 07 章</div><h1>在会话里给自己写插件与热重载自演化</h1><div class="chapter-meta">arcships/dim v0.1.0-alpha.27 · 快照 2026-11-22 · 约 14 分钟</div></header><div class="prose"><p>普通编码 Agent 碰到缺工具的场景，常见做法是让模型临时写一段一次性 Python 或 Bash 脚本跑完就扔。下次再遇到同类任务，它还得重新拼命令行、重新处理边界条件，也没法把这块能力沉淀成带结构化参数校验、独立用户配置项和明确风险等级的一等工具。</p>
+<p>Dim 给出的路径完全不同：因为运行时本身就是插件化的，而且内置了 Node 运行时（<code>runtime/runtimes.json</code> 固定 Node <code>24.21.0</code>、Python <code>3.12.15</code> 和 <code>uv 0.13.7</code>，按需下载），用户可以在一个有写权限的会话里，直接让 Dim 给自己写一个 TypeScript 插件，当场用 <code>plugin</code> 工具装进正在运行的守护进程，下一轮模型请求就能直接调用这个新工具，发现 Bug 改完代码原地热重载，全程不需要重启守护进程，也不会丢掉当前会话的上下文。</p>
+<h2 id="plugin-authoring-技能-把装配规矩装进目录"><code>plugin-authoring</code> 技能：把装配规矩装进目录<a class="anchor" href="#plugin-authoring-技能-把装配规矩装进目录" aria-label="链接到本节">#</a></h2>
+<p>仓库内置的三个默认或可选插件包位于 <code>runtime/plugins/</code>，<code>runtime/default-plugins.json</code> 默认启用了其中的 <code>plugin-authoring</code>：</p>
+<pre><code class="language-json">{
+  &quot;plugins&quot;: {
+    &quot;plugin-authoring&quot;: &quot;plugins/plugin-authoring&quot;
+  },
+  &quot;optional&quot;: {
+    &quot;light-ocr&quot;: &quot;plugins/light-ocr&quot;
+  },
+  &quot;locked&quot;: [&quot;PluginManager&quot;, &quot;Rpc&quot;, &quot;Transport&quot;]
+}
+</code></pre>
+<p>这里有两处值得细看的设计。一是 <code>locked</code> 列表把 <code>PluginManager</code>、<code>Rpc</code>、<code>Transport</code> 锁成不可被插件管理操作卸载或禁用的核心行，防止模型或误操作把自己和外部的通信链路拆掉。二是 <code>plugin-authoring</code> 本身并不是一段代码，它的 <code>dim-plugin.json</code> 只声明了 <code>&quot;skills&quot;: &quot;skills&quot;</code>，向 <code>SkillsCatalog</code> 贡献了一份教模型怎么写 Dim 插件的技能文档 <code>runtime/plugins/plugin-authoring/skills/plugin-authoring/SKILL.md</code>。</p>
+<p>按这份技能文档，一个最小可运行的 TypeScript 插件目录只需要四个东西，而且<strong>不需要任何编译打包步骤</strong>（Node 24 运行时直接加载 <code>index.ts</code>）：</p>
+<pre><code class="language-text">echo-plugin/
+  dim-plugin.json    # 清单：name、description、code.entry、code.inject
+  index.ts           # 入口模块：直接加载 TypeScript，无需 tsc 构建
+  package.json       # 锁定 @arcships/rutis 版本
+  node_modules/      # 执行 npm install 生成的依赖
+</code></pre>
+<p>代码结构完美复用上一章讲过的“单进程行 + <code>partRegistry</code> 登记多作用域部件”模式：</p>
+<ol>
+<li><code>dim-plugin.json</code> 里声明 <code>&quot;code&quot;: { &quot;entry&quot;: &quot;index.ts&quot;, &quot;inject&quot;: [&quot;partRegistry&quot;, &quot;settings&quot;] }</code>。这里有一条由 <code>rutis 0.23.0</code>（ADR 025 D4）强制校验的规则：入口默认导出实际读取的每一个必填服务，都必须列在 <code>code.inject</code> 中，且外部插件自身的 <code>inject</code> 必须等于或是该列表的子集。</li>
+<li>入口 <code>default</code> 导出在进程作用域执行一次 <code>apply</code>：先向 <code>settings</code> 数据面注册自己的业务配置源（带 JSON Schema、默认值和 <code>userOnly</code> 列表），再向 <code>partRegistry.registerDefinition(&#39;session&#39;, &#39;EchoTools&#39;, tools)</code> 注册 Session 级部件定义。</li>
+<li>Session 部件 <code>tools</code> 注入 <code>[&#39;toolRegistry&#39;, &#39;settings&#39;]</code>，在每个活跃会话（包括<strong>当前正在写这个插件的会话本身</strong>）挂载时，向该会话的 <code>toolRegistry</code> 注册新工具，声明名称（1 到 64 位字母数字及 <code>_</code>/<code>-</code>）、JSON Schema 和必填的 <code>risk</code> 风险等级（<code>read_filesystem</code>、<code>write_filesystem</code>、<code>execute_process</code>、<code>network</code> 或 <code>session</code>）。</li>
+<li>工具处理器收到 <code>call.arguments</code> 后自行校验参数，实时从 <code>settings.read</code> 读取最新业务配置，返回 <code>{ content: string, isError?: boolean }</code>。其中 <code>content</code> 是模型唯一能读到的文本。</li>
+</ol>
+<h2 id="从写代码到热重载的完整链路">从写代码到热重载的完整链路<a class="anchor" href="#从写代码到热重载的完整链路" aria-label="链接到本节">#</a></h2>
+<p>当模型在会话里写好这几个文件并跑完 <code>npm install</code> 后，接下来的自演化动作全靠宿主提供的 <code>plugin</code> 工具完成：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>步骤</th>
+<th><code>plugin</code> 工具子命令</th>
+<th>守护进程内部发生的事</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1. 安装</td>
+<td><code>install &lt;dir&gt;</code></td>
+<td><code>PluginManager</code> 校验清单与依赖，经 <code>rutis/loader</code> 创建新进程行并等待就绪；返回 <code>running</code>、<code>failed</code>（附带错误详情）或 <code>pending</code>（附带 <code>waitingFor</code> 缺失依赖名）</td>
+</tr>
+<tr>
+<td>2. 活体挂载</td>
+<td>无需重启</td>
+<td>进程行 <code>apply</code> 调用 <code>partRegistry.registerDefinition</code> 后，当前打开会话里的 optional mounter 监听到登记表变化，立刻把 <code>EchoTools</code> 挂进本会话并注册工具到 <code>toolRegistry</code></td>
+</tr>
+<tr>
+<td>3. 下一轮即用</td>
+<td>模型下一次请求</td>
+<td><code>ToolBinding</code> 在下一次模型请求装配时读到新工具声明，模型立刻可以调用 <code>echo</code> 测试</td>
+</tr>
+<tr>
+<td>4. 改错与重载</td>
+<td><code>reload &lt;name&gt;</code></td>
+<td>卸载旧一代插件行，自动撤回 <code>partRegistry</code> 定义、<code>settings</code> 源与所有会话里的 <code>toolRegistry</code> 工具注册，重新导入 <code>index.ts</code> 并装配新一代</td>
+</tr>
+<tr>
+<td>5. 动态调参</td>
+<td><code>config &lt;name&gt; set &lt;k&gt; &lt;v&gt;</code></td>
+<td>写入业务配置源，<strong>不触发插件重载</strong>；下次工具调用直接读到新值</td>
+</tr>
+<tr>
+<td>6. 下线</td>
+<td><code>disable &lt;name&gt;</code> / <code>remove &lt;id&gt;</code></td>
+<td>停用或卸载行，等待各会话副本清理完毕</td>
+</tr>
+</tbody></table></div>
+<p>这里藏着三个非常接地气的工程细节，都是只有真跑热重载才会碰上的坑：</p>
+<p>第一，<strong>模块缓存边界</strong>。Node 的 ESM 缓存机制决定了 <code>reload</code> 会重新导入入口文件 <code>index.ts</code>，但不会自动失效 <code>index.ts</code> 再 <code>import</code> 进去的二级子模块。所以 <code>SKILL.md</code> 直接提醒作者：需要频繁边改边重载的逻辑尽量留在 <code>index.ts</code> 里。</p>
+<p>第二，<strong>敏感配置的权限隔离</strong>。如果插件需要用到外部 API Key，可以在注册 <code>settings</code> 的 JSON Schema 里给该字段加上 <code>&quot;writeOnly&quot;: true</code> 并放进 <code>userOnly</code> 列表。这样一来，模型通过 <code>plugin config</code> 既读不到密钥明文，也改不了这个字段，只能由用户本人修改。</p>
+<p>第三，<strong>活会话故障隔离</strong>。如果一个已经发布的会话正在运行，而此时某个插件注册了一个有 Bug 的 Session 部件并挂载失败，<code>rutis-usage.md</code> §2 规定该失败只会记日志并停留在可选部件局部，绝不会把整个已经发布的活会话拖垮。</p>
+<h2 id="一个真实的源码观察-alpha-期的文档版本漂移">一个真实的源码观察：Alpha 期的文档版本漂移<a class="anchor" href="#一个真实的源码观察-alpha-期的文档版本漂移" aria-label="链接到本节">#</a></h2>
+<p>核对当前快照 <code>88a3df3669405730cbee6bfd113a7f75cf520677</code> 的源码时，可以发现一处很真实的 Alpha 期细节：在 ADR 025 把整个工作区、<code>runtime/package.json</code> 和 <code>runtime/plugins/workflow/package.json</code> 全部升级到 <code>@arcships/rutis</code> <code>0.23.0</code> 之后，<code>runtime/plugins/plugin-authoring/skills/plugin-authoring/SKILL.md</code> 第 36 与第 40 行的示例里仍然写着 <code>&quot;@arcships/rutis&quot;: &quot;0.17.1&quot;</code>。因为协议 5 与旧版不兼容，如果用户严格照抄那份技能文档里的 <code>0.17.1</code> 版本号去 <code>npm install</code>，在当前 <code>0.1.0-alpha.27</code> 上握手会直接被拒绝。这类真实的版本同步滞后在快速演进的 Alpha 仓库里很常见，也恰恰说明为什么理解底层 <code>rutis</code> 协议版本与 <code>runtime/package.json</code> 基线比死背示例片段更重要。</p>
+<p>最后别忘了安全底线：能在会话里给自己写插件并加载，前提是用户给了写文件和调用 <code>plugin</code> 工具的权限；一旦插件被装入本地 Node 运行时，它就是受信任的本地代码（AGENTS 规则 11），不是靠 <code>inject</code> 声明就能困住的沙箱。关于权限、配置启用与执行隔离的边界，我们在第 9 章会专门拆解。在这之前，先看看随着会话拉长、工具和插件越来越多，Dim 是怎么控住上下文窗口和内存占用的。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="06-rutis-and-data-faces.html"><small>上一章</small><strong>rutis 插件引擎与跨语言数据面</strong></a><a class="next" href="08-context-compaction-and-replay.html"><small>下一章</small><strong>上下文投影、压缩与历史渲染边界</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言与全景导读</a><a href="../chapters/01-why-not-a-chat-loop.html"><span>01</span>为什么不用普通对话循环</a><a href="../chapters/02-workspace-and-scopes.html"><span>02</span>28 个 Crate 与三层作用域</a><a href="../chapters/03-time-bus.html"><span>03</span>时间总线与只认序号的事实流</a><a href="../chapters/04-event-driven-contracts.html"><span>04</span>事件驱动契约：Dispatcher、before 与重启重建</a><a href="../chapters/05-timeline-branches.html"><span>05</span>分支时间线：默认分支、父子通信与配额路由</a><a href="../chapters/06-rutis-and-data-faces.html"><span>06</span>rutis 插件引擎与跨语言数据面</a><a href="../chapters/07-self-evolving-plugins.html"><span>07</span>在会话里给自己写插件与热重载自演化</a><a href="../chapters/08-context-compaction-and-replay.html"><span>08</span>上下文投影、压缩与历史渲染边界</a><a href="../chapters/09-detached-work-and-permissions.html"><span>09</span>脱离工作、工具审批与权限边界</a><a href="../chapters/10-codemode-and-aimux.html"><span>10</span>Code Mode 与 Aimux 模型宿主</a><a href="../chapters/11-server-cli-web-and-protocols.html"><span>11</span>App Server、CLI、Web 与 ACP / MCP 网关</a><a href="../chapters/12-tradeoffs-and-boundaries.html"><span>12</span>架构权衡与工程边界</a><a href="../chapters/13-teaching-model.html"><span>13</span>零依赖 Python 教学模型与 18 个单元测试</a><a href="../chapters/appendix-sources.html"><span>A</span>附录 A：源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · arcships/dim v0.1.0-alpha.27 · 快照 88a3df366940 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

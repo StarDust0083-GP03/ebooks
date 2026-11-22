@@ -1,0 +1,109 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>入向网络：endpoint 解析、ingress 与访问续期 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="10-ingress"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#三种访问形态-服务端代理转入维护模式">三种访问形态，服务端代理转入维护模式</a></li><li><a href="#无-per-sandbox-配置的-ingress-路由">无 per-sandbox 配置的 ingress 路由</a></li><li><a href="#三类错误码与-websocket-一等路径">三类错误码与 WebSocket 一等路径</a></li><li><a href="#两个健康端点-把进程存活和网络体感拆开">两个健康端点：把进程存活和网络体感拆开</a></li><li><a href="#secureaccess-唤醒预算与访问驱动续期">`secureAccess`、唤醒预算与访问驱动续期</a></li><li><a href="#源码入口">源码入口</a></li></ol></details><article class="content"><h1 id="入向网络-endpoint-解析-ingress-与访问续期">入向网络：endpoint 解析、ingress 与访问续期</h1><p>单机上连沙箱里的 Web 服务很轻松，记个 <code>localhost:40001/proxy/8080</code> 就完事了。一上 Kubernetes 集群，麻烦立刻堆上来：沙箱 Pod 只有内网 ClusterIP，暂停恢复后 IP 必然换掉，浏览器开着交互终端走 WebSocket 不能被网关擅自改写关闭码，前置 TLS 代理一开 HTTP/2 还会把 WebSocket 升级挡在门外。</p>
+<p>OpenSandbox 把入向问题拆成两半：对外用 <code>GET /v1/sandboxes/{id}/endpoints/{port}</code> 屏蔽拓扑差异，对内用无状态的 <code>components/ingress/</code> 反向代理统一承接集群流量。</p>
+<h2 id="三种访问形态-服务端代理转入维护模式">三种访问形态，服务端代理转入维护模式</h2><p>endpoint 接口始终返回「可达地址 + 必须原样携带的请求头」，背后的物理路径分三种：</p>
+<table>
+<thead>
+<tr>
+<th>形态</th>
+<th>适用场景</th>
+<th>定位</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>直连</td>
+<td>Docker 单宿主端口映射或 Pod IP 直接可达</td>
+<td>单机或同网段主路径</td>
+</tr>
+<tr>
+<td>ingress 网关</td>
+<td>Kubernetes 与 Fast Sandbox 集群部署</td>
+<td>集群生产主路径</td>
+</tr>
+<tr>
+<td>控制面代理</td>
+<td>直连与网关均不可达的兼容环境</td>
+<td><strong>维护模式退路</strong>（<code>1.2.1</code> 起建议迁移至 ingress）</td>
+</tr>
+</tbody></table>
+<p>服务端 <code>/sandboxes/{id}/proxy/{port}</code> 在 <code>1.2.1</code> 被明确划进维护模式：存量流量照常工作，但吞吐与隔离的演进重点全部放在独立部署的 <code>ingress</code> 组件上。</p>
+<h2 id="无-per-sandbox-配置的-ingress-路由">无 per-sandbox 配置的 ingress 路由</h2><p><code>components/ingress/</code> 面对成百上千个短命沙箱，坚持<strong>零每沙箱静态配置</strong>。它直接 watch 底层工作负载发布出来的状态，把路由实时缓存在内存里：</p>
+<ul>
+<li><code>BatchSandbox</code> 读取 <code>sandbox.opensandbox.io/endpoints</code> 注解；</li>
+<li><code>agent-sandbox</code> 读取 <code>status.serviceFQDN</code>；</li>
+<li>Fast Sandbox 路由由 <code>FastSandboxProvider</code> 校验签名 <code>f1.</code> scope 并向 FastPath 解析实际 Fastlet 目标。</li>
+</ul>
+<p>客户端标识「沙箱 ID + 端口」有两种模式：</p>
+<ul>
+<li><strong>头模式（默认）</strong>：携带 <code>OpenSandbox-Ingress-To: &lt;sandbox-id&gt;-&lt;port&gt;</code>，或通过主机名子域编码 <code>&lt;sandbox-id&gt;-&lt;port&gt;.example.com</code>（Fast Sandbox 不支持通配主机名模式，因为命名空间、ID 与签名塞不进单个 DNS label）；</li>
+<li><strong>URI 模式</strong>：路径前两段编码为 <code>/&lt;sandbox-id&gt;/&lt;port&gt;/&lt;rest&gt;</code>，照顾无法自定义请求头的客户端。</li>
+</ul>
+<p><code>1.3.0-rc.1</code> 在头模式与 URI 模式的端口解析里收紧了校验，带前导加号的端口段（如 <code>+8080</code>、<code>+08080</code>）直接拒掉，不再被宽松解析后静默路由；历史主机名里的端口也要求为 <code>1</code> 到 <code>65535</code> 之间的规范十进制数。</p>
+<p>转发动作克制而严格：剥除内部路由头与续期控制头、注入 <code>X-Forwarded-*</code>、过滤逐跳头、<strong>原样保留路径与查询串</strong>（不做合并 <code>//</code> 或解码 <code>%2F</code> 这类善意规范化），并且<strong>绝不跟随后端返回的重定向</strong>，防止过期 <code>Location</code> 把沙箱凭据误发给无关主机。</p>
+<h2 id="三类错误码与-websocket-一等路径">三类错误码与 WebSocket 一等路径</h2><p>ingress 对路由阶段的失败坚持三分法，确保调用方能做出正确决策：</p>
+<table>
+<thead>
+<tr>
+<th>状态码</th>
+<th>含义</th>
+<th>调用方动作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>404</code></td>
+<td>沙箱确实不存在</td>
+<td>停止重试</td>
+</tr>
+<tr>
+<td><code>503</code></td>
+<td>沙箱存在但尚未就绪，或 Fast Sandbox 返回 <code>FailedPrecondition</code>（附 <code>Retry-After</code>）</td>
+<td>按退避重试</td>
+</tr>
+<tr>
+<td><code>502</code></td>
+<td>集群 API 或上游基础设施故障</td>
+<td>触发运维告警</td>
+</tr>
+</tbody></table>
+<p>一旦流量真正抵达沙箱，响应码和响应体全部原样透传。WebSocket 在这里作为一等主路径处理：遵循 RFC 6455 over HTTP/1.1，后端握手预算 45 秒，双向单条消息上限 64 MiB，不缓冲对端，原样透传子协议、<code>Set-Cookie</code> 以及应用关闭码（比如策略拒绝 <code>1008</code> 或自定义码 <code>4001+</code> 绝不被改成正常关闭 <code>1000</code>）。<code>1.3.0-rc.1</code> 还修掉了一处中继细节：当后端拒绝 WebSocket 握手且错误体大于 1 KiB 时，代理会丢弃陈旧的 <code>Content-Length</code>，保证完整报错体直达客户端。</p>
+<p>由于 <code>ingress</code> 本身只说明文 HTTP/1.1、不做 TLS 终结，生产环境通常在前面挂 L7 TLS 代理。这里有一条硬约束：RFC 8441 的 WebSocket-over-HTTP/2 不被接受，绝不能把 HTTP/2 转发给 <code>ingress</code> 本身。最稳妥的部署是从面向浏览器的 ALPN 列表去掉 <code>h2</code>，或者让前置代理对 WebSocket 升级回退 HTTP/1.1。</p>
+<h2 id="两个健康端点-把进程存活和网络体感拆开">两个健康端点：把进程存活和网络体感拆开</h2><p><code>ingress</code> 有意暴露了两个语义分开的健康端点：</p>
+<ul>
+<li><code>/status.ok</code>：标准存活与就绪探针，控制负载均衡摘流；</li>
+<li><code>/status.ok/network-readiness</code>：由 <code>pkg/proxy/connectivity/tracker.go</code> 驱动的<strong>影子信号</strong>，统计近期打开的上游 TCP 连接分布（success、timeout、unreachable、refused），当 timeout 与 unreachable 在多个不同目标上占主导时输出 <code>DEGRADED</code>，但 HTTP 状态码永远返回 <code>200</code> 且<strong>绝不影响流量调度</strong>，指标里也不含目标 IP 或沙箱 ID。</li>
+</ul>
+<p>把「进程还能不能干活」和「集群跨节点网络看起来健不健康」拆成两个信号，避免了一次底层网络抖动把所有健康网关 Pod 一起摘掉引发雪崩。</p>
+<h2 id="secureaccess-唤醒预算与访问驱动续期"><code>secureAccess</code>、唤醒预算与访问驱动续期</h2><p>在 Kubernetes 加 ingress 模式下开启 <code>secureAccess</code> 后，控制面为 endpoint 签发访问凭据并打包在响应头里。这些头本身就是沙箱访问凭据，绝不能塞进 URL 或共享缓存。若经控制面代理改写地址，<code>api/proxy.py</code> 只剥除 <code>OpenSandbox-Ingress-To</code> 路由头，保留其他鉴权头。</p>
+<p>流量穿过 ingress 时还会顺手驱动两条生命周期联动：</p>
+<ul>
+<li><strong>访问即续期（OSEP-0009）</strong>：解析出目标沙箱后，网关按沙箱节流发布一条尽力而为的 <code>renew-intent</code> 事件（经 Redis 送到控制面，服务器代理路径也遵守同样规则）。监控探针不想替空闲沙箱续命时，可以带上精确头 <code>OpenSandbox-Access-Renew: skip</code>（转发前会被剥除）；长连 WebSocket 仅在握手请求上触发，不按帧续期。</li>
+<li><strong>访问唤醒（OSEP-0024）</strong>：配合空闲暂停策略，命中已暂停沙箱的请求会进入唤醒排队等待。<code>1.2.1</code> 把唤醒等待统一收进单一的排队加等待预算，并强制校验 <code>--wake-park-budget</code> 必须小于 <code>--wake-max-flight-lifetime</code>，同时修复了集群同时混跑常规容器沙箱和 Fast Sandbox 时唤醒路由在启动期 panic 的缺陷；观测探针可通过 <code>OpenSandbox-Skip-Activity: skip</code> 避免重置自己测量的空闲计时器。</li>
+</ul>
+<h2 id="源码入口">源码入口</h2><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>components/ingress/pkg/proxy/header.go</code></td>
+<td>路由头、续期头、<code>skip</code> 哨兵与逐跳头常量</td>
+</tr>
+<tr>
+<td><code>components/ingress/pkg/proxy/connectivity/tracker.go</code></td>
+<td>上游连接分类与 <code>network-readiness</code> 影子降级判定</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/api/proxy.py</code></td>
+<td>维护模式控制面代理与路由头剥离</td>
+</tr>
+<tr>
+<td><code>docs/architecture/network/ingress.md</code></td>
+<td>路由模式、错误三分法、WebSocket 规则与前置 TLS 约束</td>
+</tr>
+<tr>
+<td><code>docs/guides/secure-access.md</code></td>
+<td>签名路由与 endpoint 凭据安全边界</td>
+</tr>
+</tbody></table>
+</article><nav class="pager" aria-label="篇章导航"><a href="09-execd.html"><small>上一篇</small>数据平面：execd-as-init、命令流与文件语义</a><a href="11-egress.html"><small>下一篇</small>出向网络：DNS、nftables 与共享 Egress 状态机</a></nav></main><script src="../assets/wiki.js"></script></body></html>

@@ -1,0 +1,28 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>前言：一次创建请求背后到底发生了什么 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="00-preface"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#从-2026-10-30-快照到-v1-3-0-rc-2-的关键演进">从 2026-10-30 快照到 v1.3.0-rc.2 的关键演进</a></li><li><a href="#快照与证据边界">快照与证据边界</a></li><li><a href="#怎么读这本书">怎么读这本书</a></li></ol></details><article class="content"><h1 id="前言-一次创建请求背后到底发生了什么">前言：一次创建请求背后到底发生了什么</h1><p>周五下午你给编码 Agent 派了个修 bug 的活：拉仓库、跑单测、改两行代码、再跑一遍测试。模型很快吐出了一段补丁和三条 shell 命令，可这几条命令必须找个地方真跑起来。直接放宿主机跑，一次失误就能把本地环境搅乱；放到传统微服务部署链路里，等 CI 构建完镜像再调度 Pod，对话早就凉了。</p>
+<p>OpenSandbox 解决的就是这个缺口：在几秒甚至几十毫秒内，按一次 HTTP 请求拉起一个带隔离边界的执行环境，让 Agent 跑命令、读写文件、开交互终端、按白名单联网，用完即焚。本地用 Docker 起步，上集群换成 Kubernetes 或 Firecracker microVM，调用方看到的始终是同一套沙箱接口。</p>
+<p>全书围绕一条主线展开：<strong>客户端发出 <code>POST /v1/sandboxes</code> 之后，控制面、运行时后端、沙箱内守护进程和网络组件各自做了什么，又为什么这样划分边界。</strong></p>
+<h2 id="从-2026-10-30-快照到-v1-3-0-rc-2-的关键演进">从 2026-10-30 快照到 v1.3.0-rc.2 的关键演进</h2><p>本书前版固定在 <code>c2f55b20e945</code>（2026-10-30），本次全面核对并同步至 <strong><code>release-1.3.0-rc.2</code></strong>（提交 <code>45043e7f0df258b6b76ef6753dd9b1819d59a332</code>，2026-11-19）。在这三周涵盖 <code>1.2.1</code> 与 <code>1.3.0-rc.1</code> / <code>rc.2</code> 的迭代里，底层两平面、三后端的骨架没有推倒重来，但有六处直接影响架构与运维的变化已经融入对应章节：</p>
+<ol>
+<li><strong>OSEP-0018 <code>execd-as-init</code> 成为服务端默认拓扑</strong>。<code>runtime.execd_run_as_init</code> 默认值由 <code>false</code> 改为 <code>true</code>，服务端自动注入 <code>EXECD_INIT=1</code>，让 <code>bootstrap.sh</code> 以 <code>exec execd --init -- &lt;entrypoint&gt;</code> 接管容器 PID 1（在 Fast Sandbox 中为 guest init 下的 subreaper）。孤儿进程回收、信号转发、退出码透传以及基于 <code>opensandbox-launcher</code> 的进程降权地板从此覆盖镜像入口进程（第 9、15 篇）。</li>
+<li><strong><code>rootfsOnly</code> 快照登上公开生命周期 API 并覆盖原生 S3 与 OCI</strong>。五大 SDK 全部暴露 <code>create_snapshot(mode=&quot;rootfsOnly&quot;)</code>，产出 KB 级可写层制品并以冷启动方式恢复；服务端移除了多余的 OCI 预检镜像逻辑，把模式准入交由 FastPath 门禁与 Fastlet 的 fail-closed 节点资质自推导把关，而 pause/resume 检查点依然保持 <code>full</code> 模式（第 8、13 篇）。</li>
+<li><strong>BatchSandbox 新增粘滞 <code>Completed</code> 终态，消除状态悬空与两个静默丢失竞态</strong>。主容器以退出码 0 正常结束后进入粘滞 <code>Completed</code> 相位，对外映射为 <code>Terminated</code>（原因码 <code>SANDBOX_COMPLETED</code>）并拒绝 pause/resume，不再从 <code>Succeed</code> 跌回 <code>Pending</code>；同时 Docker 续期纳入每沙箱生命周期锁序列化，Kubernetes 到期删除与状态写入都带上了 UID 或 <code>resourceVersion</code> 前置校验（第 6、7、13 篇）。</li>
+<li><strong>Credential Vault Exchange 与实验性 credential-bound 出向链路落地</strong>。OSEP-0025 的动态凭据交换在 <code>1.2.1</code> 与 <code>1.3.0</code> 补齐了出向请求头透传（上限 64 个头、单值 8 KiB、超限 407），支持 SigV4/ACS 按请求重签且不落盘明文；Fast Sandbox 侧的实验性 credential-bound 拦截推进到 50 ms <code>data-plane-ready</code> 确认、不可变 dispatch 快照、排水围栏与源 IP 复用阻断（第 11、12 篇）。</li>
+<li><strong>观测与诊断面完成清理与扩容</strong>。已废弃的 <code>api/devops.py</code> 纯文本路由与 <code>osb devops</code> 命令群彻底移除，稳定的 Diagnostics API 强制要求 <code>scope</code> 参数；<code>execd</code> 补上了带 2 秒挂载超时的 OTLP 磁盘用量与 IO 指标，Node Agent 新增可选的 <code>vm-console</code> 采集源（第 9、16 篇）。</li>
+<li><strong>部署基线与控制面扩展边界收紧</strong>。所有 Helm Chart 将 Kubernetes 最低版本提升至 <code>1.22</code>；Pool 管理移至 <code>WorkloadProvider</code> SPI 之后；Fast Sandbox 强制 <code>--role=all</code> 单副本 <code>Recreate</code> 升级、开放 <code>controller.fastletProxy.resources</code> 与可选 gRPC-Web 端口、补齐 FSEP-0003 的 Fastlet ServiceAccount JWKS 鉴权；实验性 <code>components/e2b-shim</code>（OSEP-0027）已以骨架形态入仓（第 5、8、17 篇）。</li>
+</ol>
+<h2 id="快照与证据边界">快照与证据边界</h2><p>把研究边界在这里一次性说清，正文不再反复叠甲。</p>
+<ul>
+<li><strong>上游仓库</strong>：<code>https://github.com/opensandbox-group/OpenSandbox</code></li>
+<li><strong>版本与提交</strong>：<code>release-1.3.0-rc.2</code>，commit <code>45043e7f0df258b6b76ef6753dd9b1819d59a332</code>（2026-11-19）</li>
+<li><strong>核对日期</strong>：2026-11-22</li>
+<li><strong>上游许可</strong>：代码 Apache-2.0，文档 CC BY 4.0（<code>CHARTER.md</code> 第 7.b.iv 条）</li>
+</ul>
+<p>本书全部结论来自静态阅读源码、<code>specs/</code> 下的四份 OpenAPI 契约、<code>docs/</code> 下的架构与运维指南、<code>oseps/</code> 下的 28 份设计提案，以及用 Python 标准库独立编写的配套教学实现 <code>examples/mini_osb.py</code>。本书没有部署真实集群，没有复现性能压测，也不构成安全审计。正文出现的所有延迟数字均转述自上游公开基准并标注口径与适用条件；遇到基于静态代码推理设计动机的地方，会直接点明这是工程推演而非作者口述记录。完整来源清单与 104 个核对文件的 SHA-256 哈希见附录 B 与 <code>sources/inventory.json</code>。</p>
+<h2 id="怎么读这本书">怎么读这本书</h2><p>全书 20 篇正文按一条请求的生命周期顺序排开，另附 3 份附录。</p>
+<ul>
+<li><strong>只想弄清调用方式与系统边界</strong>：读第 1、2、3、10、13 篇，查阅附录 A 的路径表。</li>
+<li><strong>在评估自建还是接入这套执行层</strong>：重点看第 2、5、17、18 篇，它们专门算兼容性、单活边界和设计代价。</li>
+<li><strong>准备改代码或写新后端</strong>：从第 4 篇顺序读到第 16 篇，先吃透控制面的四条不变量和三后端分工，再进 <code>execd</code>、ingress、egress 的源码。</li>
+<li><strong>想离线跑一遍核心语义</strong>：直接运行 <code>python3 examples/mini_osb.py</code> 与 <code>python3 -m unittest discover -s examples -v</code>（附录 C 收录了完整源码）。</li>
+</ul>
+</article><nav class="pager" aria-label="篇章导航"><span></span><a href="01-requirements.html"><small>下一篇</small>需求篇：Agent 执行环境要满足什么</a></nav></main><script src="../assets/wiki.js"></script></body></html>

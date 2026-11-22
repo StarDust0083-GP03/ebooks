@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从需求、配置、角色到 Hook 与验收，解剖 Claude Code Game Studios 的工作流"><meta name="author" content="独立源码研究">
+<title>引擎与品类适配：统一引擎表、Web 一等公民与品类库 · Claude Code 游戏工作室</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">G</span><span>Claude Code 游戏工作室</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 13</div><div class="rail-title">引擎与品类适配：统一引擎表、Web 一等公民与品类库</div><ol><li><a href="#场景-为什么把代码写进-src-在-unity-里比报错更可怕">场景：为什么把代码写进 src/ 在 Unity 里比报错更可怕</a></li><li><a href="#一张总表管四大引擎-claude-engines-engines-tsv">一张总表管四大引擎：.claude/engines/engines.tsv</a></li><li><a href="#五步代码根解析-填错了也不准偷偷回退">五步代码根解析：填错了也不准偷偷回退</a></li><li><a href="#web-成为一等公民-脚手架-锁死版本与无专属-agent">Web 成为一等公民：脚手架、锁死版本与无专属 Agent</a></li><li><a href="#引擎知识快照-同时防-模型太旧-和-本机太旧">引擎知识快照：同时防“模型太旧”和“本机太旧”</a></li><li><a href="#品类知识库-claude-genres-让-ai-问出内行问题">品类知识库（.claude/genres/）：让 AI 问出内行问题</a></li><li><a href="#常见误解">常见误解</a></li><li><a href="#练习">练习</a></li><li><a href="#答案提示">答案提示</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 13 章</div><h1>引擎与品类适配：统一引擎表、Web 一等公民与品类库</h1><div class="chapter-meta">CCGS v1.3.0 快照 2026-11-09 · 约 26 分钟</div></header><div class="prose"><h2 id="场景-为什么把代码写进-src-在-unity-里比报错更可怕">场景：为什么把代码写进 <code>src/</code> 在 Unity 里比报错更可怕<a class="anchor" href="#场景-为什么把代码写进-src-在-unity-里比报错更可怕" aria-label="链接到本节">#</a></h2>
+<p>同一条 <code>/dev-story</code> 命令，跑在不同引擎的项目里，代码该往哪落盘完全不同：</p>
+<ul>
+<li>Godot 4 / Web：<code>src/</code></li>
+<li>Unity：<code>Assets/</code></li>
+<li>Unreal Engine 5：<code>Source/&lt;Module&gt;/</code></li>
+</ul>
+<p>最阴的地方在于<strong>写错了不会报错</strong>。Unity 编译器只认 <code>Assets/</code> 和 <code>Packages/</code>，把 C# 脚本写进 <code>src/</code>，文件安安静静躺在那儿，编辑器里压根看不见；测试写进 <code>tests/</code> 更要命，Unity 测试运行器直接给你弹一行绿油油的 <strong><code>0 tests, Passed</code></strong>——看起来全绿，其实一条都没跑。</p>
+<p>到了 v1.3.0，CCGS 在适配层做了三大升级：把散落各处的引擎路径和命令收进了统一总表 <strong><code>.claude/engines/engines.tsv</code></strong>、把 <strong>Web（Vite + TypeScript + Three.js / Phaser / PixiJS）</strong> 正式拉进四大引擎一等公民、还新增了 <strong><code>.claude/genres/</code> 73 份品类知识库</strong>，彻底把“引擎怎么配、品类怎么问”从散落的提示词变成了结构化数据。</p>
+<h2 id="一张总表管四大引擎-claude-engines-engines-tsv">一张总表管四大引擎：<code>.claude/engines/engines.tsv</code><a class="anchor" href="#一张总表管四大引擎-claude-engines-engines-tsv" aria-label="链接到本节">#</a></h2>
+<p>打开 <code>.claude/engines/engines.tsv</code>，一共只有 5 行（1 行表头 + 4 行引擎），用 Tab 分隔，空槽统一写 <code>-</code>（防止 Bash 按 <code>IFS</code> 读的时候把空列吞掉）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th><code>engine</code></th>
+<th><code>code_root</code></th>
+<th><code>test_root</code></th>
+<th><code>asset_root</code></th>
+<th>默认 <code>run</code> / <code>build</code> / <code>test</code> / <code>smoke</code> 命令</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Godot</strong></td>
+<td><code>src</code></td>
+<td><code>tests</code></td>
+<td><code>assets</code></td>
+<td>自带窗口运行、gdUnit4 无头测试和 <code>--quit-after 5</code> 冒烟</td>
+</tr>
+<tr>
+<td><strong>Unity</strong></td>
+<td><code>Assets</code></td>
+<td><code>Assets/Tests</code></td>
+<td><code>Assets</code></td>
+<td>均为 <code>-</code>（依赖编辑器路径和目标，由 <code>/setup-engine</code> 填）</td>
+</tr>
+<tr>
+<td><strong>Unreal</strong></td>
+<td><code>Source</code></td>
+<td><code>Source/&lt;Module&gt;/Private/Tests</code></td>
+<td><code>Content</code></td>
+<td>均为 <code>-</code>（同上）</td>
+</tr>
+<tr>
+<td><strong>Web</strong></td>
+<td><code>src</code></td>
+<td><code>tests</code></td>
+<td><code>assets</code></td>
+<td><code>npm run dev</code> / <code>npm run build</code> / <code>npm test</code> / <code>npm run smoke</code></td>
+</tr>
+</tbody></table></div>
+<p>所有 Hook 和辅助脚本全部通过同一个小解析器 <strong><code>.claude/scripts/engine-row.awk</code></strong> 读这张表，技能则通过 <code>resolve_config --keys engine_row</code> 直接拿算好的一整行。</p>
+<p>不过源码文档 <code>.claude/engines/README.md</code> 也很实诚地留了一笔例外：<strong><code>test-scaffold.sh</code> 目前没读这张表</strong>，它自己写死了各引擎的测试路径，所以如果你魔改了 <code>engines.tsv</code> 里的 <code>test_root</code>，得记得去 <code>test-scaffold.sh</code> 同步改一处。</p>
+<h2 id="五步代码根解析-填错了也不准偷偷回退">五步代码根解析：填错了也不准偷偷回退<a class="anchor" href="#五步代码根解析-填错了也不准偷偷回退" aria-label="链接到本节">#</a></h2>
+<p>有了总表之后，<code>.claude/docs/code-root-resolution.md</code> 和 <code>yaml-helper.sh</code> 里的 <code>resolve_code_root()</code> 把代码根解析定成了五步（v1.3.0 新增第 0 步自定义目录）：</p>
+<ol start="0">
+<li><strong>读 <code>project.yaml</code> 的 <code>engine.code_root</code>（仅限项目配置，不认 <code>project.local.yaml</code>）</strong>：专门照顾非标准目录（比如 Godot 项目把代码放在 <code>scripts/</code>，或者一个扁平网页小游戏直接填 <code>.</code> 把根目录当代码根）。<ul>
+<li>填 <code>.</code> 时，辅助函数 <code>code_root_filter</code> / <code>code_root_find</code> 会自动把 <code>.claude</code>、<code>.git</code>、<code>production</code>、<code>design</code>、<code>docs</code>、<code>tests</code>、<code>studio-tests</code>、<code>prototypes</code>、<code>tools</code>、<code>node_modules</code>、<code>dist</code> 这些框架和产物目录全剔出去，绝不误扫。</li>
+<li><strong>最狠的一条规矩</strong>：如果 <code>engine.code_root</code> 填了个不能用的值——目录压根不存在、大小写拼错、带 <code>..</code>、写了绝对路径、或者指向了 <code>docs</code>/<code>.claude</code> 这类框架目录——脚本直接把它判成 <strong><code>invalid</code></strong>（<code>code-markers.sh</code> 甚至直接返回 <code>exit 3</code>），<strong>绝不偷偷回退到引擎默认目录</strong>！不然你把 <code>scripts</code> 拼成了 <code>scritps</code>，脚本默默回退去扫一个空着的 <code>src/</code>，最后给你报个“零违规”，比直接报错危险得多。</li>
+</ul>
+</li>
+<li><strong>读 <code>engine.name</code></strong>（查 <code>engines.tsv</code> 对应行）。</li>
+<li><strong>读旧版镜像</strong>（<code>.claude/docs/technical-preferences.md</code> 里的 <code>Engine:</code> 行，占位符 <code>[TO BE CONFIGURED]</code> 不算）。</li>
+<li><strong>目录树无歧义推断</strong>：当且仅当 <code>src/</code>、<code>Assets/</code>、<code>Source/</code> 里<strong>恰好只存在一个</strong>时才认它；同时出现两个就不猜。这里还藏着一个跨平台暗坑——Windows 和默认 macOS 文件系统不区分大小写，直接用 <code>[ -d Assets ]</code> 去测，Godot 项目里的小写 <code>assets/</code> 也会命中，导致 <code>src/</code> + <code>assets/</code> 被误判成“歧义”。所以必须按真实目录列表精确比对大小写。</li>
+<li><strong>其余所有情况：判成 <code>unresolved</code>（未解析），绝不默认回落 <code>src/</code></strong>。</li>
+</ol>
+<p>拿到 <code>unresolved</code> 或 <code>invalid</code> 后，行动原则极其干净：</p>
+<ul>
+<li><strong>所有读取和扫描</strong>（安全审计、硬编码检查、本地化扫描、内容盘点）：一律报 <code>NOT ASSESSED — code root unresolved/invalid</code>，绝不吐出“零命中”冒充干干净净。</li>
+<li><strong>所有写入</strong>：直接停手不写，报错让人先把代码根配对。</li>
+</ul>
+<h2 id="web-成为一等公民-脚手架-锁死版本与无专属-agent">Web 成为一等公民：脚手架、锁死版本与无专属 Agent<a class="anchor" href="#web-成为一等公民-脚手架-锁死版本与无专属-agent" aria-label="链接到本节">#</a></h2>
+<p>v1.3.0 把 <code>Web</code> 拉进一等公民后，设计得很克制，没有盲目再造 5 个 Web 子代理，而是靠三块实在东西落地：</p>
+<ol>
+<li><strong>脚手架与起步模板（<code>.claude/engines/web/</code>）</strong>：新项目跑 <code>/setup-engine</code> 没指定引擎时，现在<strong>优先推荐 Web</strong>，只问你一个问题：要纯原生（Canvas 2D + Web Audio），还是加 Three.js、Phaser、PixiJS？选完由 <code>web-scaffold.sh</code> 拷出完整配置（绝不覆盖已有文件），直接配齐 <code>npm run dev</code>、<code>npm run build</code>、<code>npm run build:single</code>（单文件打包）、<code>npm test</code>（Vitest + Playwright）和 <code>npm run smoke</code>；如果你手里早就有个 Web 工程，<code>web-detect.sh</code> 会原样登记，一根文件都不乱动。</li>
+<li><strong>版本钉死参考（<code>docs/engine-reference/web/VERSION.md</code>）</strong>：跟三大重引擎一样，Web 也有自己的版本对照表和破坏性变更手册。v1.3.0 的脚手架锁死了 <strong>Vite 8.3.4（Rolldown/Oxc 取代 Rollup/esbuild）、TypeScript 7.0.2（原生编译器）、Vitest 5.0.5、Playwright 1.64.1、Three.js 0.186.1、Phaser 4.2.1、PixiJS 8.22.0</strong>（要求 Node <code>^22.12 || ^24 || &gt;=26</code>），并且 <code>/prototype</code> 里的 3D 打包脚本 <code>vendor-three.sh</code> 用的是同一版 Three.js 0.186.1，确保原型 Grow 成正式 Web 工程时不会撞上版本断层。</li>
+<li><strong>复用通用程序员</strong>：Web 没有单独的引擎专家角色，<code>/dev-story</code> 做引擎检查时直接让 <code>lead-programmer</code> 对照 <code>docs/engine-reference/web/</code> 审核代码。</li>
+</ol>
+<h2 id="引擎知识快照-同时防-模型太旧-和-本机太旧">引擎知识快照：同时防“模型太旧”和“本机太旧”<a class="anchor" href="#引擎知识快照-同时防-模型太旧-和-本机太旧" aria-label="链接到本节">#</a></h2>
+<p><code>docs/engine-reference/&lt;engine&gt;/</code> 专门对冲大模型知识截止日期（文档里统一把 May 2025 标成下限，新版模型可能知道得更多，但一律先查本目录），每个引擎下面放 <code>VERSION.md</code>、<code>breaking-changes.md</code>、<code>deprecated-apis.md</code>、<code>current-best-practices.md</code> 和按子系统拆的速查卡（每份控制在 150 行内）。</p>
+<p>v1.3.0 的两个实操细节值得留意：</p>
+<ul>
+<li><strong>修掉了两处真实的 Godot 4.7 勘误（#143）</strong>：旧文档误写 4.6 起 Windows 默认渲染器换成了 Direct3D 12、还教代理把 <code>Compositor</code> 当子节点挂上去；v1.3.0 更正为 Windows 默认仍是 Vulkan，<code>Compositor</code> 是挂在 <code>WorldEnvironment</code> 或 <code>Camera3D</code> 的 <code>compositor</code> 属性上的资源。</li>
+<li><strong>双向缺口意识</strong>：不只是“模型训练数据太旧、不知道新 API”（正向缺口），还有<strong>反向缺口</strong>——比如参考文档已经写到 Godot 4.7 或 Phaser 4，但你本机老项目装的其实是 Godot 4.4 或 Phaser 3，代理照着新参考写出来的 API 在你机器上直接编不过。所以每份 <code>VERSION.md</code> 都醒目地提醒先核对 <code>Installed at pin time</code> 或锁文件里本机真实装的版本，绝不盲信模板里的钉死版本。</li>
+</ul>
+<h2 id="品类知识库-claude-genres-让-ai-问出内行问题">品类知识库（<code>.claude/genres/</code>）：让 AI 问出内行问题<a class="anchor" href="#品类知识库-claude-genres-让-ai-问出内行问题" aria-label="链接到本节">#</a></h2>
+<p>v1.3.0 新增了一整个 <strong><code>.claude/genres/</code> 目录（实测 73 个文件）</strong>，专门给 <code>/prototype</code> 供血：</p>
+<ul>
+<li><strong><code>chipsets.yaml</code> + <code>chipsets/</code> 下 69 份品类卡片</strong>：涵盖平台跳跃、类银河战士恶魔城、肉鸽卡牌、塔防、幸存者、农场模拟、城市建造、战棋、解谜等主流品类。每张卡写清四件事：塑造这个品类的关键分岔问题（Choices）、手感变体（Feel variants）、前 60 秒默认该有的核心要素（Card defaults &amp; Feel，战斗类品类甚至在 <code>chipsets.yaml</code> 里标了第一关敌人种类的底线 <code>variety: {enemies: 3|4}</code> 防止做出来只有一种换皮怪）、以及哪些重功能坚决留到后面做（Later，并标清对应哪一步：<code>change it after play</code> / <code>grow it</code> / <code>add it as a feature</code> / <code>needs a server</code>）。</li>
+<li><strong><code>mashups.md</code></strong>：教 <code>/prototype</code> 遇到“两个品类混搭”（比如宝可梦 + 自走棋）时，按“输入与镜头、死亡与存档、成长与经济、核心规则”四个系统拆分谁当老大，避免两套规则打架。</li>
+<li><strong><code>art-direction.md</code></strong>：帮没指定画风的用户给出贴合品类的具体视觉方案（配色角色、轮廓、标志性细节），专门治 AI 默认只会画“米色背景 + 光秃秃圆块”的通病。</li>
+<li><strong><code>online-and-devices.md</code></strong>：遇到联机、VR、手机触控、主机需求时，怎么在本地浏览器里找合理替代品顶着，并把真需要服务器或真机测试的部分诚实划进 <code>Out of scope</code>。</li>
+<li><strong><code>sources.md</code></strong>：列出卡片引用过的公开设计资料与说明书出处。</li>
+</ul>
+<p>更讨喜的是 <code>chipsets.yaml</code> 文件头那句大实话：<strong>“每一条品类归类和敌人种类底线都是基于经典作品读出来的假设，不是科学实测数字，且从不把整张品类表当菜单甩给用户挑。”</strong> 拿它当提问脚手架很管用，拿它当圣经就跑偏了。</p>
+<h2 id="常见误解">常见误解<a class="anchor" href="#常见误解" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>误解一：只要在 <code>project.yaml</code> 设好 <code>engine.name: Godot</code>，就能区分 GDScript 和 C#。</strong> 区分不了。<code>engine.name</code> 只定引擎和目录，语言专家要看 <code>specialists.code</code>（<code>godot-gdscript-specialist</code> vs <code>godot-csharp-specialist</code>）。</li>
+<li><strong>误解二：<code>engine.code_root</code> 填错了没事，框架会自动回退去扫 <code>src/</code>。</strong> 绝对不会。v1.3.0 专门把非法自定义根设计成硬报错 <code>invalid</code>，因为静默回退去扫错目录只会产出致命的“零违规”假通过。</li>
+<li><strong>误解三：<code>.claude/genres/</code> 里的 73 个文件每次开会话都会灌进上下文。</strong> 不会。连原型构建阶段都不加载 <code>chipsets.yaml</code>，只在 <code>/prototype</code> 提问出简报那一瞬读一次索引，再按需打开命中的那 1–2 张品类卡片。</li>
+</ul>
+<h2 id="练习">练习<a class="anchor" href="#练习" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>如果你的老 Unity 项目同时有一个空着的 <code>src/</code> 目录和真实的 <code>Assets/</code> 目录，但你还没配置 <code>project.yaml</code>，跑 <code>resolve_code_root()</code> 会返回什么？如果强行往 <code>project.yaml</code> 写 <code>engine.code_root: assets</code>（小写），在大小写敏感和不敏感系统上分别会怎么处理？</li>
+<li>为什么 <code>.claude/engines/engines.tsv</code> 要求每个空单元格都必须填 <code>-</code>，而不能留空？</li>
+<li>假设你想给自己的非游戏项目（比如 Web 后端模板）抄一套类似 <code>.claude/genres/</code> 的“场景知识库”，你会怎么设计索引文件和单场景卡片，才能既让 AI 问出内行问题，又不把上下文撑爆？</li>
+</ol>
+<h2 id="答案提示">答案提示<a class="anchor" href="#答案提示" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>同时存在 <code>src/</code> 和 <code>Assets/</code> 且未设引擎属于歧义，会返回 <code>unresolved</code> 并拒绝猜测；而在 <code>project.yaml</code> 里把实际叫 <code>Assets</code> 的目录写成小写 <code>assets</code>，按 <code>code-root-resolution.md</code> 的大小写实名比对规则会被直接判为 <code>invalid</code>，不回退，提示你修正拼写。</li>
+<li>因为 Bash 的 <code>IFS=$&#39;\t&#39; read</code> 会把连续的 Tab 折叠成一个分隔符，导致后面的列全部错位；写死 <code>-</code> 占位再配合 <code>awk -F&#39;\t&#39;</code> 读取，列号永远不会漂。</li>
+<li>照抄两级按需加载：用一个轻量索引（如 <code>archetypes.yaml</code>，只放类型名、一句话定义、语义匹配词）定位 1–2 个场景（比如“CRUD 管理后台”、“定时 ETL 管道”、“高并发 Webhook 网关”），再只打开对应的单页卡片——里面写 5–8 个带默认值的分岔问题、必踩坑清单和明确留到后期做的项，构建时只看产出的一页简报，不再背整套知识库。</li>
+</ol>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="12-teams.html"><small>上一章</small><strong>协作：团队流水线、默认塌缩与“透镜折叠”</strong></a><a class="next" href="14-context.html"><small>下一章</small><strong>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：先看清这东西到底是怎么跑起来的</a><a href="../chapters/01-requirements.html"><span>01</span>需求：一个人写游戏，为什么还要套规矩</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：一个会话，四种约束</a><a href="../chapters/03-onboarding.html"><span>03</span>入门：先玩一把（<code>/prototype</code>）与 Studio Mode（<code>/start</code>）双轨入口</a><a href="../chapters/04-config.html"><span>04</span>配置求值：一个 <code>rigor</code> 如何长出六个设置</a><a href="../chapters/05-agents.html"><span>05</span>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</a><a href="../chapters/06-skill-protocol.html"><span>06</span>Skill 协议：一条斜杠命令怎么从解析走到交接</a><a href="../chapters/07-artifacts.html"><span>07</span>产物模型：一页简报与故事、需求、ADR 三张网</a><a href="../chapters/08-dev-story.html"><span>08</span>实施链路：<code>/dev-story</code> 怎么把故事变成代码</a><a href="../chapters/09-story-done.html"><span>09</span>验收：<code>/story-done</code> 如何堵死“基本完成”</a><a href="../chapters/10-hooks.html"><span>10</span>Hook：十五个检查点里，到底谁真的能拦住</a><a href="../chapters/11-registries.html"><span>11</span>注册表：跨文档事实怎么管才不漂移</a><a href="../chapters/12-teams.html"><span>12</span>协作：团队流水线、默认塌缩与“透镜折叠”</a><a href="../chapters/13-engine.html"><span>13</span>引擎与品类适配：统一引擎表、Web 一等公民与品类库</a><a href="../chapters/14-context.html"><span>14</span>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</a><a href="../chapters/15-security.html"><span>15</span>安全边界：能聊天、有 Hook，不等于有沙箱</a><a href="../chapters/16-verification.html"><span>16</span>验证与演进：Markdown 写的框架，怎么证明自己没改坏</a><a href="../chapters/17-mini-studio.html"><span>17</span>最小实验：用两百行 Python 亲手跑通四条核心约束</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.3.0 源码索引、实测数据、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · CCGS v1.3.0 · 快照 abc0de79d6ce · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

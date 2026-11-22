@@ -1,0 +1,136 @@
+# StateGraph：状态、节点、边与 reducer
+
+研究流程里，资料是累计的，草稿是可替换的，批准必须对应当前版本。若把这些字段都当成普通字典写入，串行正常例子可能运行，但并行检索和拒绝修订会暴露含义冲突。
+
+StateGraph 要求把状态形状、节点结果和合并规则写出来。节点读取一份快照，返回本次变化，运行时再形成下一份快照。明确每个字段怎样变化，比增加更多节点更能改善可解释性。
+
+## StateGraph 是构建器
+
+以下完整例子演示固定预算步骤，不使用模型或网络：
+
+```python
+from typing import TypedDict
+from langgraph.graph import START, END, StateGraph
+
+class BudgetState(TypedDict):
+    frames: int
+    exposure_s: int
+    total_s: int
+
+def budget(state: BudgetState) -> dict:
+    return {"total_s": state["frames"] * (state["exposure_s"] + 20) + 300}
+
+builder = StateGraph(BudgetState)
+builder.add_node("budget", budget)
+builder.add_edge(START, "budget")
+builder.add_edge("budget", END)
+compiled = builder.compile()
+result = compiled.invoke({"frames": 6, "exposure_s": 180})
+assert result["total_s"] == 1500
+```
+
+构建器尚不能执行，`compile()` 才生成运行对象。TypedDict 描述形状，不等于完整运行时领域校验；真实输入仍要验证正数、单位和上界。本例刻意聚焦状态更新，不代表任意帧数都有效。
+
+## State、Input 与 Output 可以不同
+
+公开输入可只包含申请问题和观测参数，内部状态还保存资料、修订号与失败原因，公开输出只暴露建议和本地回执。用不同 schema 可以减少接口耦合，避免用户提交内部状态字段。
+
+这不构成所有出口的保密保证。`values` 流、调试信息或 trace 可能包含更宽的状态。若内部含未公开课题编号，应在用户事件适配层做字段白名单，同时控制 checkpoint 与日志访问，不把 output schema 当成统一脱敏器。
+
+## 默认 reducer 是覆盖
+
+`draft: str` 使用普通单值语义，后续修订覆盖当前草稿很自然。但两个并行专家若都写 `draft`，同一步里没有合理的单一赢家，运行时通常会报告并发更新错误。
+
+修复方法取决于含义。两份独立意见应放入不同字段或可累计结果集合；一份最终草稿应由下一步聚合节点选择生成。不要用“谁先结束”“谁最后返回”表达权威性，也不要为了消除异常给所有字段添加加法 reducer。
+
+## reducer 是二元合并函数
+
+资料记录可以声明为累计列表：
+
+```python
+from operator import add
+from typing import Annotated, TypedDict
+
+class EvidenceState(TypedDict):
+    notes: Annotated[list[str], add]
+```
+
+运行时用旧值和本次更新计算新值。追加 reducer 要求节点只返回新增记录，返回 `old_notes + new_notes` 会让旧内容再累积一遍。纯函数、确定性以及适合并行合并的代数性质有助于重放；列表追加虽然结合，但不交换，展示顺序仍应按稳定资料编号整理。
+
+空列表对追加字段表示没有新增，不能表示清空。需要替换累计值时，当前 API 可用 `Overwrite` 绕过 reducer，或者设计明确的重建步骤；同一步多处覆盖仍应避免。清理动作要有独立语义，不依靠含糊空值。
+
+### 用两个检索节点手算一次合并
+
+设旧资料为 `[SIM-REQUEST-1]`，规则支路返回 `[SIM-FILTER-2]`，预算支路返回 `[SIM-TIME-4]`。合并后应有三个来源，业务应按来源身份去重和排序，不能把列表首项自动解释成最重要证据。
+
+| 节点返回方式 | 合并后的记录数量 | 原因 |
+| --- | --- | --- |
+| 各支路只返回新资料 | 3 | 一份旧资料加两份更新 |
+| 各支路返回旧资料加新资料 | 5 | 旧资料被追加了两遍 |
+| 两支路写同一个无 reducer 字段 | 无有效结果 | 单值 channel 拒绝并发更新 |
+
+这三种行为来自更新合同，与检索结果是否正确是两个问题。测试除了看文本，还应断言来源集合和数量。
+
+<figure class="concept-diagram" tabindex="0" data-review-figure="lg-reducer">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 396" role="img" aria-labelledby="lg-reducer-title lg-reducer-desc" style="display:block;width:100%;min-width:620px;height:auto">
+<title id="lg-reducer-title">追加 reducer：节点只返回增量</title>
+<desc id="lg-reducer-desc">旧状态：notes = [SIM-REQUEST-1]；两个支路的增量：[SIM-FILTER-2] 与 [SIM-TIME-4]；合并后的状态：3 条来源；不要再返回各自的旧列表。若两个支路都返回旧列表加新记录，最终会得到 5 条。</desc>
+<rect width="960" height="396" fill="var(--paper,#faf8f1)"/>
+<g font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif"><text x="40" y="48" font-size="28" fill="var(--ink,#243b48)" text-anchor="start">追加 reducer：节点只返回增量</text><path d="M176 144 L176 164" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 157 L176 164 L181 157" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="88" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">旧状态</text><text x="344" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">notes = [SIM-REQUEST-1]</text><path d="M176 224 L176 244" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 237 L176 244 L181 237" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="168" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">两个支路的增量</text><text x="344" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">[SIM-FILTER-2] 与 [SIM-TIME-4]</text><rect x="40" y="248" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#e5ede9))" stroke="var(--forest,var(--accent,#29564c))"/><text x="56" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">合并后的状态</text><text x="344" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">3 条来源；不要再返回各自的旧列表</text><path d="M40 332H920" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="40" y="368" font-size="18" fill="var(--muted,#536772)" text-anchor="start">若两个支路都返回旧列表加新记录，最终会得到 5 条。</text></g>
+</svg>
+<figcaption>图：若两个支路都返回旧列表加新记录，最终会得到 5 条。</figcaption>
+</figure>
+
+## Node 只是函数，但签名有层次
+
+节点最少接收 state，返回字典增量。需要业务身份或连接时可接收 `Runtime[Context]`，需要运行配置时使用 Runnable config。依赖从签名中可见，测试便能提供固定上下文，而不必修改全局变量。
+
+节点粒度可以按恢复成本判断。数值格式化不值得单独保存，外部资料查询可能值得独立重试，生成草稿与等待批准则应分开。节点越粗，失败后重复工作越多；越细，schema、调度和版本兼容的维护面越大。
+
+## Edge 表示调度，不表示数据复制
+
+预算节点到审批节点的边意味着前者完成后可激活后者，审批读取的是共享状态视图，并非沿边传来一个私有字典。分支输入若需要独立载荷，应显式使用相应任务机制或转换节点。
+
+多个出边可安排同一步并行工作。同一步任务读取一致的前步快照，某支路先算出 `total_s`，另一支路也不会立即读到它。需要先算后读时，应表达先后依赖。
+
+### 边的含义是安排工作，不是传递专属字典
+
+规则检查与时长检查都依赖原申请，可以并行；最终结论依赖两者，应明确等待全部完成。`add_edge(["rules", "timing"], "conclude")` 表达共同依赖，比单独添加两条普通入边更直接。
+
+如果两支路长短不同，尤其不能仅凭图上两条线就推断聚合只执行一次。用节点执行计数和各步输入断言，确认结论节点在两项结果都可见时运行，避免产生早到的不完整建议。
+
+## compile 做的不只是画图
+
+编译会校验节点和边引用，从状态注解建立 channel，将节点及路由接到触发和写入机制，并绑定保存、store、缓存和中断配置。得到的是可以执行的 Runnable 图，而不是一张图片。
+
+编译后再给原 builder 增加节点，不应期望已存在的运行对象随之更新。部署时应构建新图并管理版本；恢复旧 thread 时，节点名和字段合同仍要匹配。静态检查能发现部分结构错误，不能证明业务分支都正确。
+
+## 一个状态设计检查表
+
+可以为申请写一份字段合同，而非笼统规定所有数据都入 state：
+
+| 字段 | 写入者 | 合并含义 | 生命周期与出口 |
+| --- | --- | --- | --- |
+| `notes` | 检索节点 | 追加新版本化来源 | 草稿和审批所需，可限量 |
+| `total_s` | 预算节点 | 单值替换 | 当前参数的计算结果 |
+| `draft` | 草稿与修订节点 | 当前版本覆盖 | 审批预览可见 |
+| `revision` | 生成及修订节点 | 单调增加 | 绑定批准与回执 |
+| `receipt` | 本地发布节点 | 单值确认结果 | 最终输出，不冒充远程回执 |
+
+还应为每项说明最大规模、删除方式和敏感程度。若两个写入者给字段不同含义，先拆开字段再考虑合并，避免把语义冲突交给 reducer 隐藏。
+
+### 状态字段越多，恢复合同越大
+
+保存整份仪器手册有利于重现，却放大每一步序列化成本；只存 URI 更小，却可能在恢复时读到新版。可用资料编号、revision 和内容指纹固定证据，按审计需求决定是否另行留存原文。
+
+字段改名或语义变化也会影响旧 checkpoint。`window_s` 若以后改成分钟，数据仍可反序列化，却会导致严重预算误判。版本验证必须运行旧状态下的计算和路由，不能仅测试“能加载”。
+
+## 源码入口
+
+- `langgraph/graph/state.py`：检查 schema 如何转成 channel，以及编译时绑定内容。
+- `langgraph/graph/_branch.py`：核对条件边的目标处理。
+- `langgraph/channels/last_value.py`：理解单值字段为何拒绝并发写。
+- `langgraph/channels/binop.py`：观察二元 reducer 的应用方式。
+- `langgraph/graph/message.py`：对照通用列表与消息专用合并。
+
+可以从 `notes` 注解开始一路追到写入应用，确认“节点返回增量”在代码中怎样成为下一步的可见值。

@@ -1,0 +1,637 @@
+{
+  "repository": "https://github.com/TencentCloud/Octop",
+  "tag": "v1.0.3b7",
+  "version": "1.0.3b7",
+  "commit": "ecd2cdbce3a54dee0f424f021d0a144d9669685e",
+  "upstream_date": "2026-11-18",
+  "captured": "2026-11-22",
+  "file_count": 92,
+  "method": "Static source and documentation inspection; Octop runtime not executed.",
+  "files": {
+    "pyproject.toml": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/pyproject.toml",
+      "sha256": "590239767dc2e2c6734e7ae2f031adba286b25be38afbf6399070bc2086c6e47",
+      "lines": 229
+    },
+    "README_CN.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/README_CN.md",
+      "sha256": "a0a4471ed1ac5ac88c49838539ff2c1cecdf03a463f55029edaa710377c2c690",
+      "lines": 607
+    },
+    "docs/architecture.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/architecture.md",
+      "sha256": "081dec4a1a2dce2bea57be9212ab86e63781b20fbf223ba23688f010e643f305",
+      "lines": 169
+    },
+    "AGENTS.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/AGENTS.md",
+      "sha256": "e7a44a81fa47363c17d7954a64b2ec11d658d556f81d46ce513bdb8bf0c962e1",
+      "lines": 437
+    },
+    "src/octop/api/common/agent.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/api/common/agent.py",
+      "sha256": "f0a82f22e336cd951d93a2d7ba6b6d9b7b49c3732c71e791254c0ed137d094c5",
+      "lines": 114
+    },
+    "src/octop/api/routers/chat/ws.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/api/routers/chat/ws.py",
+      "sha256": "cbf6a2a80187ad454354b57d0fe7932eda24145199237aeca39c9c4ea9a3c23b",
+      "lines": 852
+    },
+    "docs/adr/001-single-process-model.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/adr/001-single-process-model.md",
+      "sha256": "10c12d5e41cdd2e4baf7d321b27ef17e3bd6eed5aa50468d1ff819d67b588286",
+      "lines": 36
+    },
+    "docs/adr/002-database-backends.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/adr/002-database-backends.md",
+      "sha256": "16b7d9dd3262704fa1c4512dd3b83d88aefb96c2e6c5c0136e4f91e9bb771c77",
+      "lines": 70
+    },
+    "docs/adr/003-skill-package-kb-pg-storage.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/adr/003-skill-package-kb-pg-storage.md",
+      "sha256": "7c6f34f72308e37cdcdce2f271265b817fafd70149c8c30af1633f64a5c68b3e",
+      "lines": 85
+    },
+    "src/octop/infra/server.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/server.py",
+      "sha256": "cc1290628b2c0d7b2c037eed90c8e57daf004f2693b3966e5311a4a3cfabc25c",
+      "lines": 858
+    },
+    "src/octop/launch.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/launch.py",
+      "sha256": "153e5ea5362be056b69b9eb4415502cb3d3012d1964bdd1c0983a84c9c476134",
+      "lines": 185
+    },
+    "src/octop/infra/db/factory.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/db/factory.py",
+      "sha256": "5b131ba9f07f280e537221374c7d83d5468b7ea28435c576b6f2e054286be924",
+      "lines": 44
+    },
+    "src/octop/infra/db/rebind.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/db/rebind.py",
+      "sha256": "c5e99764fb19fe3cfe1fcf164d2569d9c89bb1e0a81979d45d9c0ae5a8ed06e0",
+      "lines": 158
+    },
+    "src/octop/infra/history/retire_v2.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/history/retire_v2.py",
+      "sha256": "770fff6947e874f653377a539125020b25690cf685b731dafe9859d786f5e3b3",
+      "lines": 481
+    },
+    "src/octop/infra/agents/manager.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/manager.py",
+      "sha256": "611bd5002e1ac4381ad72b74caebf503f6ed310c7e309d4e8bbe0e4522415e4c",
+      "lines": 4947
+    },
+    "src/octop/infra/agents/managed.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/managed.py",
+      "sha256": "8cf4a85037553b7f0f22b05d620a8b8a61fb745bdf9de8d3e0f5a6cbcf029749",
+      "lines": 287
+    },
+    "src/octop/infra/agents/settings/runtime_limits.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/settings/runtime_limits.py",
+      "sha256": "ea1010f9abd359df713876143589dc7b4339740886fd153dc86237a957ee92bb",
+      "lines": 340
+    },
+    "src/octop/infra/agents/middleware/consecutive_tool_call.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/middleware/consecutive_tool_call.py",
+      "sha256": "9d80860de567c8f8042a6eb8e675be02ed21d7a48e1a578f00df0f3b7bbda032",
+      "lines": 149
+    },
+    "src/octop/infra/agents/middleware/model_failover.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/middleware/model_failover.py",
+      "sha256": "9cdbb5206d46b3ccfc87bd98652041df9c7431f8b1ee6f258aeebac79cb3dd21",
+      "lines": 203
+    },
+    "src/octop/infra/agents/middleware/octop_ui_offload.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/middleware/octop_ui_offload.py",
+      "sha256": "55f55c3bf3a72b27489679060721d4a43408f8a3bbb3c4eb1e995c0a9b44200c",
+      "lines": 88
+    },
+    "src/octop/infra/agents/acp/session_modes.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/acp/session_modes.py",
+      "sha256": "0e8abccb4bf05bfcda7771b92feccb39c51a3eb4562852b3ba6008a934a73d31",
+      "lines": 211
+    },
+    "src/octop/api/routers/chat/turn.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/api/routers/chat/turn.py",
+      "sha256": "2591738c51e4607a85595b6378cecb7bf9d5b7ead786e1bb1e57bf7b1b894577",
+      "lines": 412
+    },
+    "src/octop/infra/gateway/threads.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/gateway/threads.py",
+      "sha256": "9c727291d78303ebce8e2a5ccfb6e1d450188cec1d62869ac36bc8bfbe033a63",
+      "lines": 556
+    },
+    "src/octop/infra/agents/memory/thread_cleanup.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/memory/thread_cleanup.py",
+      "sha256": "f937e950ac9baf1468603343de67b6dc40f073daee1610044eb32a51041051c1",
+      "lines": 995
+    },
+    "tests/integration/test_boundary_authz.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/tests/integration/test_boundary_authz.py",
+      "sha256": "4e7fe7085f7a4c0912fa1c362354e485e9fd23bdc3679974262aca804110a66c",
+      "lines": 129
+    },
+    "src/octop/infra/db/pool.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/db/pool.py",
+      "sha256": "121408df93c8ca45754dfcb965e71fa9db7cab16dcb982190446f54196aa2725",
+      "lines": 205
+    },
+    "src/octop/infra/history/projection.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/history/projection.py",
+      "sha256": "4452a21de3618f555f549e1ed30bc4f57731d3760e6fb4fef7108f5a6cf5ac5c",
+      "lines": 286
+    },
+    "src/octop/infra/agents/memory/postgres_storage.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/memory/postgres_storage.py",
+      "sha256": "cf9575cb29a9012e7d09149861e4ff60cb47cceee1853b942033ff540796da24",
+      "lines": 220
+    },
+    "src/octop/infra/db/migrations/001_initial.sql": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/db/migrations/001_initial.sql",
+      "sha256": "2728de66401dc9f1a1b4592bb747b61bcde7609c8842b315a67ac580869386ac",
+      "lines": 270
+    },
+    "docs/agent-backend-file-io.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/agent-backend-file-io.md",
+      "sha256": "c4e8096811687756bbbaf885dd4fdd7b83b301ffbab4e49e7391f2f1399b381b",
+      "lines": 326
+    },
+    "src/octop/infra/backend/adapter.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/backend/adapter.py",
+      "sha256": "7132a91196b227129a89b21b703b0d427cb94d0a8f1d9a48e9a131aaf40113ab",
+      "lines": 191
+    },
+    "src/octop/infra/backend/resolver.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/backend/resolver.py",
+      "sha256": "33a36bd500537ec14443c13fc7262a1d811467f239b5e3d9fa8c778ad2521132",
+      "lines": 227
+    },
+    "src/octop/infra/backend/docker_spec.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/backend/docker_spec.py",
+      "sha256": "4fba1821000ccd2d5a0515b965284e74d8f4b55cf7b37bb47b6458e796f6af25",
+      "lines": 152
+    },
+    "src/octop/infra/backend/tos_backend.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/backend/tos_backend.py",
+      "sha256": "4950259dc310c08baae7bbc1813901e46eb017378312779c3e86e3937e63f039",
+      "lines": 212
+    },
+    "src/octop/infra/utils/host_dirs.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/utils/host_dirs.py",
+      "sha256": "bf8c9ce7a74059e878dfb15baf9039175741e0919178db0164c05aa747d8e49a",
+      "lines": 422
+    },
+    "src/octop/infra/gateway/process/processor.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/gateway/process/processor.py",
+      "sha256": "4311d29242287e4b9460ba1bd5cbc8a6d28e69ce8fe030b3cee533f08837abfc",
+      "lines": 2243
+    },
+    "src/octop/infra/gateway/process/stream_project.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/gateway/process/stream_project.py",
+      "sha256": "d7faeeb701527c4c36b9e3b836567a04801996ba7f60160abac2d1f1b9ab5672",
+      "lines": 325
+    },
+    "src/octop/infra/agents/memory/backend.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/memory/backend.py",
+      "sha256": "79314baf772824d61bb18125b35071a84e2edd127f648939c68457d94488c241",
+      "lines": 87
+    },
+    "src/octop/infra/knowledge/index.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/knowledge/index.py",
+      "sha256": "1302cd1b6b882c9ef0f8927823acddb60052030c77dd06c61677db58f56c681b",
+      "lines": 162
+    },
+    "src/octop/infra/knowledge/pg_index.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/knowledge/pg_index.py",
+      "sha256": "e4c77de4baf679c2433e622e5757ae31497f1c63ca6f0f8d18b55a2d4c5bd05e",
+      "lines": 207
+    },
+    "src/octop/infra/knowledge/retrieve.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/knowledge/retrieve.py",
+      "sha256": "8712cb32739e7db8320a9ca8c1eeefe861789a8193b8d5c41b91ff663e54b351",
+      "lines": 248
+    },
+    "src/octop/infra/knowledge/rerank.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/knowledge/rerank.py",
+      "sha256": "95c3e08e16cd57b342bab882bd6c13c165631a3432623a65991b49016e5f87f7",
+      "lines": 165
+    },
+    "src/octop/infra/knowledge/graph.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/knowledge/graph.py",
+      "sha256": "bbaa77d3162ffb7f9f1e45fb32a6f4961bc13769f9c4520a944e67202eb1fc26",
+      "lines": 391
+    },
+    "src/octop/infra/knowledge/jobs.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/knowledge/jobs.py",
+      "sha256": "d3c6d51139131250cb1022b01524aa2ea4d2b691bffa8ada2cb9c898911e0f0b",
+      "lines": 102
+    },
+    "src/octop/infra/agents/plugins/manager.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/plugins/manager.py",
+      "sha256": "5929fe19facc5c82f75a4f1d1423341b76445c4848d4a815d11c666a7cee87a0",
+      "lines": 1137
+    },
+    "src/octop/infra/connectors/builder.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/connectors/builder.py",
+      "sha256": "66d044c4b59d8c63a9ba0a420981fa86b55d211eff5f58a4b19a1d88ba54e173",
+      "lines": 817
+    },
+    "src/octop/infra/connectors/catalog.json": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/connectors/catalog.json",
+      "sha256": "47a0afec068f57e577709ece8d4ca5b19127135f1b04437506dd347a70ef1655",
+      "lines": 830
+    },
+    "src/octop/infra/connectors/custom_mcp.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/connectors/custom_mcp.py",
+      "sha256": "dd11547c68eac69314a12cec70b1878f325fe2841132a65f118305a2caa8a9c6",
+      "lines": 528
+    },
+    "src/octop/infra/connectors/oauth/discovery.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/connectors/oauth/discovery.py",
+      "sha256": "692b5342548d8b96c3c3ff2ab72326c3d59fef6acfc38948a57120fbd53bd14f",
+      "lines": 224
+    },
+    "src/octop/infra/connectors/oauth/mcp.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/connectors/oauth/mcp.py",
+      "sha256": "3081afebdbc5fce127ae03babea81019e6427862a38a8efc4da58f122abc37d7",
+      "lines": 295
+    },
+    "src/octop/infra/agents/acp/turn.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/acp/turn.py",
+      "sha256": "4c2e8afa2923f7b047283ba0b5dd1fe62e8bc354dbbb7dc246f614e0feaa5492",
+      "lines": 464
+    },
+    "src/octop/infra/agents/acp/mcp_tools.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/acp/mcp_tools.py",
+      "sha256": "138ea8dd0fa63ada7b19b48b72da3f4ded587c2a678532fc014964b6f0be129e",
+      "lines": 119
+    },
+    "docs/octop-ui-payload-offload.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/octop-ui-payload-offload.md",
+      "sha256": "28801ba3d22dc4988a22c69f99f80d92e5af6d565da6c2cecabfce66bd2a59f8",
+      "lines": 151
+    },
+    "plugins/README_CN.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/plugins/README_CN.md",
+      "sha256": "6139c1814e8f6d100de483eb7aefdeff658098732430453594ec6a14c16e98b4",
+      "lines": 133
+    },
+    "docs/expert-teams.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/expert-teams.md",
+      "sha256": "01d1c30093698853b4229a71a787b96dac4c028e64c148793ccf7593ff160827",
+      "lines": 162
+    },
+    "docs/agent-interop-mailbox.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/agent-interop-mailbox.md",
+      "sha256": "da7d121088ce0a2f10cd1c4a2c02dbdd5e9044c146cc9f9bb694ab9d2c522aea",
+      "lines": 323
+    },
+    "src/octop/infra/agents/teams/jobs.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/teams/jobs.py",
+      "sha256": "e0b2c04102eb5fc7a2636093a1b05cf798bc2aae82b7932b1809c74e754db4f1",
+      "lines": 77
+    },
+    "src/octop/infra/agents/teams/team_manager.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/teams/team_manager.py",
+      "sha256": "0bc067e4ca14ee0e7d0336c06b38f4c35a34f8c5bff5e5e417cdc49a756ef7b0",
+      "lines": 2881
+    },
+    "src/octop/infra/agents/teams/service.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/teams/service.py",
+      "sha256": "69ced56b89e1ed363900074a9f326a44ea5ed3361c5f14ee7c3b8ee4b3be0249",
+      "lines": 367
+    },
+    "src/octop/api/middleware/jwt_auth.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/api/middleware/jwt_auth.py",
+      "sha256": "fcf1a5f43a337e67111638d36e805a3783acccb469e421ffc673452f618dbdd1",
+      "lines": 74
+    },
+    "src/octop/api/middleware/setup_lockdown.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/api/middleware/setup_lockdown.py",
+      "sha256": "a7d3e7e482de6d60f5cd0620f3355aa57387e83ff9c0470670ba6d023682881a",
+      "lines": 41
+    },
+    "src/octop/api/routers/auth_mfa.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/api/routers/auth_mfa.py",
+      "sha256": "2a7e5a998191719bf0fe3dec088606fc5f4c697555465bc1ccddece0a3084511",
+      "lines": 309
+    },
+    "src/octop/api/routers/cloud.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/api/routers/cloud.py",
+      "sha256": "edf26f28d9062d1750353816559457d3e1f4feb139c6cfdd804776ee5058bf1f",
+      "lines": 381
+    },
+    "src/octop/infra/gateway/hitl/coordinator.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/gateway/hitl/coordinator.py",
+      "sha256": "6ede351ecc83286d3b52b369e1d6a144ad3df1c6732b1eab5966409603e01aef",
+      "lines": 855
+    },
+    "src/octop/infra/agents/security/hitl_session.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/security/hitl_session.py",
+      "sha256": "ce50b5fe67cacabfcb7ecd53e49ee082a3fc7932a24076e68da74dda72ddda19",
+      "lines": 314
+    },
+    "src/octop/infra/agents/acp/permissions.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/acp/permissions.py",
+      "sha256": "17f8aa03a7b1669de5a6707ba25e4f0feed19a426983c42b3652dd69aa7cb0bb",
+      "lines": 46
+    },
+    "src/octop/infra/utils/ssrf_guard.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/utils/ssrf_guard.py",
+      "sha256": "6ef357acdfd68d043c1850d780b01cc324b739166e945a6afb00fb27f17c9540",
+      "lines": 221
+    },
+    "src/octop/infra/bridge/tunnel_policy.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/bridge/tunnel_policy.py",
+      "sha256": "e8ae0e3c8dcc5e91bc7a120ee6b0b257da2810d0903d6cfe85235fb0bcba7e7d",
+      "lines": 121
+    },
+    "dashboard/package.json": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/dashboard/package.json",
+      "sha256": "4439c6a111e5dda86f5594c17ef1e3d03b449d433ff6920efa193cdf46941966",
+      "lines": 94
+    },
+    "dashboard/src/pages/Chat/hooks/chatStore.ts": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/dashboard/src/pages/Chat/hooks/chatStore.ts",
+      "sha256": "e2afd1d28d790e1934985d7e798892aea0c739a43982fedaca2f9eaf34407304",
+      "lines": 4451
+    },
+    "dashboard/src/pages/Chat/hooks/wsResumeGate.ts": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/dashboard/src/pages/Chat/hooks/wsResumeGate.ts",
+      "sha256": "a2d0488248bea5b3d613dfbcac45ea8064876109493e9d5da079550cdcf62fae",
+      "lines": 114
+    },
+    "dashboard/src/pages/Chat/hooks/frameThread.ts": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/dashboard/src/pages/Chat/hooks/frameThread.ts",
+      "sha256": "6d8faf62aae93076b42385a3a2ad8d83dfc0088a8ede7301903b2e6de8eebdc3",
+      "lines": 15
+    },
+    "dashboard/src/utils/parseHarnessChunk.ts": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/dashboard/src/utils/parseHarnessChunk.ts",
+      "sha256": "56d327916d0af5cca7d4671ea22ec0466beee26dc62156697297681fe0991f01",
+      "lines": 365
+    },
+    "dashboard/src/pages/Chat/hooks/chatStore.history.test.ts": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/dashboard/src/pages/Chat/hooks/chatStore.history.test.ts",
+      "sha256": "a8e00e88e554ed65eb3d135baf2737120ef5435cd4865e8187fadcb706bed301",
+      "lines": 95
+    },
+    "docs/acp.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/acp.md",
+      "sha256": "0eb83d2f66d5270638030b77d2a50a226a7fd8d509d42e77e2efb9fbb336b634",
+      "lines": 207
+    },
+    "docs/bridge.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/bridge.md",
+      "sha256": "3c4d4e0283222393f81852468fe22809c7bc2da2279aedb157af3bd339382c68",
+      "lines": 220
+    },
+    "src/octop/api/routers/managed.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/api/routers/managed.py",
+      "sha256": "8ffbd1c15bdf86b489d756420628c9cc1e97b92a2dfdaf36d0f03221bbee8ce3",
+      "lines": 214
+    },
+    "src/octop/infra/bridge/manager.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/bridge/manager.py",
+      "sha256": "2d1c5b14a405dd64b12113e3e2cbafe5d6589a661e417e290b89f61fbf680932",
+      "lines": 2744
+    },
+    "src/octop/infra/bridge/transport.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/bridge/transport.py",
+      "sha256": "5ab360c471290f1fada48a27a0d6acbfae446643554335090c6a597301af2789",
+      "lines": 455
+    },
+    "src/octop/infra/bridge/http_tunnel.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/bridge/http_tunnel.py",
+      "sha256": "61eaaecb74df84e9491e297cf5992c0d8c001a681a98ef25376a3ec36e3f5665",
+      "lines": 109
+    },
+    "desktop/README.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/desktop/README.md",
+      "sha256": "3504ca7eaac1867214a8131fb39b40580e4f952d2f52a9063f8b58afbb6c7ad9",
+      "lines": 269
+    },
+    "docs/cluster_CN.md": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/cluster_CN.md",
+      "sha256": "7523296f13359f79315599b203cc7ec4677d8e758f32e71204c367afd88b0759",
+      "lines": 350
+    },
+    "deploy/docker/Dockerfile": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/deploy/docker/Dockerfile",
+      "sha256": "549dc48fed92705a5e1636f24ddfb594059e0617759cebbe193f2bd4337695ef",
+      "lines": 200
+    },
+    "deploy/docker/docker-compose.yml": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/deploy/docker/docker-compose.yml",
+      "sha256": "2f887e7fa881ad4f641c8f9c67dcb8bd12c5f9a6b225a65d6a535756338c2d24",
+      "lines": 63
+    },
+    "deploy/docker/docker-compose.cluster.yml": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/deploy/docker/docker-compose.cluster.yml",
+      "sha256": "d6182a01227f9f623f34da534787d43fa01146860596930c46e740c5a48bbb07",
+      "lines": 99
+    },
+    "deploy/helm/octop/Chart.yaml": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/deploy/helm/octop/Chart.yaml",
+      "sha256": "73b6191c6f1489ddeb899ae17f47f5bd0d8972de82271c280fa8a91c41d72b42",
+      "lines": 7
+    },
+    "Makefile": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/Makefile",
+      "sha256": "c769f4e2ccf1b784433db7a45978fb857bbd213f96f4be52d0644564f821b7b8",
+      "lines": 338
+    },
+    ".github/workflows/ci.yml": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/.github/workflows/ci.yml",
+      "sha256": "26ac4ce1ce99008925a561391816fd1b82f5e258ff9bfd6093c2544e4a2b3b3e",
+      "lines": 156
+    },
+    "src/octop/infra/db/lease.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/db/lease.py",
+      "sha256": "a338bb94b9ae75ec992c096e40273ea3ac15e15a15d6c2d1b8ac3a523d56c056",
+      "lines": 35
+    },
+    "src/octop/infra/cron/manager.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/cron/manager.py",
+      "sha256": "568112a63b2d9cd07beb55185447f576f95aeffea961910732d2a17a597143c4",
+      "lines": 708
+    },
+    "src/octop/infra/cron/job.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/cron/job.py",
+      "sha256": "5ce9c1b3a0853a4b1ef2c4ca83cbffb9b8ec2c4694a059331deb6b82d891cdd3",
+      "lines": 176
+    },
+    "src/octop/infra/cron/session_target.py": {
+      "url": "https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/cron/session_target.py",
+      "sha256": "e53c069ffbf6b8e498b374421243c4a3d33b599e959a086e99e9dee5d9c8bb12",
+      "lines": 19
+    }
+  },
+  "chapters": {
+    "00-preface": [
+      "pyproject.toml",
+      "README_CN.md",
+      "docs/architecture.md",
+      "AGENTS.md"
+    ],
+    "01-requirements": [
+      "README_CN.md",
+      "docs/architecture.md",
+      "src/octop/api/common/agent.py",
+      "src/octop/api/routers/chat/ws.py"
+    ],
+    "02-architecture": [
+      "docs/architecture.md",
+      "AGENTS.md",
+      "docs/adr/001-single-process-model.md",
+      "docs/adr/002-database-backends.md",
+      "docs/adr/003-skill-package-kb-pg-storage.md",
+      "src/octop/infra/server.py"
+    ],
+    "03-lifecycle": [
+      "src/octop/launch.py",
+      "src/octop/infra/server.py",
+      "src/octop/infra/db/factory.py",
+      "src/octop/infra/db/rebind.py",
+      "src/octop/infra/history/retire_v2.py"
+    ],
+    "04-agent-runtime": [
+      "src/octop/infra/agents/manager.py",
+      "src/octop/infra/agents/managed.py",
+      "src/octop/infra/agents/settings/runtime_limits.py",
+      "src/octop/infra/agents/middleware/consecutive_tool_call.py",
+      "src/octop/infra/agents/middleware/model_failover.py",
+      "src/octop/infra/agents/middleware/octop_ui_offload.py",
+      "src/octop/infra/agents/acp/session_modes.py"
+    ],
+    "05-identity": [
+      "src/octop/api/common/agent.py",
+      "src/octop/api/routers/chat/turn.py",
+      "src/octop/infra/gateway/threads.py",
+      "src/octop/infra/agents/memory/thread_cleanup.py",
+      "tests/integration/test_boundary_authz.py"
+    ],
+    "06-storage": [
+      "docs/adr/002-database-backends.md",
+      "docs/adr/003-skill-package-kb-pg-storage.md",
+      "src/octop/infra/db/pool.py",
+      "src/octop/infra/history/projection.py",
+      "src/octop/infra/history/retire_v2.py",
+      "src/octop/infra/agents/memory/thread_cleanup.py",
+      "src/octop/infra/agents/memory/postgres_storage.py",
+      "src/octop/infra/db/migrations/001_initial.sql"
+    ],
+    "07-workspace": [
+      "docs/agent-backend-file-io.md",
+      "src/octop/infra/backend/adapter.py",
+      "src/octop/infra/backend/resolver.py",
+      "src/octop/infra/backend/docker_spec.py",
+      "src/octop/infra/backend/tos_backend.py",
+      "src/octop/infra/utils/host_dirs.py",
+      "src/octop/api/routers/chat/turn.py"
+    ],
+    "08-turn-path": [
+      "src/octop/api/routers/chat/ws.py",
+      "src/octop/api/routers/chat/turn.py",
+      "src/octop/infra/gateway/process/processor.py",
+      "src/octop/infra/gateway/process/stream_project.py",
+      "src/octop/infra/agents/middleware/consecutive_tool_call.py",
+      "src/octop/infra/agents/middleware/model_failover.py"
+    ],
+    "09-memory-rag": [
+      "src/octop/infra/agents/memory/backend.py",
+      "src/octop/infra/agents/memory/postgres_storage.py",
+      "src/octop/infra/knowledge/index.py",
+      "src/octop/infra/knowledge/pg_index.py",
+      "src/octop/infra/knowledge/retrieve.py",
+      "src/octop/infra/knowledge/rerank.py",
+      "src/octop/infra/knowledge/graph.py",
+      "src/octop/infra/knowledge/jobs.py"
+    ],
+    "10-extensions": [
+      "src/octop/infra/agents/manager.py",
+      "src/octop/infra/agents/plugins/manager.py",
+      "src/octop/infra/connectors/builder.py",
+      "src/octop/infra/connectors/catalog.json",
+      "src/octop/infra/connectors/custom_mcp.py",
+      "src/octop/infra/connectors/oauth/discovery.py",
+      "src/octop/infra/connectors/oauth/mcp.py",
+      "src/octop/infra/agents/acp/turn.py",
+      "src/octop/infra/agents/acp/mcp_tools.py",
+      "docs/octop-ui-payload-offload.md",
+      "plugins/README_CN.md"
+    ],
+    "11-teams": [
+      "docs/expert-teams.md",
+      "docs/agent-interop-mailbox.md",
+      "src/octop/infra/agents/teams/jobs.py",
+      "src/octop/infra/agents/teams/team_manager.py",
+      "src/octop/infra/agents/teams/service.py"
+    ],
+    "12-security": [
+      "src/octop/api/middleware/jwt_auth.py",
+      "src/octop/api/middleware/setup_lockdown.py",
+      "src/octop/api/routers/auth_mfa.py",
+      "src/octop/api/routers/cloud.py",
+      "src/octop/api/common/agent.py",
+      "src/octop/infra/gateway/hitl/coordinator.py",
+      "src/octop/infra/agents/security/hitl_session.py",
+      "src/octop/infra/agents/acp/permissions.py",
+      "src/octop/infra/backend/docker_spec.py",
+      "src/octop/infra/utils/ssrf_guard.py",
+      "src/octop/infra/bridge/tunnel_policy.py"
+    ],
+    "13-dashboard": [
+      "dashboard/package.json",
+      "dashboard/src/pages/Chat/hooks/chatStore.ts",
+      "dashboard/src/pages/Chat/hooks/wsResumeGate.ts",
+      "dashboard/src/pages/Chat/hooks/frameThread.ts",
+      "dashboard/src/utils/parseHarnessChunk.ts",
+      "dashboard/src/pages/Chat/hooks/chatStore.history.test.ts"
+    ],
+    "14-interop": [
+      "docs/acp.md",
+      "docs/bridge.md",
+      "src/octop/api/routers/managed.py",
+      "src/octop/infra/agents/managed.py",
+      "src/octop/infra/agents/acp/session_modes.py",
+      "src/octop/infra/agents/acp/turn.py",
+      "src/octop/infra/bridge/manager.py",
+      "src/octop/infra/bridge/transport.py",
+      "src/octop/infra/bridge/http_tunnel.py",
+      "src/octop/infra/bridge/tunnel_policy.py"
+    ],
+    "15-operations": [
+      "desktop/README.md",
+      "docs/cluster_CN.md",
+      "deploy/docker/Dockerfile",
+      "deploy/docker/docker-compose.yml",
+      "deploy/docker/docker-compose.cluster.yml",
+      "deploy/helm/octop/Chart.yaml",
+      "Makefile",
+      ".github/workflows/ci.yml",
+      "src/octop/infra/db/lease.py",
+      "src/octop/infra/cron/manager.py",
+      "src/octop/infra/cron/job.py",
+      "src/octop/infra/cron/session_target.py"
+    ],
+    "16-tradeoffs": [
+      "docs/adr/001-single-process-model.md",
+      "docs/adr/002-database-backends.md",
+      "docs/adr/003-skill-package-kb-pg-storage.md",
+      "src/octop/infra/agents/manager.py",
+      "src/octop/infra/gateway/process/processor.py",
+      "dashboard/src/pages/Chat/hooks/chatStore.ts"
+    ],
+    "17-mini-host": [
+      "src/octop/api/routers/chat/turn.py",
+      "src/octop/infra/gateway/threads.py",
+      "src/octop/infra/agents/acp/session_modes.py",
+      "src/octop/infra/agents/middleware/consecutive_tool_call.py",
+      "src/octop/infra/agents/memory/thread_cleanup.py",
+      "src/octop/infra/agents/teams/jobs.py"
+    ]
+  }
+}

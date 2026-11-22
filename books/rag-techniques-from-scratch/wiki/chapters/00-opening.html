@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从文档解析、切分、混合检索到纠错、图谱、评估与上线边界的 RAG 工程实战指南"><meta name="author" content="独立源码研究">
+<title>开篇：文档都在库里，助手为什么还会答错 · RAG 工程实战</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">RAG</span><span>RAG 工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 00</div><div class="rail-title">开篇：文档都在库里，助手为什么还会答错</div><ol><li><a href="#这本书要搭一套什么系统">这本书要搭一套什么系统</a></li><li><a href="#为什么对照-rag-techniques-来写">为什么对照 RAG_Techniques 来写</a></li><li><a href="#研究边界与源码快照">研究边界与源码快照</a></li><li><a href="#全书怎么读">全书怎么读</a></li><li><a href="#本章对应代码与来源">本章对应代码与来源</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 00 章</div><h1>开篇：文档都在库里，助手为什么还会答错</h1><div class="chapter-meta">RAG_Techniques 快照 2026-11-02 · 约 10 分钟</div></header><div class="prose"><p>研发同事在值班群里问了一句：“支付回调已经验签了，重复通知还会不会重复发货？”知识库助手两秒就回了话，语气笃定，底下还贴了两段支付文档。点开引用一看，第一段是半年前已经废弃的 v1 草案，第二段只讲了验签顺序，压根没提幂等规则。表面上看有理有据，细查就会发现支撑结论的证据少了一半，还掺进一条失效条款。</p>
+<p>这个教学场景浓缩了检索增强生成（RAG）在团队落地时最常见的一类麻烦：文档明明在库里，检索器却没找全；即便找回相关段落，版本、权限和上下文预算里任意一环出错，最后送进大模型的依然是残缺材料。要把文档问答做成能排查、能回归的工程系统，必须沿着整条数据与查询链路拆开来看。</p>
+<h2 id="这本书要搭一套什么系统">这本书要搭一套什么系统<a class="anchor" href="#这本书要搭一套什么系统" aria-label="链接到本节">#</a></h2>
+<p>全书围绕一套企业研发知识库与支付规范助手展开。资料库里有支付回调规范、退款说明、对账说明、模块归属目录和个人排查笔记。使用者有三类诉求：新人查流程、值班研发核对规则和找负责人、文档维护者确认新版本是否生效。</p>
+<p>先划清一条业务红线：这套助手只读规范、摘录证据，绝不替人执行支付、退款或改订单状态。静态规则文档、实时交易状态和业务写权限分属不同系统，把它们硬塞进同一个向量库指望模型自己分清，上线后早晚出事故。</p>
+<p>配套的 <code>examples/documents.jsonl</code> 包含 10 条独立编写的教学片段，刻意放进了现行规范 v2、已废弃反例 v1、跨两段拆分的验签与幂等规则、跨文档的模块与负责人关系，以及 Alice 和 Bob 各自的私人笔记。样本故意做小，方便读者拿笔手算每一路排序、RRF 融合分数和预算裁剪，再对照程序输出核验。</p>
+<h2 id="为什么对照-rag-techniques-来写">为什么对照 RAG_Techniques 来写<a class="anchor" href="#为什么对照-rag-techniques-来写" aria-label="链接到本节">#</a></h2>
+<p><a href="https://github.com/NirDiamant/RAG_Techniques">NirDiamant/RAG_Techniques</a> 收录了 47 份 Jupyter Notebook（42 份技术方案与框架变体、5 份评估示例）和 21 份独立可运行脚本，几乎覆盖了从 Simple RAG 到 OCR 4.1 解析、混合检索、重排、HyDE、HyPE、CRAG、Self-RAG、RAPTOR、GraphRAG 和 DeepEval 的主流路线。单独打开某一份 Notebook 很容易跑通一个技巧，却很难回答真正的工程问题：什么故障该用哪招，哪些组件现在根本不需要装。</p>
+<p>本书按真实工程演进重写这条路线：从需求与验收口径出发，推导数据模型和接口边界；先交付一条零依赖、可复现的离线检索基线；等固定题集暴露出明确失败模式，再逐层引入切分改进、混合融合、查询增强、纠错状态机、层次摘要、图谱和多模态扩展。</p>
+<h2 id="研究边界与源码快照">研究边界与源码快照<a class="anchor" href="#研究边界与源码快照" aria-label="链接到本节">#</a></h2>
+<p>本书所有上游源码引用均固定在提交 <code>2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6</code>（上游提交日期 2026-11-02，本地核对日期 2026-11-22）。相比早先版本，这批源码完成了三件对工程实践很有参考价值的更新：Mistral OCR 4 升级到 OCR 4.1 块感知解析、全仓 Notebook 与脚本迁移至 LangChain 1.x 与 LlamaIndex 0.14、以及 2026 年 10 月末停服旧模型后的模型与 CI 语法审计。</p>
+<p>为了保持口径诚实，这里一次说明全书的证据边界（细节汇总在附录 B）：</p>
+<ul>
+<li>书中标注的源码行为来自对上游仓库核心 Notebook、<code>helper_functions.py</code>、CI 工作流和脚本的静态核对，以及 8 篇原始论文的标题与摘要校验，不声称在本地复现了所有远程托管服务或模型效果排行榜。</li>
+<li>配套的 Python 教学实验（<code>examples/mini_rag.py</code>、<code>examples/evaluate.py</code>、<code>examples/test_mini_rag.py</code>）全部基于 Python 3.10+ 标准库原创编写，无需第三方包或 API Key。它实现了 BM25、词频余弦、RRF、块感知切分、离线 HyPE 问题代理、CRAG 有界纠错路由、权限与版本前置过滤、邻域扩展和证据打包；但其中的词频余弦不具备语义 embedding 能力，程序只交付证据轨迹，不调用大模型生成自然语言回答。</li>
+<li>教学语料和离线题集用于把机制讲透并跑通 20 项自动化单元测试，不作为真实生产准确率或吞吐量承诺。</li>
+</ul>
+<p>在项目根目录直接运行下面两条命令，就可以看到基线证据包和完整测试结果：</p>
+<pre><code class="language-bash">python3 examples/mini_rag.py
+python3 -m unittest discover -s examples -v
+</code></pre>
+<h2 id="全书怎么读">全书怎么读<a class="anchor" href="#全书怎么读" aria-label="链接到本节">#</a></h2>
+<p>前 3 章交代需求、整体链路与资料入库。第 4 到 8 章覆盖切分、离线基线、混合检索与重排、查询增强和证据组装。第 9 章建立固定题集与评估体系，之后第 10 到 13 章按需展开纠错检索、层次索引与记忆、图谱以及多模态与 Agent。第 14 章专门拆解上线后的权限、版本快照、模型停服与故障边界，第 15 章用一次完整请求把全书串起来。</p>
+<p>读完后遇到一条答错的问答记录，拿着它的候选 ID、最终注入 ID 和原始片段，应该能一眼定位故障出在解析、切分、召回、排序、预算还是生成越界，再决定动哪一层。</p>
+<h2 id="本章对应代码与来源">本章对应代码与来源<a class="anchor" href="#本章对应代码与来源" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="appendix-code.html">最小检索实现</a></li>
+<li><a href="appendix-code.html">教学语料快照</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/README.md">上游 README</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/LICENSE">上游许可证</a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a class="next" href="01-requirements.html"><small>下一章</small><strong>需求篇：先框住哪些问题必须答对</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-opening.html"><span>00</span>开篇：文档都在库里，助手为什么还会答错</a><a href="../chapters/01-requirements.html"><span>01</span>需求篇：先框住哪些问题必须答对</a><a href="../chapters/02-architecture.html"><span>02</span>技术方案：从需求推导一条可追踪的链路</a><a href="../chapters/03-ingestion.html"><span>03</span>资料入库：先把文档读对，再谈检索</a><a href="../chapters/04-chunking.html"><span>04</span>文档切分：验签和幂等，为什么总只召回一半</a><a href="../chapters/05-baseline.html"><span>05</span>基础检索：先交付一条能复现的离线链路</a><a href="../chapters/06-fusion-reranking.html"><span>06</span>混合检索与重排：把不同候选放进同一张账</a><a href="../chapters/07-query-enhancement.html"><span>07</span>查询增强：用户不一定会说出幂等这个词</a><a href="../chapters/08-context.html"><span>08</span>证据组装：检索到了，还要让模型完整读到</a><a href="../chapters/09-evaluation.html"><span>09</span>评估：两条高分结果，未必够答完一个问题</a><a href="../chapters/10-corrective.html"><span>10</span>纠错检索：找不到以后，系统走哪一条路</a><a href="../chapters/11-hierarchy-memory.html"><span>11</span>层次索引与记忆：问题开始面向整份资料</a><a href="../chapters/12-graph.html"><span>12</span>图谱检索：从模块一路查到技术负责人</a><a href="../chapters/13-multimodal-agent.html"><span>13</span>多模态与 Agent：处理图表文档与多步任务</a><a href="../chapters/14-production.html"><span>14</span>上线边界：权限、快照、停服与故障不能靠提示词兜底</a><a href="../chapters/15-wrap-up.html"><span>15</span>完结篇：用一次请求串起整套设计</a><a href="../chapters/appendix-map.html"><span>A</span>附录 A：上游 47 份 Notebook 与 21 份脚本阅读地图</a><a href="../chapters/appendix-sources.html"><span>B</span>附录 B：源码快照、论文范围、术语与研究边界</a><a href="../chapters/appendix-code.html"><span>C</span>附录 C：配套教学实现与样例数据</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · RAG_Techniques 2fd7bd0ffe5b（2026-11-02）· 核对 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

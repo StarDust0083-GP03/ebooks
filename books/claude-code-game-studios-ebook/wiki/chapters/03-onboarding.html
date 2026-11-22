@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从需求、配置、角色到 Hook 与验收，解剖 Claude Code Game Studios 的工作流"><meta name="author" content="独立源码研究">
+<title>入门：先玩一把（/prototype）与 Studio Mode（/start）双轨入口 · Claude Code 游戏工作室</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">G</span><span>Claude Code 游戏工作室</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 03</div><div class="rail-title">入门：先玩一把（/prototype）与 Studio Mode（/start）双轨入口</div><ol><li><a href="#为什么-v1-3-0-把入口掉了个头">为什么 v1.3.0 把入口掉了个头</a></li><li><a href="#轨道一-prototype-一把搓出可玩原型-主干道">轨道一：/prototype 一把搓出可玩原型（主干道）</a></li><li><a href="#轨道二-start-如何扫描仓库-切进-studio-mode">轨道二：/start 如何扫描仓库、切进 Studio Mode</a></li><li><a href="#常见误解">常见误解</a></li><li><a href="#练习">练习</a></li><li><a href="#答案提示">答案提示</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 03 章</div><h1>入门：先玩一把（<code>/prototype</code>）与 Studio Mode（<code>/start</code>）双轨入口</h1><div class="chapter-meta">CCGS v1.3.0 快照 2026-11-09 · 约 34 分钟</div></header><div class="prose"><h2 id="为什么-v1-3-0-把入口掉了个头">为什么 v1.3.0 把入口掉了个头<a class="anchor" href="#为什么-v1-3-0-把入口掉了个头" aria-label="链接到本节">#</a></h2>
+<p>按 v1.2.0 的老路子，你克隆完仓库敲 <code>/start</code>，它会先带你盘仓库、推算流程强度、写 <code>project.yaml</code>，然后指引你先 <code>/setup-engine</code>、再 <code>/brainstorm</code>、再 <code>/create-stories</code>、最后才到 <code>/dev-story</code> 写第一行代码。这套路逻辑很严密，但对刚克隆模板、脑子里刚蹦出一个游戏点子的人来说，<strong>前半小时都在填表、选引擎、批文档，连个会动的画面都没见着</strong>。</p>
+<p>v1.3.0 彻底拧转了这个顺序：<strong>只要项目还没绑定重引擎（Godot / Unity / Unreal），默认主干道就是“先做个浏览器里双击能玩的原型”</strong>——也就是 <strong>&quot;Make me a game&quot;</strong>，入口是 <code>/prototype</code>；而 <code>/start</code> 成了双轨总控台，第一选项直接把你送进 <code>/prototype</code>，只有当你确实在做多人合作、长周期或者需要全套文档追溯的项目时，才带你进 <strong>Studio Mode</strong>。</p>
+<p>这章把这两条入口轨道从源码里彻底拆清楚。</p>
+<h2 id="轨道一-prototype-一把搓出可玩原型-主干道">轨道一：<code>/prototype</code> 一把搓出可玩原型（主干道）<a class="anchor" href="#轨道一-prototype-一把搓出可玩原型-主干道" aria-label="链接到本节">#</a></h2>
+<p>直接敲 <code>/prototype 一个稀有鱼只在黄昏咬钩的钓鱼游戏</code>（或者在对话里直说“帮我做个游戏”），只要没设置非 Web 引擎、也没传 <code>--path engine|paper</code>，<code>SKILL.md</code> 里的路由表不会多问一句，直接进 <strong>One-shot 流水线（One-shot 1 → 5）</strong>。</p>
+<h3 id="第一步-最多问一轮-约-8-题-写一页-game-brief-md">第一步：最多问一轮（约 8 题），写一页 <code>game-brief.md</code><a class="anchor" href="#第一步-最多问一轮-约-8-题-写一页-game-brief-md" aria-label="链接到本节">#</a></h3>
+<p>这步的逻辑全写在 <code>.claude/skills/prototype/references/one-shot-1-card.md</code> 里，专门治“需求太糊，做出来的原型像玩具”：</p>
+<ol>
+<li><strong>先匹配品类，绝不甩菜单</strong>。它读一遍 <code>.claude/genres/chipsets.yaml</code>，按语义把你描述的游戏匹配到一个或多个品类（比如“像宝可梦但自动战斗”会同时命中 <code>creature-collector</code> 和 <code>auto-battler</code>），只打开命中的品类卡片（<code>.claude/genres/chipsets/&lt;name&gt;.md</code>），混搭游戏再顺手读 <code>mashups.md</code> 决定每个系统由谁主导。</li>
+<li><strong>点子太糊先给 2–3 个一句话提案</strong>。如果你只说了“做个赛车游戏”甚至“随便做个游戏”，它先给你 2–3 个一句话 pitch（干什么、怎么输、长什么样、什么手感）。你全否决（“都不喜欢，太慢了，不要射击”），它会把你嫌弃的点原封不动记进 <code>Avoid</code>，再换 2–3 个新提案。</li>
+<li><strong>只问一轮，全带默认值</strong>。从品类卡的“塑造玩法的关键选择”、“手感变体”、“画面方向（来自 <code>art-direction.md</code>，支持直接贴图或往 <code>references/</code> 丢参考图和 <code>notes.md</code>）”、“挑战何时到来与失败代价”、“目标”里挑出你话里没说清的，合并成<strong>一条消息里最多约 8 个问题</strong>，每个问题标好 <code>(usual)</code> 默认值。你可以随便跳、只答两条，或者干脆回一句“你帮我选（you pick）”。<strong>绝没有第二轮追问</strong>，没答的全按默认值填，并在简报里标成 <code>*(provisional)*</code>（你自己没被问到、它替你猜的标 <code>*(guessed)*</code>）。</li>
+<li><strong>最后一题顺手切分“切片 vs 单机制快测”</strong>。如果你其实只想试一下“抓钩手感”，它会直接拐进 Spike Mode（<code>/prototype --spike</code>），连简报都不写。</li>
+<li><strong>抄袭拦截与平台降级</strong>。如果你喊着“照抄一个一模一样的 Pac-Man”，它绝不直接照抄，而是先问你要“同品类原创”还是“加自己扭转的新变体”，并把原作名字、美术、角色和 UI 写进 <code>Avoid</code>；如果你提了联机、VR、手机或主机，它会查 <code>online-and-devices.md</code>，用一句话直白告诉你本地浏览器先拿什么替代方案顶着，把服务器/联网记进 <code>Out of scope</code>。</li>
+</ol>
+<p>聊完这一轮，它照着 <code>.claude/docs/templates/game-brief.md</code> 亮出一页简报——<strong>整份简报就是确认卡</strong>。它刻意保留一个叫 <code>## In your words</code> 的区，把你的原话一字不改粘进去，后面所有改动都得跟它对账；除了 6 个核心必填项（Pitch、Core loop、Goal &amp; fail state、Features、Out of scope、Build order），还硬补上了老简报最缺的三块：<strong>Look and references（画面与参考）</strong>、<strong>First minute（前 60 秒玩什么）</strong>、<strong>Challenge（挑战从哪来，绝不能简单到闭眼赢）</strong>，以及拆解颗粒度用的 <code>Your systems</code>（标记哪些 <code>in the slice</code> 真做、哪些 <code>thin stand-in</code> 做薄桩、哪些 <code>later</code> 以后再说）。</p>
+<p>简报下面还会贴出本次构建的开销与落盘清单（注意：它先跑 <code>printenv CLAUDE_CODE_EFFORT_LEVEL</code> 看环境变量有没有锁死推理档位，绝不凭空编造预计耗时和费用），等你点下 <strong>Build it</strong> 才动手写文件。</p>
+<h3 id="第二步-当前会话搓原型-无头浏览器-5-分钟小检查">第二步：当前会话搓原型 + 无头浏览器 5 分钟小检查<a class="anchor" href="#第二步-当前会话搓原型-无头浏览器-5-分钟小检查" aria-label="链接到本节">#</a></h3>
+<p>点完 Build it，除非你明确点了“build it at medium”之类要降档省钱的指令，否则它<strong>直接在你当前主会话里开写</strong>（不额外起子代理），产物落在 <code>prototypes/&lt;name&gt;/</code>，基于 <code>.claude/docs/templates/one-shot-lean/</code> 起步：</p>
+<ul>
+<li>双击 <code>index.html</code> 就能在浏览器里直接开玩；</li>
+<li>禁止拿 emoji 糊弄美术，也禁止只画几个光秃秃的圆点；</li>
+<li>所有数值参数必须集中进 <code>config.js</code>，方便后面挂滑块调参。</li>
+</ul>
+<p>写完先不急着交差，必须过 <code>one-shot-2c-self-check.md</code> 的<strong>约 5 分钟冒烟检查</strong>。这里有个很清醒的克制：<strong>不写 AI 自动玩游戏的机器人，也不准写脚本自己调难度</strong>——好不好玩、难不难，必须真人玩了算。脚本只管四件硬事：</p>
+<ol>
+<li><strong>boots</strong>：调 <code>one-shot-check.sh prototypes/&lt;name&gt; --keys &quot;...&quot;</code>，用无头浏览器（Chrome / Edge / Chromium）按几下真实游戏按键，确认零报错、零崩溃、零 <code>NaN</code>/<code>Infinity</code>、非白屏，且按键对比无输入确实有响应。</li>
+<li><strong>shot</strong>：把运行截图 <code>evidence/play.png</code> 打开肉眼对着简报看；检查文字有没有跑出屏幕、小于 14px、对比度低于 3:1 或互相重叠，检查画面有没有卡死。</li>
+<li><strong>brief words</strong>：核对 <code>evidence/brief-words.tsv</code>（你原话里的每个画面/视角关键词怎么落地的）和 <code>evidence/nearest-game.txt</code>。</li>
+<li><strong>emoji and outlines</strong>：扫描代码确保零 emoji，再用 <code>page-shot.sh ... --query scene=figures</code> 拍一张 <code>evidence/figures.png</code>，确认每种敌人和单位都有各自独立的轮廓。</li>
+</ol>
+<p>此外还要跑 <code>one-shot-check.sh --checklist</code>，把简报里每一条 Feature、前 60 秒、挑战和系统逐一写进 <code>evidence/checklist.tsv</code>（标 <code>pass</code> / <code>missing</code> / <code>broken</code> / <code>not_assessed</code>，每条 <code>pass</code> 必须指到截图或代码行号，声音和手感这类看不出来的直接标 <code>not_assessed</code>）。出问题最多只给<strong>一轮修复机会</strong>，修完重跑，还坏着的必须如实列在交接卡的 <code>Still broken:</code> 里，脚本直接拒绝第三轮刷分。</p>
+<p>最后交给你的交接卡末尾硬钉着一句：<strong>&quot;Not yet played by a person&quot;</strong>，并询问是否提交和打上 <code>one-shot/&lt;name&gt;</code> 标签——这是你以后随时能回滚的锚点。</p>
+<h3 id="第三步-玩完改-挂滑块-分享-以及-grow-成正式工程">第三步：玩完改、挂滑块、分享，以及 Grow 成正式工程<a class="anchor" href="#第三步-玩完改-挂滑块-分享-以及-grow-成正式工程" aria-label="链接到本节">#</a></h3>
+<p>玩完之后，这条线才显出工程味：</p>
+<ul>
+<li><strong>口语微调（One-shot 4）</strong>：直接说“跳得太低了”或“太简单了”。每次改动前先对照简报的 <code>Keep</code> / <code>Avoid</code> / <code>Out of scope</code>；如果你说“太简单”或“每波都一样”，规则要求<strong>先加至少一条提升压力或给新选择的新机制，再动数值</strong>；改完只跑轻量检查（不重跑整套小检查），你满意就打成一个 <code>iteration N: &lt;what&gt;</code> 提交，随时能说“回到 iteration 2”。</li>
+<li><strong>按需挂滑块调参</strong>：你喊要自己调手感时，它才把 <code>tune.js</code> 加进来（按反引号或加 <code>?tune</code> 呼出，自动给 <code>config.js</code> 每个值配滑块），你调完点 Save 复制参数块粘回对话，<code>one-shot-tune.sh</code> 自动写回 <code>config.js</code> 并记进 <code>feel-log.md</code>。</li>
+<li><strong>导出分享与导入老游戏</strong>：喊分享时 <code>one-shot-share.sh</code> 剥掉调参面板和工作文件生成干净的 <code>prototypes/&lt;name&gt;/dist/</code>；如果手里早就有个网页小游戏，用 <code>/prototype --from &lt;path&gt;</code>（或 <code>/start</code> 自动探测）原封不动按字节拷进 <code>prototypes/&lt;name&gt;/</code>，打上 <code>baseline/&lt;name&gt;</code> 标签并反写一份简报，之后就能走同一套迭代和成长流程。</li>
+<li><strong>Grow 成正式 Web 工程（One-shot 5）</strong>：你玩爽了给出 <code>PROCEED</code>，它会只问一个问题：“继续当原型改，还是长成正式 Web 工程？”选 Grow 之后，先过 <code>one-shot-grow.sh guard</code>（检查 Node ≥ 22.12、工作区干净、根目录没撞名的 <code>index.html</code>），然后分五步每步独立提交，把单文件原型变成根目录的 <strong>Vite + TypeScript + Vitest + Playwright</strong> 项目，数值迁进 <code>data/config.json</code>，并且<strong>用同一颗随机种子和同一串按键输入在拷贝前、拷贝后、转 TypeScript 后各回放一次（<code>one-shot-grow.sh replay</code>）</strong>，拿 <code>match yes</code> 证明重构没有改坏哪怕一点行为，最后打上 <code>grown/&lt;name&gt;</code> 标签，原始 <code>prototypes/&lt;name&gt;/</code> 一根汗毛不动。</li>
+<li><strong>长完之后一次聊一个功能，想收尾喊 <code>/cut</code></strong>：不用急着写史诗和冲刺计划，直接报下一个想加的功能，做完自动跑 <code>npm run smoke</code> 和同种子回放；直到你主动想进 Studio Mode，或者故事/功能超过 9 个时 <code>/next-step</code> 提醒你一次。临近发布可以跑 <code>/cut</code>（读取简报与测试记录，绝不建议砍 <code>Keep</code> 里的内容，商业目标 <code>sell</code> / <code>early_access</code> / <code>publisher</code> 还会按 70% 时间进度帮你算建议冻结日）。</li>
+</ul>
+<h2 id="轨道二-start-如何扫描仓库-切进-studio-mode">轨道二：<code>/start</code> 如何扫描仓库、切进 Studio Mode<a class="anchor" href="#轨道二-start-如何扫描仓库-切进-studio-mode" aria-label="链接到本节">#</a></h2>
+<p>如果你不知道从哪开始、手里已有设计文档或老代码，或者本来就想走正规多角色工程流，就敲 <code>/start</code>。</p>
+<h3 id="先用脚本摸底-绝不靠模型瞎猜">先用脚本摸底，绝不靠模型瞎猜<a class="anchor" href="#先用脚本摸底-绝不靠模型瞎猜" aria-label="链接到本节">#</a></h3>
+<p><code>/start</code> 启动后先静默跑一遍 <code>bash .claude/scripts/project-state.sh</code>（除非你的第一句话本身就在要一个游戏——这时它会用 Skill 工具直接转交给 <code>/prototype</code>）。在刚克隆下来的空白 v1.3.0 仓库上，脚本吐出来的三列 TSV 事实表长这样（字段名、值、来源）：</p>
+<pre><code class="language-text">root            /path/to/ccgs     -
+engine          -                 unset
+code_root       src               detected
+source_files    0                 src
+concept         -                 absent
+systems_index   -                 absent
+gdd_files       0                 design/gdd/*.md
+adr             0                 docs/architecture/adr-*.md
+story           0                 production/epics/**/story-*.md
+prototype       0                 prototypes/*/
+sprint          0                 production/sprints/*.md
+milestone       0                 production/milestones/*.md
+origin_url      https://github.com/Donchitos/Claude-Code-Game-Studios.git  .git/config
+stage_yaml      -                 project.yaml
+stage_txt       -                 absent
+stage           -                 unset
+phase           -                 unset
+phase_inferred  concept           nothing
+</code></pre>
+<p>看这张表时，<strong>第三列（来源）比第二列（值）更要命</strong>，<code>/start</code> 对它立了四条硬规矩：</p>
+<ol>
+<li><code>source_files</code> 为 <code>unknown</code> 时必须说“代码根没解析出来”，绝不准说成“没有代码”。</li>
+<li><code>origin_url</code> 只要包含 <code>donchitos/claude-code-game-studios</code>，就得提醒你 <code>origin</code> 还指着上游模板仓库，别一激动把提交推上去，建议先 <code>git remote rename origin template</code> 再挂自己的远程。</li>
+<li><strong><code>phase_inferred</code> 明确要求忽略</strong>。脚本自己算了一个按文件数猜出来的阶段，但 <code>/start</code> 正文直白禁止使用它——因为一个写了一堆代码、没写过设计文档的老项目，根本不是“进入了 Production 阶段”，宁可按规则判定，也别拿假聪明的猜测替掉事实。</li>
+<li>如果你已经在 <code>project.yaml</code> 里设了引擎且有了概念文档/简报，<code>/start</code> 直接判定你是老用户，报一句当前状态后让你去敲 <code>/next-step</code>，不浪费时间重走引导。</li>
+</ol>
+<h3 id="四选一分流与三项推断卡片">四选一分流与三项推断卡片<a class="anchor" href="#四选一分流与三项推断卡片" aria-label="链接到本节">#</a></h3>
+<p>摸完底，<code>/start</code> 只问一个问题：“你现在处在什么起点？”</p>
+<ul>
+<li><strong>A）Make me a game（浏览器可玩原型）</strong>：如果没定非 Web 引擎，直接跳过写配置卡片，让你敲 <code>/prototype</code> 开始（未写 <code>rigor</code> 本来就按 <code>minimal</code> 算）。</li>
+<li><strong>B）有个模糊点子，或者啥也没有</strong>：没定引擎时依然优先推荐直接 <code>/prototype</code> 先出提案和原型，也可走 <code>/brainstorm</code>。</li>
+<li><strong>C）清晰概念</strong>：可以马上 <code>/prototype</code>、先 <code>/brainstorm</code> 写下来，或者直接 <code>/setup-engine</code>。</li>
+<li><strong>D）已有作品</strong>：v1.3.0 这里藏着个贴心细节——它会先用 Glob/Grep 扫两层目录，看有没有你从别处放进来的现成 HTML 网页游戏（带 <code>&lt;script&gt;</code> 且含 <code>&lt;canvas&gt;</code> 或 <code>requestAnimationFrame</code>，且不是带 <code>package.json</code> 的 Node 工程），找到了直接给 <code>/prototype --from &lt;path&gt;</code>；如果发现你有 GDD 设计文档却一个可玩原型都没有，没定非 Web 引擎时还会建议先拿你的概念文档跑一遍 <code>/prototype</code>，把文档先变成能玩的东西。</li>
+</ul>
+<p>如果你的回答和扫描结果打架（比如仓库里明明有代码你却选了 B），它会指出来再问你一次。</p>
+<p>走 B/C/D 进规划线后，<code>/start</code> 会根据你说的话和磁盘文件数，一次性推算出三个值（不再连环追问）：</p>
+<ul>
+<li><strong>Stage（阶段）</strong>：无 GDD 是 <code>Concept</code>，有 GDD 无 ADR 是 <code>Systems Design</code>，有 ADR 是 <code>Technical Setup</code>。</li>
+<li><strong>Rigor（流程强度）</strong>：撞上“开放世界、RPG、模拟、沙盒、派系、经济、MMO、多人、很多系统”推 <code>full</code>；撞上“发布、商业、Steam、清晰核心循环”或已有 9 份以上系统 GDD 推 <code>standard</code>；撞上“Game Jam、周末、原型、小游戏、练手”或没命中任何关键词，统统回落 <code>minimal</code>。</li>
+<li><strong>Goal（目标，v1.3.0 新增 <code>project.goal</code>）</strong>：从你的原话里猜 <code>jam</code> / <code>learn</code> / <code>hobby</code> / <code>portfolio</code> / <code>sell</code> / <code>early_access</code> / <code>publisher</code> / <code>mobile</code> / <code>other</code> 之一（商业类目标优先级压过兴趣类，<code>early_access</code> 和 <code>publisher</code> 压过 <code>sell</code>），以后 <code>/cut</code> 会读这个字段决定要不要帮你设发布冻结日。</li>
+</ul>
+<p>算完后亮一张假设卡片，只给三个选项：<strong>Save them / Change something / Don&#39;t save</strong>。同意保存时，它<strong>只通过脚本写四个字段</strong>：<code>project.stage</code>（同步镜像 <code>production/stage.txt</code>）、<code>project.goal</code>、<code>modes.rigor</code> 和下一步问出来的 <code>modes.automation</code>。</p>
+<p><strong>它死活不替你把 <code>modes.workflow</code>、<code>modes.review_mode</code>、<code>team.size</code> 等 6 个子开关写进 <code>project.yaml</code></strong>——原因下一章细讲，因为只要显式写死进去，以后你改 <code>modes.rigor</code> 就再也拧不动它们了。</p>
+<h3 id="最后一行-为什么让你自己敲命令-不替你跑">最后一行：为什么让你自己敲命令，不替你跑<a class="anchor" href="#最后一行-为什么让你自己敲命令-不替你跑" aria-label="链接到本节">#</a></h3>
+<p>除了开场第一句话就直接要游戏（需要立刻跳去 <code>/prototype</code> 且不占用 <code>/start</code> 的 Sonnet 模型）这一个例外，<code>/start</code> 结束时只打印干巴巴的一行：</p>
+<p><code>Type /prototype to begin.</code>（或者 <code>Type /setup-engine to begin.</code>）</p>
+<p>哪怕你刚点完“好，就从这个开始”，它也<strong>坚决不代你启动下一个技能</strong>。源码里把原因写得很透：<code>/start</code> 自己钉在 <code>model: sonnet</code> 上，如果由它代调下一步，新技能会吃不到你主会话的模型，而且让用户亲手敲命令，等于由人显式接过权限和预期，不搞暗度陈仓的自动连锁。</p>
+<p>顺便提醒一句：以后走到半路忘了下一步该干嘛，直接敲 <strong><code>/next-step</code></strong>（v1.2.0 叫 <code>/help</code>）。在 <code>minimal</code> 档下它甚至不走 7 阶段目录，而是直接调 <code>story-status.sh</code> 或看 <code>prototypes/</code> 与 <code>grow-*/replay.args</code>，永远只给你指<strong>当下唯一该干的一件事</strong>，绝不甩一大堆菜单糊你脸上。</p>
+<h2 id="常见误解">常见误解<a class="anchor" href="#常见误解" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>误解一：用 <code>/prototype</code> 就等于放弃了整套工程规范。</strong> 并不是。One-shot 照样有 1 页结构化简报、集中调参的 <code>config.js</code>、无头浏览器自检、Git 标签回滚，还能平滑 Grow 成带 Vitest + Playwright 和同种子回放的 TypeScript 工程；只是省掉了写第一行代码前那 29 份前置文档。</li>
+<li><strong>误解二：<code>project-state.sh</code> 输出 <code>code_root: src</code> 说明项目已经配好了 Godot。</strong> 盯紧第三列：<code>detected</code> 只是“目录里碰巧只有一个候选文件夹”的推断，并不是 <code>engine.name</code> 配置出来的。</li>
+<li><strong>误解三：敲了 <code>/help</code> 会报错。</strong> 不会。v1.3.0 保留了 <code>.claude/skills/help/SKILL.md</code> 作为 20 行的兼容转发层，会打印一行 <code>/help is now /next-step. Running /next-step.</code> 然后自动转交；但新配置和日常习惯直接用 <code>/next-step</code> 就好。</li>
+</ul>
+<h2 id="练习">练习<a class="anchor" href="#练习" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>如果你手里没配引擎，先跑了一把 <code>/prototype</code> 做完一个塔防游戏，之后突然想改用 Unity 重做，按 <code>prototype/SKILL.md</code> 和 <code>one-shot-5-grow.md</code> 的规则，框架会帮你把 JS 代码转成 C# 吗？为什么？</li>
+<li>假设你在 <code>/start</code> 里选了 C（清晰概念），原话是“想做一个准备上 Steam 抢先体验的像素肉鸽，先当周末小项目练练手”，按 Phase 4 的两张信号表，推断出的 <code>rigor</code> 和 <code>project.goal</code> 分别是什么？</li>
+<li>为什么 <code>/start</code> 明明能把 <code>modes.rigor</code> 展开后的 6 个子开关一并写进 <code>project.yaml</code>，却在文件头注释里千叮咛万嘱咐“绝对不许写”？</li>
+</ol>
+<h2 id="答案提示">答案提示<a class="anchor" href="#答案提示" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>不会。<code>one-shot-5-grow.md</code> 明确写死：Grow 只支持长成 Web（Vite + TypeScript）工程；如果你已经设定了非 Web 引擎，它会直白告诉你“往该引擎迁移的功能尚未实现”，让你自己用 <code>/setup-engine</code> 起步，原型只当可玩验证。</li>
+<li><code>rigor</code> 会撞上“Steam / 商业”与“周末 / 小项目”的冲突，通常会按卡片显式亮出推断理由由你通过 <code>Change something</code> 拍板；而 <code>project.goal</code> 规则写得很死——商业类压过兴趣/练手类，且 <code>early_access</code> 压过 <code>sell</code>，所以会推成 <code>early_access</code>。</li>
+<li>因为配置解析链里“显式写进 <code>project.yaml</code> 的值永远压过 <code>rigor</code> 展开”。一旦把 6 个子开关写死进文件，以后你通过 <code>/project-settings modes.rigor=full</code> 升档时，那 6 个键全都钉死了不会跟着变。</li>
+</ol>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="02-architecture.html"><small>上一章</small><strong>总体架构：一个会话，四种约束</strong></a><a class="next" href="04-config.html"><small>下一章</small><strong>配置求值：一个 rigor 如何长出六个设置</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：先看清这东西到底是怎么跑起来的</a><a href="../chapters/01-requirements.html"><span>01</span>需求：一个人写游戏，为什么还要套规矩</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：一个会话，四种约束</a><a href="../chapters/03-onboarding.html"><span>03</span>入门：先玩一把（<code>/prototype</code>）与 Studio Mode（<code>/start</code>）双轨入口</a><a href="../chapters/04-config.html"><span>04</span>配置求值：一个 <code>rigor</code> 如何长出六个设置</a><a href="../chapters/05-agents.html"><span>05</span>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</a><a href="../chapters/06-skill-protocol.html"><span>06</span>Skill 协议：一条斜杠命令怎么从解析走到交接</a><a href="../chapters/07-artifacts.html"><span>07</span>产物模型：一页简报与故事、需求、ADR 三张网</a><a href="../chapters/08-dev-story.html"><span>08</span>实施链路：<code>/dev-story</code> 怎么把故事变成代码</a><a href="../chapters/09-story-done.html"><span>09</span>验收：<code>/story-done</code> 如何堵死“基本完成”</a><a href="../chapters/10-hooks.html"><span>10</span>Hook：十五个检查点里，到底谁真的能拦住</a><a href="../chapters/11-registries.html"><span>11</span>注册表：跨文档事实怎么管才不漂移</a><a href="../chapters/12-teams.html"><span>12</span>协作：团队流水线、默认塌缩与“透镜折叠”</a><a href="../chapters/13-engine.html"><span>13</span>引擎与品类适配：统一引擎表、Web 一等公民与品类库</a><a href="../chapters/14-context.html"><span>14</span>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</a><a href="../chapters/15-security.html"><span>15</span>安全边界：能聊天、有 Hook，不等于有沙箱</a><a href="../chapters/16-verification.html"><span>16</span>验证与演进：Markdown 写的框架，怎么证明自己没改坏</a><a href="../chapters/17-mini-studio.html"><span>17</span>最小实验：用两百行 Python 亲手跑通四条核心约束</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.3.0 源码索引、实测数据、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · CCGS v1.3.0 · 快照 abc0de79d6ce · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

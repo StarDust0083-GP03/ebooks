@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从文档解析、切分、混合检索到纠错、图谱、评估与上线边界的 RAG 工程实战指南"><meta name="author" content="独立源码研究">
+<title>混合检索与重排：把不同候选放进同一张账 · RAG 工程实战</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">RAG</span><span>RAG 工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 06</div><div class="rail-title">混合检索与重排：把不同候选放进同一张账</div><ol><li><a href="#分数加权与按名次融合的区别">分数加权与按名次融合的区别</a></li><li><a href="#静态核对发现的数组错位陷阱">静态核对发现的数组错位陷阱</a></li><li><a href="#rrf-为什么要在每路榜单内先去重">RRF 为什么要在每路榜单内先去重</a></li><li><a href="#重排解决的是排序精度-补不了漏召回">重排解决的是排序精度，补不了漏召回</a></li><li><a href="#元数据过滤与多样性裁剪放哪一层">元数据过滤与多样性裁剪放哪一层</a></li><li><a href="#本章对应代码与资料">本章对应代码与资料</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 06 章</div><h1>混合检索与重排：把不同候选放进同一张账</h1><div class="chapter-meta">RAG_Techniques 快照 2026-11-02 · 约 10 分钟</div></header><div class="prose"><p>研发在排查故障时，有时直接贴一个报错码或函数名 <code>callback_handler</code>，这时倒排关键词比向量准得多；有时只记得大概意思，随手问一句“同一笔通知来了两次怎么办”，字面完全对不上“幂等”，需要语义向量来补位。把两路检索合起来跑，听上去顺理成章，真正写代码时最容易出纰漏的却是身份对齐和分数口径。</p>
+<h2 id="分数加权与按名次融合的区别">分数加权与按名次融合的区别<a class="anchor" href="#分数加权与按名次融合的区别" aria-label="链接到本节">#</a></h2>
+<p>合并多路召回通常有两种算法。</p>
+<p>第一种是分数归一化加权：把 BM25 得分和向量相似度分别缩放到 <code>[0, 1]</code>，再按 <code>alpha * vec + (1 - alpha) * bm25</code> 相加。隐患在于不同检索器的分数分布和方向都不同（比如 FAISS 默认 L2 距离越小越相似，BM25 则是越大越相关），而且单次查询里极值一抖，归一化后的相对差距就会剧烈变形。</p>
+<p>第二种是倒数排名融合（Reciprocal Rank Fusion，简称 RRF）。它完全忽略原始分数尺度，只看每条片段在各路榜单里的名次，按稳定 ID 累加 <code>1 / (c + rank)</code>（常见常数 <code>c = 60</code>）。常数越大，第一名和第二名之间的差距越平缓。RRF 的好处是免调跨尺度权重，但也带来一个约束：融合得分只适合做同一次请求内的相对排序，绝不能当成“回答正确的概率”，也不能靠写死一个 RRF 阈值就断定证据一定充分。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 540 192" width="540" height="192" role="img" aria-label="混合检索、RRF 身份对齐与重排链路">
+<title>混合检索、RRF 身份对齐与重排链路</title>
+<defs><marker id="arr-hybrid-rrf-rerank" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" fill="var(--muted)"/></marker></defs>
+<text x="10" y="14" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="600" fill="var(--ink)" text-anchor="start">多路召回 → 按稳定 ID 融合 → 有限候选池重排</text><rect x="10" y="26" width="126" height="52" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="20" y="43" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">BM25 词面召回</text><text x="20" y="59" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">擅长接口名与错误码</text><text x="20" y="73" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">返回 ID 排序表 A</text><rect x="10" y="90" width="126" height="52" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="20" y="107" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">稠密向量召回</text><text x="20" y="123" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">擅长同义与口语问法</text><text x="20" y="137" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">返回 ID 排序表 B</text><line x1="136" y1="52" x2="162" y2="74" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-hybrid-rrf-rerank)"/><line x1="136" y1="116" x2="162" y2="92" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-hybrid-rrf-rerank)"/><rect x="162" y="42" width="154" height="86" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.4"/><text x="172" y="59" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">按 chunk.id 融合</text><text x="172" y="75" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">每路先去重再计名次</text><text x="172" y="89" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">score += 1 / (c + rank)</text><text x="172" y="103" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">禁止按数组下标相加</text><line x1="316" y1="85" x2="336" y2="85" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-hybrid-rrf-rerank)"/><rect x="336" y="42" width="102" height="86" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="346" y="59" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">重排器</text><text x="346" y="75" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">Cross-Encoder</text><text x="346" y="89" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">或结构化 LLM</text><text x="346" y="103" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">仅重排候选池</text><line x1="438" y1="85" x2="456" y2="85" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-hybrid-rrf-rerank)"/><rect x="456" y="42" width="74" height="86" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.4"/><text x="466" y="59" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">交付</text><text x="466" y="75" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">Top-k</text><text x="466" y="89" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">预算打包</text><text x="466" y="103" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">证据完整</text><text x="10" y="164" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--amber)" text-anchor="start">关键边界：重排无法补回从未进入候选池的证据；多条件问题不能只留单条最高分。</text><text x="10" y="180" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.6" font-weight="400" fill="var(--muted)" text-anchor="start">静态核对提示：上游 fusion_retrieval.ipynb 存在按数组位置合并风险，上线务必按 ID 对齐。</text>
+</svg><figcaption>混合检索、RRF 身份对齐与重排链路</figcaption></figure>
+<h2 id="静态核对发现的数组错位陷阱">静态核对发现的数组错位陷阱<a class="anchor" href="#静态核对发现的数组错位陷阱" aria-label="链接到本节">#</a></h2>
+<p>在合并两路结果时，最隐蔽的一类 bug 是把“同一个数组下标”当成“同一份文档”。</p>
+<pre><code class="language-text">BM25 原序得分：     [A: 0.9, B: 0.1]
+向量按距离排序返回： [B: 0.8, A: 0.2]
+
+按下标直接相加：下标 0 把 A 的 BM25 分加到了 B 的向量分上
+按 chunk.id 对齐：A 拿 A 的两路分数，B 拿 B 的两路分数
+</code></pre>
+<p>静态阅读上游 <code>all_rag_techniques/fusion_retrieval.ipynb</code>（固定提交 <code>2fd7bd0f</code> 第 17 个单元），可以看到 <code>fusion_retrieval()</code> 分别执行了三步：<code>all_docs = vectorstore.similarity_search(&quot;&quot;, k=...)</code>、<code>bm25_scores = bm25.get_scores(query.split())</code>（按 <code>cleaned_texts</code> 原始顺序排列），以及 <code>vector_results = vectorstore.similarity_search_with_score(query, k=len(all_docs))</code>（按当前查询的 L2 距离排序）。随后代码直接用 <code>alpha * vector_scores + (1 - alpha) * bm25_scores</code> 按数组位置相加，最后用下标去切 <code>all_docs</code>。三份列表没有按稳定文档 ID 做显式关联，存在真实的位置错位风险。</p>
+<p>把这一课写进自己系统的底线很简单：不管用分数加权还是 RRF，融合函数的输入必须是带稳定 <code>chunk.id</code> 的字典或 ID 序列，彻底杜绝平行数组按位置拼接。</p>
+<h2 id="rrf-为什么要在每路榜单内先去重">RRF 为什么要在每路榜单内先去重<a class="anchor" href="#rrf-为什么要在每路榜单内先去重" aria-label="链接到本节">#</a></h2>
+<p>到了多向量或代理索引场景（比如第 7 章的 HyPE），同一段原文可能通过多个问题代理在同一路召回里命中三次。如果不先按 <code>chunk.id</code> 去重，单路里的重复出现就会被算成多次独立投票，人为抬高名次。</p>
+<p>配套代码里的 <code>rrf()</code> 先用 <code>dict.fromkeys(ranking)</code> 保留每条榜单内每个 ID 的首次最佳名次，再累计倒数贡献，最后按 <code>(-score, id)</code> 稳定排序：</p>
+<pre><code class="language-python">ranking = rrf([
+    [&quot;callback-v2:0&quot;, &quot;callback-v2:1&quot;],
+    [&quot;callback-v2:1&quot;, &quot;callback-v2:0&quot;],
+])
+</code></pre>
+<p>同分时按 ID 字典序决胜，目的是让离线回归结果确定、可复现，而不是每次跑出随机顺序。配套离线实验里融合的是 BM25 和词频余弦两路词面信号，用来验证身份对齐与去重机制；接进生产环境时，再把其中一路换成真正的稠密向量检索即可。</p>
+<h2 id="重排解决的是排序精度-补不了漏召回">重排解决的是排序精度，补不了漏召回<a class="anchor" href="#重排解决的是排序精度-补不了漏召回" aria-label="链接到本节">#</a></h2>
+<p>召回阶段追求速度与覆盖，通常一次拉回 20 到 50 条候选；重排阶段把问题和每条候选拼在一起精读打分，再挑出头部几条送进证据包。常见两类重排器：</p>
+<ul>
+<li>Cross-Encoder 交叉编码器把 <code>(query, chunk)</code> 联合输入模型做深层交互打分，精度通常高于双塔向量，吞吐也受候选数限制。</li>
+<li>LLM 重排通过提示词加结构化输出（上游 <code>reranking.ipynb</code> 在 LangChain 1.x 下使用 <code>llm.with_structured_output(RatingScore)</code> 并把自定义检索器迁到了 <code>_get_relevant_documents</code>）逐条打分，灵活但延迟和费用更高。</li>
+</ul>
+<p>用重排器必须盯紧两条边界。第一，如果幂等段落根本没进前 30 条召回候选，再强的重排器也不可能凭空把它变出来。第二，面对多条件复合问题（既问验签又问幂等），如果重排后只截断保留 top-1，虽然第一名精准度满分，整道题的证据完整性反而跌成失败。</p>
+<h2 id="元数据过滤与多样性裁剪放哪一层">元数据过滤与多样性裁剪放哪一层<a class="anchor" href="#元数据过滤与多样性裁剪放哪一层" aria-label="链接到本节">#</a></h2>
+<p>权限范围（<code>scope</code>）、生效状态（<code>active</code>）、业务线和文档类型这类硬条件，必须在召回计分之前执行，防止受限内容影响统计量或混进候选池。多样性策略（如 MMR 或上游 <code>dartboard.ipynb</code> 的相关性与多样性联合选择）则放在召回之后、打包之前，用来清掉高度重复的摘录。但处理规则类文档时要格外克制：两段文字长得很像，可能分别针对境内支付和跨境支付，机械按相似度去重会把其中一条关键例外直接删掉。</p>
+<h2 id="本章对应代码与资料">本章对应代码与资料<a class="anchor" href="#本章对应代码与资料" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="appendix-code.html">RRF 身份对齐与融合实现</a></li>
+<li><a href="appendix-code.html">RRF 去重与同分稳定测试</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/fusion_retrieval.ipynb">上游 Fusion Retrieval（LangChain）</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/fusion_retrieval_with_llamaindex.ipynb">上游 Fusion Retrieval（LlamaIndex 0.14）</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/reranking.ipynb">上游 Reranking（LangChain 1.x）</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/reranking_with_llamaindex.ipynb">上游 Reranking（LlamaIndex 0.14）</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/multi_faceted_filtering.ipynb">上游多维过滤</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/dartboard.ipynb">上游 Dartboard</a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="05-baseline.html"><small>上一章</small><strong>基础检索：先交付一条能复现的离线链路</strong></a><a class="next" href="07-query-enhancement.html"><small>下一章</small><strong>查询增强：用户不一定会说出幂等这个词</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-opening.html"><span>00</span>开篇：文档都在库里，助手为什么还会答错</a><a href="../chapters/01-requirements.html"><span>01</span>需求篇：先框住哪些问题必须答对</a><a href="../chapters/02-architecture.html"><span>02</span>技术方案：从需求推导一条可追踪的链路</a><a href="../chapters/03-ingestion.html"><span>03</span>资料入库：先把文档读对，再谈检索</a><a href="../chapters/04-chunking.html"><span>04</span>文档切分：验签和幂等，为什么总只召回一半</a><a href="../chapters/05-baseline.html"><span>05</span>基础检索：先交付一条能复现的离线链路</a><a href="../chapters/06-fusion-reranking.html"><span>06</span>混合检索与重排：把不同候选放进同一张账</a><a href="../chapters/07-query-enhancement.html"><span>07</span>查询增强：用户不一定会说出幂等这个词</a><a href="../chapters/08-context.html"><span>08</span>证据组装：检索到了，还要让模型完整读到</a><a href="../chapters/09-evaluation.html"><span>09</span>评估：两条高分结果，未必够答完一个问题</a><a href="../chapters/10-corrective.html"><span>10</span>纠错检索：找不到以后，系统走哪一条路</a><a href="../chapters/11-hierarchy-memory.html"><span>11</span>层次索引与记忆：问题开始面向整份资料</a><a href="../chapters/12-graph.html"><span>12</span>图谱检索：从模块一路查到技术负责人</a><a href="../chapters/13-multimodal-agent.html"><span>13</span>多模态与 Agent：处理图表文档与多步任务</a><a href="../chapters/14-production.html"><span>14</span>上线边界：权限、快照、停服与故障不能靠提示词兜底</a><a href="../chapters/15-wrap-up.html"><span>15</span>完结篇：用一次请求串起整套设计</a><a href="../chapters/appendix-map.html"><span>A</span>附录 A：上游 47 份 Notebook 与 21 份脚本阅读地图</a><a href="../chapters/appendix-sources.html"><span>B</span>附录 B：源码快照、论文范围、术语与研究边界</a><a href="../chapters/appendix-code.html"><span>C</span>附录 C：配套教学实现与样例数据</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · RAG_Techniques 2fd7bd0ffe5b（2026-11-02）· 核对 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

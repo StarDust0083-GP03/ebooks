@@ -1,0 +1,119 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Agent Memory from Scratch 中文电子书"><title>Memory OS 与生命周期路线 · Agent Memory from Scratch</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><div class="shell"><header class="topbar"><a class="brand" href="../index.html">Agent Memory</a><span class="spacer"></span><a class="control hide-mobile" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="12-memory-os"><div class="eyebrow">第 12 章</div><details class="toc"><summary>本章目录</summary><ol><li><a href="#四个都在-整理记忆-的项目-动的根本不是同一个东西">四个都在“整理记忆”的项目，动的根本不是同一个东西</a></li><li><a href="#memoryos-按容量溢出搬页-按热度提升长期知识">MemoryOS：按容量溢出搬页，按热度提升长期知识</a></li><li><a href="#hippo-memory-把-影响力-拆成时间-召回与真实结果">Hippo Memory：把“影响力”拆成时间、召回与真实结果</a></li><li><a href="#a-mem-新笔记进来-顺手改写旧笔记的发现线索">A-MEM：新笔记进来，顺手改写旧笔记的发现线索</a></li><li><a href="#memos-把明文-kv-cache-和-lora-装进同一个资源容器">MemOS：把明文、KV Cache 和 LoRA 装进同一个资源容器</a></li><li><a href="#拿同一条-条件化规程变更-考考这四套系统">拿同一条“条件化规程变更”考考这四套系统</a></li><li><a href="#动手检查">动手检查</a></li><li><a href="#本章对照结论">本章对照结论</a></li></ol></details><article class="content"><h1 id="memory-os-与生命周期路线">Memory OS 与生命周期路线</h1><h2 id="四个都在-整理记忆-的项目-动的根本不是同一个东西">四个都在“整理记忆”的项目，动的根本不是同一个东西</h2><p>研发助手在团队里跑满半年，你会同时撞上四种完全不同的膨胀压力：</p>
+<ol>
+<li>对话太长，近期上下文装不下，翻旧账越来越慢；</li>
+<li>半年攒了几百条排障提醒，常用规程和过时 workaround 混在一起互相挤占名额；</li>
+<li>一次新复盘推翻或补充了三个月前那份旧笔记的排查线索；</li>
+<li>不仅想管文本记忆，还想把长提示词前缀的 KV Cache 或定制微调 LoRA 一起调度起来。</li>
+</ol>
+<p><strong>MemoryOS、Hippo Memory、A-MEM、MemOS</strong> 四个项目经常被打包称作“Memory OS / 生命周期路线”，但翻开代码就会发现，它们动的手术对象完全不同！</p>
+<p><img src="../assets/rewrite-memory-b/12-01.svg" alt="四类生命周期与 Memory OS 改的不是同一状态"></p>
+<h2 id="memoryos-按容量溢出搬页-按热度提升长期知识">MemoryOS：按容量溢出搬页，按热度提升长期知识</h2><p>MemoryOS 把对话记忆按操作系统多级缓存的思路拆成三层（详见 <a href="https://github.com/BAI-LAB/MemoryOS/blob/587ed77/memoryos-pypi/updater.py">updater.py</a>、<a href="https://github.com/BAI-LAB/MemoryOS/blob/587ed77/memoryos-pypi/mid_term.py">mid_term.py</a>、<a href="https://github.com/BAI-LAB/MemoryOS/blob/587ed77/memoryos-pypi/retriever.py">retriever.py</a>）：</p>
+<ul>
+<li><strong>短期层（Short-term）</strong>：定长队列放最近几轮问答。一旦塞满，最老的问答被弹出，打包成带时间戳和前后链接的 <code>page</code>；</li>
+<li><strong>中期层（Mid-term）</strong>：不是按聊天窗口分，而是按<strong>主题连续性</strong>把相近的 <code>page</code> 归到同一个主题 <code>session</code> 下，维护主题摘要、访问次数和热度 <code>heat</code>（容量满了走 <code>evict_lfu()</code> 淘汰冷主题）；</li>
+<li><strong>长期层（Long-term）</strong>：某个主题的热度跨过阈值，才触发长期分析，提炼成用户画像和长期知识。检索时先粗筛中期主题摘要，再在命中的主题里挑高分 <code>page</code>，最后连同长期画像拼进 Prompt。</li>
+</ul>
+<p>这套状态机写得很直观，但它有两个必须防住的坑：</p>
+<ol>
+<li><strong>摘要漏词一竿子打翻一船人</strong>：如果中期主题摘要只写了“支付网关配置讨论”而漏掉了 <code>PAY-409</code>，那这个主题下面所有含 <code>PAY-409</code> 细节的 <code>page</code> 都会在粗筛阶段被直接挡掉；</li>
+<li><strong>冷纠正被旧画像压死</strong>：林远刚发了一句低频但极其明确的纠正“以后别自动格式化 SQL”，因为只说过一次热度不够，还没晋升到长期层，下轮读取旧画像照样会覆盖新要求。</li>
+</ol>
+<p>此外，MemoryOS 仓库自 2026 年 7 月后长期低频停滞，非常适合用来学习“短中长期页面搬运”的状态机思想，直接上生产需自担并发、多租户与维护成本。</p>
+<h2 id="hippo-memory-把-影响力-拆成时间-召回与真实结果">Hippo Memory：把“影响力”拆成时间、召回与真实结果</h2><p><strong>Hippo Memory</strong>（2026-11-21 最新 <code>v3.12.0</code> 提交 <code>51c74c33dbe9</code>）是一款非常贴近编码 Agent 的本地记忆工具：零模型调用默认写入、SQLite + 人类可读 Markdown 镜像（<code>.hippo/</code>）、原生支持多款编码 Agent（Claude Code / Codex / Cursor / OpenCode 等）共用同一个项目记忆库。</p>
+<p>我们在 2026-11 最新快照里看到，Hippo 已经完成了非常漂亮的架构模块化拆分：</p>
+<ul>
+<li><strong>强度与半衰期（<a href="https://github.com/kitfunso/hippo-memory/blob/51c74c33dbe9/src/entry/memory.ts">memory.ts</a>）</strong>：一条记忆的内容可以多年不变，但它的影响力随闲置天数按半衰期指数衰减（比如半衰期 6 天，18 天后纯衰减项降到 <code>0.125</code>）；高危必守规程可以通过 <code>pinned</code> 锁死永不衰减；</li>
+<li><strong>把“被搜到”和“帮上忙”拆开（<code>applyOutcome</code>）</strong>：检索命中一次只算访问，任务翻车时执行 <code>hippo outcome --bad</code> 才真正削弱误导记忆的寿命，避免垃圾记忆自我强化；</li>
+<li><strong>集中巩固（<a href="https://github.com/kitfunso/hippo-memory/blob/51c74c33dbe9/src/entry/sleep.ts">sleep.ts</a>）</strong>：把相关经验合并、把低强度过时条目归档待恢复；</li>
+<li><strong>多路检索与物理粒子实验（<a href="https://github.com/kitfunso/hippo-memory/blob/51c74c33dbe9/src/domain/search/physics-search.ts">physics-search.ts</a>）</strong>：除了 BM25 / 向量混合与带 <code>asOf</code> 的多跳图召回，还保留了基于单位球面粒子引力/排斥力的启发式重排实验。</li>
+</ul>
+<p>值得特别点赞的是 Hippo 作者的工程诚实度：它在 README 和评测报告里明确标出了哪些实验结论无法归因于记忆捕获、主动撤回了早期无法稳定复现的 <code>sequential-learning</code> 增幅数据。同时选型也要正视它的现实边界——<strong>核心几乎由单人维护</strong>，团队大规模生产使用前需要评估接管能力。</p>
+<h2 id="a-mem-新笔记进来-顺手改写旧笔记的发现线索">A-MEM：新笔记进来，顺手改写旧笔记的发现线索</h2><p><strong>A-MEM</strong>（<a href="https://github.com/agiresearch/A-mem/blob/ceffb86/agentic_memory/memory_system.py">memory_system.py</a>）受卡片盒笔记法启发：</p>
+<ul>
+<li>写一条新笔记时，<code>analyze_content()</code> 先帮它生成 <code>context</code>、<code>keywords</code>、<code>tags</code>；</li>
+<li>紧接着 <code>process_memory()</code> 拉出最相近的旧笔记，让大模型做演化决策：要么建立双向 <code>links</code>（<code>strengthen</code>），要么直接改写旧笔记的 <code>context</code> 和 <code>tags</code>（<code>update_neighbor</code>）！</li>
+</ul>
+<p>比如三个月前有一条含糊的旧笔记“支付网关超时需要查缓存”，今天新写了一份复盘“确认 <code>PAY-409</code> 来自幂等键 TTL 不足”。A-MEM 可以顺手给旧笔记补上 <code>PAY-409</code> 和 <code>idempotency_key</code> 线索，以后一搜就能串起来。</p>
+<p>但用不好就会踩两个坑：<strong>一是邻居描述漂移</strong>（把今天的猜测写进三个月前的旧笔记，改歪了历史语气，审计时分不清哪句是原话）；<strong>二是检索截断吞邻居</strong>——<code>search_agentic()</code> 先拿近邻再追加 <code>links</code> 邻居，最后一把 <code>memories[:k]</code> 切下去，刚补进来的邻居很可能全被切光了。A-MEM 自 2025-12 起已停更，主要作为笔记演化思路的参考样板。</p>
+<h2 id="memos-把明文-kv-cache-和-lora-装进同一个资源容器">MemOS：把明文、KV Cache 和 LoRA 装进同一个资源容器</h2><p>**MemOS（<code>MemTensor/MemOS</code>）**野心最大——它想做面向 Agent 的“记忆操作系统”，用 <a href="https://github.com/MemTensor/MemOS/blob/3a16e5fe3048/src/memos/mem_cube/general.py"><code>GeneralMemCube</code></a> 把三种物理形态完全不同的记忆统一封装起来：</p>
+<ul>
+<li><strong>Plaintext（明文 / 图）</strong>：常规可检索、可引用、可逐条删除的文本事实；</li>
+<li><strong>Activation（KV Cache）</strong>：特定模型处理超长固定前缀的中间激活缓存，用来省推理计算，<strong>绝不是可按词搜索的业务事实</strong>，换个基座模型立刻作废；</li>
+<li><strong>Parametric（LoRA Adapter）</strong>：通过参数适配改变模型行为，<strong>几乎无法像删一行 SQL 那样“精准遗忘某一条用户隐私”</strong>。</li>
+</ul>
+<p>再配合 <a href="https://github.com/MemTensor/MemOS/blob/3a16e5fe3048/src/memos/mem_scheduler/base_mixins/queue_ops.py"><code>queue_ops.py</code></a> 的异步 Scheduler（支持本地和 Redis 队列，按 user/cube 分组派发和限流），把重型整理任务甩到后台。配置时注意：标记 <code>uninitialized</code> 的模块根本不会初始化实例，<strong>先只开 Plaintext 把队列积压、读取延迟和回退跑顺，别一上来就混着上 KV 和 LoRA</strong>。</p>
+<blockquote>
+<p><strong>2026-11 重要安全警示：MemOS 供应链事件教训与 <code>v2.0.36</code> 加固</strong>
+2026 年 9 月底，MemOS 生态曾遭遇一起严重的供应链投毒事件——PyPI 上的恶意 <code>MemoryOS v2.0.34</code> 及相关 npm 插件包被植入窃密程序。10—11 月间，官方团队进行了全面依赖审计与发布链加固，并在 <strong><code>v2.0.36</code></strong>（本书同步至 <code>2026-11-09</code> 提交 <code>3a16e5fe3048</code>）等洁净补丁中修复了 PostgreSQL 图存储对齐、Redis GCRA 限流与 BGE Reranker 配置问题。
+<strong>任何团队试用 MemOS（或任何高频迭代的开源记忆包）前，务必核对官方洁净版本号、仓库来源与包哈希，并在隔离环境中审计出站网络行为！</strong></p>
+</blockquote>
+<h2 id="拿同一条-条件化规程变更-考考这四套系统">拿同一条“条件化规程变更”考考这四套系统</h2><p>假设团队原本的铁律是：“所有服务发版前必须人工逐项核对配置。”今天新规则上线：“<strong>已接入自动化配置巡检的服务，仅在巡检报警时才需人工复核；未接入的服务仍须人工逐项核对。</strong>”</p>
+<p>看看四套系统分别该防什么错：</p>
+<ul>
+<li><strong>MemoryOS</strong>：新规则刚进来还在短期层，没到热度不会进长期层——本轮和近期会话必须优先携带新规则，别让旧长期层继续逼人手工复核；</li>
+<li><strong>Hippo Memory</strong>：光靠给旧规则打负分降权不够！“降权”表达不了“仅对未接入服务仍有效”的条件分叉，必须显式 <code>supersede</code> 成新规程并写清适用条件；</li>
+<li><strong>A-MEM</strong>：把新旧笔记连起来补线索没问题，但别把三个月前的旧笔记改写成“一直都有自动化巡检”，歪曲历史事实；</li>
+<li><strong>MemOS</strong>：盯紧 Scheduler 队列有没有把这条文本更新消费完；如果启了 KV 或 LoRA，别幻想文本队列跑完就会自动同步改写模型参数。</li>
+</ul>
+<details class="implementation-notes">
+<summary>实现笔记：别直接抄另一套系统的“遗忘/晋升参数”（选读）</summary>
+
+<p>工程师最容易犯的懒病，就是把 A 项目的默认参数直接抄给 B 项目：</p>
+<ul>
+<li>MemoryOS 的参数是<strong>近期条数容量、主题相似度和热度阈值</strong>；</li>
+<li>Hippo 的参数是<strong>以天为单位的半衰期和 outcome 奖励系数</strong>；</li>
+<li>MCP Memory Service 的参数是<strong>自然指数时间常数 <code>τ</code></strong>（记住半衰期是 <code>τ * ln(2)</code>）；</li>
+<li>MemOS 的参数是<strong>队列优先级和不同物理形态模块的序列化 Schema</strong>。</li>
+</ul>
+<p>省 Token 和防发臭永远是一把双刃剑：主题摘要省了扫描，代价是摘要重建；衰减清了噪音，代价是低频高危的灾难回滚手册可能被埋掉。所以每次引入整理机制，<strong>必须留一条低频高危规程（比如“数据库主从切换回滚清单”）作为必考反例</strong>——如果新机制把平均检索分提了 5%，却把灾难回滚手册搞丢了，立刻叫停！</p>
+</details>
+
+<h2 id="动手检查">动手检查</h2><p>请你针对刚才的“自动化配置巡检条件变更”，分别给 MemoryOS、Hippo Memory、A-MEM 和 MemOS 各写一条具体的验收断言；再解释为什么单纯看到“后台队列完成”或“旧规则 strength 降到 0.1”，依然不足以证明下一次发版一定按新规则执行？</p>
+<p>答案提示：MemoryOS 查短期/主题页保留了条件分叉且近期未被旧长期画像覆盖；Hippo 查旧规则已被显式 <code>supersede</code> 为带条件的清晰新规程（而不只是靠降权）；A-MEM 查新旧笔记链接已建立且旧笔记原话未被篡改、检索末端 <code>[:k]</code> 没把新笔记切掉；MemOS 查对应 cube 文本任务已从 queued 变为 completed 且读回正文正确。队列完成或强度下降只说明<strong>存储层状态变了</strong>，最终是否生效还要验证下一次真实发版请求时，新规则是否进了 Prompt 且针对“已接入/未接入”两类服务做出了不同动作。</p>
+<figure class="concept-diagram" tabindex="0"><img src="../assets/rewrite-memory-b/12-overview.svg" alt="复杂整理机制上线前的安全底线：保护低频高危规则、严查供应链、区分文本与模型资源" loading="lazy"><figcaption>图：凡是会自动改写或淘汰记忆的机制，上线前都要先验低频保护、安全版本与回退通道。</figcaption></figure>
+
+<details class="comparison-reference">
+<summary>横向查阅表（选读）</summary>
+
+<h2 id="本章对照结论">本章对照结论</h2><table>
+<thead>
+<tr>
+<th>路线</th>
+<th>真正发生改变的对象</th>
+<th>排障时必须留下的中间状态</th>
+<th>最容易翻车的故障</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>MemOS</td>
+<td>MemCube 各形态模块与异步任务队列</td>
+<td>启用模块清单、任务 trace 与队列延迟</td>
+<td>供应链版本污染、队列积压、KV/LoRA 不兼容与难删除</td>
+</tr>
+<tr>
+<td>MemoryOS</td>
+<td>短期队列、中期主题页、长期画像/知识</td>
+<td>问答→Page→主题的归组映射与晋升 diff</td>
+<td>主题摘要漏词、低频明确纠正被旧画像压住</td>
+</tr>
+<tr>
+<td>Hippo Memory</td>
+<td>条目强度、半衰期、outcome 与 <code>sleep</code> 合并</td>
+<td>时间衰减、召回次数、outcome 分开记</td>
+<td>误召回自我强化、低频高危规程未 pin 被淘汰</td>
+</tr>
+<tr>
+<td>A-MEM</td>
+<td>笔记的 <code>context</code>、<code>tags</code> 与双向 <code>links</code></td>
+<td>邻居改写前后 diff、向量刷新状态与返回 ID</td>
+<td>邻居语气漂移、末端 <code>[:k]</code> 截断丢掉刚连的邻居</td>
+</tr>
+<tr>
+<td>Mem0 / Graphiti</td>
+<td>短事实卡 / 双时间边与节点摘要</td>
+<td>托管 Dream 状态 / 失效边列表与摘要重建</td>
+<td>OSS 误以为自带自动巩固；图里误拿 <code>invalid_at</code> 当热度</td>
+</tr>
+</tbody></table>
+</details>
+</article><nav class="pager" aria-label="章节导航"><a href="11-graph.html"><small>上一章</small>图谱路线：Graphiti / Cognee / HippoRAG</a><a href="13-integration.html"><small>下一章</small>工程接入路线：MCP / 文件 / Trace / Team</a></nav></main><div class="toolbar" role="group" aria-label="阅读工具"><a class="control" href="../index.html" aria-label="返回目录">目录</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></div></div><script src="../assets/wiki.js"></script></body></html>

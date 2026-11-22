@@ -1,0 +1,211 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Agent Memory from Scratch 中文电子书"><title>写入管线：什么值得记 · Agent Memory from Scratch</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><div class="shell"><header class="topbar"><a class="brand" href="../index.html">Agent Memory</a><span class="spacer"></span><a class="control hide-mobile" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="03-write-path"><div class="eyebrow">第 3 章</div><details class="toc"><summary>本章目录</summary><ol><li><a href="#先别急着总结-先把原话安全落盘">先别急着总结，先把原话安全落盘</a></li><li><a href="#提取阶段-把长期规则和单次例外拆干净">提取阶段：把长期规则和单次例外拆干净</a></li><li><a href="#去重-字面重复和意思重复是两码事">去重：字面重复和意思重复是两码事</a></li><li><a href="#热路径-vs-冷路径-别让用户干等提取-也别让旧缓存覆盖新指令">热路径 vs 冷路径：别让用户干等提取，也别让旧缓存覆盖新指令</a></li><li><a href="#什么值得长期记-什么只配留在原始日志">什么值得长期记，什么只配留在原始日志</a></li><li><a href="#写到一半挂了-怎么安全重试而不造重复垃圾">写到一半挂了，怎么安全重试而不造重复垃圾</a></li><li><a href="#动手检查">动手检查</a></li><li><a href="#本章对照结论">本章对照结论</a></li></ol></details><article class="content"><h1 id="写入管线-什么值得记">写入管线：什么值得记</h1><h2 id="先别急着总结-先把原话安全落盘">先别急着总结，先把原话安全落盘</h2><p>很多团队做记忆系统踩的第一个大坑，就是一收到消息或事故复盘，直接扔给大模型抽摘要，原话顺手就丢了。</p>
+<p>举个真实场景：支付组发了一封交接通知：“<strong>从下个月 1 号起，<code>payment-gateway</code> 的发布终审交给老李；不过本周五的紧急 hotfix 还是找老张拍板。</strong>”</p>
+<p>如果你在入口不留原话，直接压成一句话：</p>
+<ul>
+<li>压成“找老李”，周五的 hotfix 就送错人；</li>
+<li>压成“找老张”，下个月的交接就丢了；</li>
+<li>更糟的是，如果此时抽取模型 API 突然 504 超时，连原通知一起蒸发，你连重试的原料都没了！</li>
+</ul>
+<p>另外，注意里面的相对时间——“下个月 1 号”“本周五”。如果你今天（10 月 26 日）没记下<strong>参考日期和时区</strong>，三天后后台队列重试时，“本周五”就可能飘到下一周去了。</p>
+<p>所以写入管线的第一条军规就是：<strong>业务宿主先落原始事件（含原文、可信来源、参考时间、稳定事件 ID），确认落盘后再去触发记忆提取。</strong></p>
+<details class="source-example">
+<summary>源码与边界：为什么不能指望 SDK 替你先写日志（选读）</summary>
+
+<p><img src="../assets/rewrite-memory-a/03-01.svg" alt="先落原始日志，再做异步提炼"></p>
+<h3 id="mem0-消息落库在流程尾巴上">Mem0：消息落库在流程尾巴上</h3><p>翻开 <a href="https://github.com/mem0ai/mem0/blob/fff8a6472512/mem0/memory/main.py">Mem0 主流程</a> 你会发现，正常的 <code>add()</code> 是在提取流程的收尾阶段才调用 <code>self.db.save_messages()</code> 保存消息的。一旦中间 LLM 提取超时抛出 <code>LLMError</code>，代码根本走不到这一行——如果宿主没提前存底，原始输入就直接丢了。</p>
+<h3 id="graphiti-内存里建好对象-已经写进图库">Graphiti：内存里建好对象 ≠ 已经写进图库</h3><p>Graphiti 的 <code>add_episode()</code> 在早期就会在内存里构造好 <code>EpisodicNode</code> 并分配 UUID，但真正落进图数据库要等到抽取、实体消歧、边解析全部跑完后的 <code>_process_episode_data()</code>。看到日志打印了 episode UUID，不代表图里已经可读；半路报错后，还得靠宿主记录的原始事件 ID 去对账重放。</p>
+</details>
+
+<h2 id="提取阶段-把长期规则和单次例外拆干净">提取阶段：把长期规则和单次例外拆干净</h2><p>拿到上面那封 10 月 26 日发出的交接通知，合格的提取器应该拆出两条边界清楚的候选，而不是糊成一句“老张和老李都管发布”：</p>
+<pre tabindex="0"><code class="hljs">长期规则候选：2026-11-01 起，payment-gateway 常规发布终审人为老李（来源 notice-31）。
+单次任务候选：2026-10-30（本周五）的 hotfix 仍由老张拍板，不改变长期交接规则。</code></pre><p>审核提取结果时，别光看 JSON 格式合不合法、人名拼没拼对，重点盯三处最容易被模型悄悄抹掉的东西：</p>
+<ol>
+<li><strong>限定词</strong>：常规发布 vs 紧急 hotfix、正式环境 vs 演示环境；</li>
+<li><strong>明确日期</strong>：相对时间有没有锚定到具体日历日期；</li>
+<li><strong>语气强度</strong>：把“怀疑/建议”保留成假设，别自动升格成“确定故障/强制铁律”。</li>
+</ol>
+<h2 id="去重-字面重复和意思重复是两码事">去重：字面重复和意思重复是两码事</h2><p>一条交接通知经常在邮件、飞书群、工单里被转发四遍。去重时要把三种情况拆开处理：</p>
+<ul>
+<li><strong>同一事件重复投递</strong>：靠业务自己的 <code>event_id</code> 做幂等拦截，别重跑一遍；</li>
+<li><strong>一字不差的重复文本</strong>：靠文本归一化后的 Hash（如 MD5/SHA256）秒拦；</li>
+<li><strong>换了说法的同义句</strong>：比如“老李接手支付网关发版审批”和“11 月起 payment-gateway 发布找老李终审”，Hash 完全不同，必须先召回已有相似记录，再由模型或规则判断是同义重复、来源补充还是状态交接。</li>
+</ul>
+<p>还要提防一个常见误区：<strong>同一份通知被转发十次，依然只是 1 次独立观察，绝不是 10 次独立验证。</strong> 合并同义事实时可以把来源链接挂在一起，但别盲目把“出现次数”当成“可信度”。</p>
+<details class="source-example">
+<summary>源码与边界：去重与变更在源码里到底怎么跑（选读）</summary>
+
+<p><img src="../assets/rewrite-memory-a/03-02.svg" alt="三种重复与两种更新视图"></p>
+<h3 id="mem0-局部-hash-去重-同步默认-add-only">Mem0：局部 Hash 去重 + 同步默认 ADD-only</h3><p>在 2026-11 最新快照的 Mem0 本地同步路径中，有两处极容易和老教程对不上的真实实现：</p>
+<ol>
+<li><strong>Hash 去重不是全库唯一</strong>：代码计算候选文本的 MD5，只在 <code>seen_hashes</code>（本批次）和 <code>existing_hashes</code>（本次召回参考的旧记录）这个小圈子里查重。如果某条一模一样的旧事实排太靠后没被召回进参考池，它依然会被再写一条。</li>
+<li><strong>同步默认路径是 ADD-only</strong>：虽然老文档和旧注释里常画着模型自动输出 <code>ADD / UPDATE / DELETE</code> 的流程图，但当前本地同步推断走的是 <code>generate_additive_extraction_prompt()</code>，<strong>默认只做分阶段批量追加</strong>！旧的“老张负责审批”卡片不会自动消失——如果你要维护唯一的“当前审批人”，必须在业务层显式调用 <code>update()</code> 或维护外部版本字段。</li>
+</ol>
+<h3 id="graphiti-精确去重-关系解析分开返回">Graphiti：精确去重 + 关系解析分开返回</h3><p>Graphiti 的 <code>resolve_extracted_edges()</code> 会先按“源 UUID + 目标 UUID + 规范化 fact”滤掉本批完全重复的边，再拉出端点间的已有边和相关候选让模型裁决，分别返回 <code>resolved_edges</code>、<code>invalidated_edges</code> 和 <code>new_edges</code>。验收时千万别只看有没有新边生成，更要检查<strong>旧边该关的关没关、不该关的（比如临时 hotfix 不该关长期默认）有没有被误伤</strong>。</p>
+<h3 id="tencentdb-写入去重范围-读取范围">TencentDB：写入去重范围 ≠ 读取范围</h3><p>顺带提一句，<a href="https://github.com/TencentCloud/TencentDB-Agent-Memory/blob/083c64b11a67/MemoryCore/src/core/record/l1-dedup.ts">TencentDB 的 L1 去重实现</a> 先用原生混合检索（或全文 + 客户端向量 + RRF）召回旧候选，再批量让模型做去重裁决，但它的去重隔离范围可以限定在单次 session 内，与跨会话读取范围并不一样；而且没召回出候选时会直接 store，也不能把“调用成功”等同于“全库语义去重完成”。</p>
+</details>
+
+<h2 id="热路径-vs-冷路径-别让用户干等提取-也别让旧缓存覆盖新指令">热路径 vs 冷路径：别让用户干等提取，也别让旧缓存覆盖新指令</h2><p>把原文写进数据库只需要几毫秒，但调大模型抽事实、算向量、做实体消歧可能要几秒钟。</p>
+<ul>
+<li><strong>热路径（当前回复前）</strong>：原文落盘，而且<strong>用户刚发来的明确纠正必须立刻留在当前对话上下文里</strong>，马上生效；</li>
+<li><strong>冷路径（后台异步整理）</strong>：实体解析、去重合并、画像刷新、长期巩固交给持久任务队列慢慢跑。</li>
+</ul>
+<p>很多系统的翻车点就在这个“最终一致性窗口”：林远刚说“以后改用中文回复”，后台异步任务还没跑完，下一秒系统又从旧画像里读出“默认英文”覆盖了当前对话！记住：<strong>异步整理没完成时，本轮和近期原话的优先级永远高于旧的派生记忆。</strong></p>
+<p>还要区分语言层面的 <code>async/await</code> 和真正的持久队列：像 Mem0 的 <code>AsyncMemory</code> 只是异步非阻塞接口，进程一挂任务就没了，它并没有替你建好 Redis/RabbitMQ 级别的持久化重试队列。</p>
+<h2 id="什么值得长期记-什么只配留在原始日志">什么值得长期记，什么只配留在原始日志</h2><p>不是每句话都值得塞进长期记忆。判断一条信息值不值得提炼，问自己一个大白话问题：<strong>“如果下周我忘了这句话，会不会选错人、漏查配置、搞挂线上，还是仅仅少了一段闲聊背景？”</strong></p>
+<ul>
+<li><strong>值得记</strong>：明确约束、反复踩过的坑、经过确认的架构边界、长期个人偏好；</li>
+<li><strong>先留在原始日志，别急着提炼</strong>：单次网络抖动、还没验证的排障猜测、大段堆栈日志。原始日志同样可审计、可按需搜，别把它们全塞进高优先级召回池把真正重要的规程挤掉。</li>
+</ul>
+<p>对于工具日志和代码文件：像 Mem0 提供 <code>infer=False</code> 跳过模型提取直接落库，适合已经过业务审核和脱敏的短结论；Graphiti 接受文本/JSON 作为 <code>episode_body</code>，但直接把几百行堆栈扔进去会抽出一堆垃圾节点，一定要先清洗、用 Schema 限死关注对象。</p>
+<h2 id="写到一半挂了-怎么安全重试而不造重复垃圾">写到一半挂了，怎么安全重试而不造重复垃圾</h2><p>真实生产环境里，部分失败太常见了：一条通知拆出两条规则，第一条写进向量库成功，第二条算 embedding 时网络断了。</p>
+<p>如果你直接把整条通知重新丢进 <code>add()</code>，很可能把第一条规则再生成一遍，挂上新 ID——以后系统看日志还以为这条规则被独立确认了两次！</p>
+<p>靠谱的恢复做法很朴素：</p>
+<ol>
+<li><strong>给每条原始输入发一个稳定的 <code>event_id</code></strong>，外层建一张状态账簿，记录“已接收 / 处理中 / 部分失败 / 已就绪”以及已经成功落盘的派生 ID；</li>
+<li><strong>重试前先对账</strong>：只补做失败的那一项，或者按新版本号整体重建并替换旧派生记录；</li>
+<li><strong>盯紧底层框架的真实行为</strong>：Mem0 批量插入或算向量失败时会逐条回退，接口返回的对象列表未必和每个底层存储完全一致，需要按 ID 读回确认；Graphiti 的 <code>add_episode(uuid=...)</code> 在源码里是去加载<strong>已经存在</strong>的 episode，并不是传个业务 ID 就能自动实现幂等创建。</li>
+</ol>
+<details class="implementation-notes">
+<summary>实现笔记：写入状态的清晰边界与各项目实情（选读）</summary>
+
+<h2 id="可靠写入的四段账簿">可靠写入的四段账簿</h2><pre tabindex="0"><code class="hljs">1. 入口落盘：清洗后原文 + 可信来源 + 参考时间/时区 + 稳定 event_id → 状态 RECEIVED
+2. 本轮直通：当前明确约束直接进本轮 Prompt，不等后台队列
+3. 后台派生：抽取候选 → 核对限定词 → 查重/版本裁决 → 写索引与映射 → 状态 PROCESSING
+4. 读回验收：按派生 ID 读回确认可读，更新事件映射 → 状态 READY（失败则 RETRYABLE）</code></pre><h2 id="矛盾来了别急着覆盖-先分清四类情况">矛盾来了别急着覆盖，先分清四类情况</h2><table>
+<thead>
+<tr>
+<th>情况</th>
+<th>研发助手里的例子</th>
+<th>正确动作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>正式状态演进</td>
+<td>11 月 1 日老李正式接替老张审批</td>
+<td>结束旧有效区间，开启新有效区间，保留历史</td>
+</tr>
+<tr>
+<td>单次任务例外</td>
+<td>本周五紧急 hotfix 仍找老张</td>
+<td>新建带任务 ID 的短期约束，不碰长期默认</td>
+</tr>
+<tr>
+<td>抽取或人工录入错误</td>
+<td>把“临时顶班”错写成“永久接任”</td>
+<td>回到原始事件重抽并修正派生记录与摘要</td>
+</tr>
+<tr>
+<td>来源互相打架</td>
+<td>群消息说换老李，工单系统还写老张</td>
+<td>并存双源证据并提示核实，别按后写入瞎覆盖</td>
+</tr>
+</tbody></table>
+<h2 id="常见项目的写入机制速览">常见项目的写入机制速览</h2><ul>
+<li><strong>Mem0</strong>：同步普通路径用近 10 条消息 + 相关旧事实做单次 ADD-only 批量提取；<code>infer=False</code> 直存审核文本。</li>
+<li><strong>Memobase</strong>：先写进用户 buffer，等阈值、空闲或显式 <code>flush</code> 才批处理合并画像和事件。</li>
+<li><strong>Graphiti</strong>：从 episode 出发，走节点抽取 → 规范 UUID 消歧 → 边抽取与时间冲突裁决 → 节点属性/摘要更新。</li>
+<li><strong>Cognee</strong>：按内容类型（文档/代码/会话/技能）路由到不同加载、分块、Schema 抽取与多存储管线（v1.6.8 入口新增 SSRF 与服务器路径拦截）。</li>
+<li><strong>Basic Memory / Letta Code</strong>：不靠每轮自动抽事实，前者解析人类编辑的 Markdown，后者由 Agent 编辑 MemFS 并 Git commit 后在下次编译生效。</li>
+<li><strong>Agent Beacon / Hermes Jev</strong>：Beacon 只负责把工具动作归一采集为事件流，Hermes 只做检索后的判别门控，两者都不充当长期事实写入库。</li>
+</ul>
+</details>
+
+<h2 id="动手检查">动手检查</h2><p>按时间顺序收到三条通知：</p>
+<ol>
+<li>“<code>payment-gateway</code> 发布默认由老张终审。”</li>
+<li>“本周五紧急 hotfix 找老李临时顶班。”</li>
+<li>“11 月 1 日起 <code>payment-gateway</code> 发布终审正式交给老李。”</li>
+</ol>
+<p>请写出每条通知分别应该改动长期默认、任务状态和历史区间的哪一部分。再假设第 3 条在写入索引时中途崩溃，重试前你必须先核对哪几个对象？</p>
+<p>答案提示：第 2 条只是单次任务例外，绝不能关闭老张的长期职责；第 3 条才是正式交接，且要区分通知收到日期和 11 月 1 日生效日期。中途崩溃后，重试前必须先按原 <code>event_id</code> 查原始事件、已生成的派生 ID、旧关系是否已被关闭以及节点摘要是否已更新，切忌盲目把原文本再灌一遍。</p>
+<figure class="concept-diagram" tabindex="0"><img src="../assets/rewrite-memory-a/03-overview.svg" alt="可靠写入管线的四个状态：已接收、提取中、已就绪" loading="lazy"><figcaption>图：把原文落盘、异步提取、索引可读分开记账，出故障时才知道从哪一步安全续做。</figcaption></figure>
+
+<details class="comparison-reference">
+<summary>项目对照速查（选读）</summary>
+
+<h2 id="本章对照结论">本章对照结论</h2><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>写入管线里最值得追的环节</th>
+<th>上线前不能省的验收点</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Mem0</td>
+<td>ADD-only 批量提取、<code>infer=False</code>、局部 Hash</td>
+<td>事实、SQLite 历史与实体链接是否写齐</td>
+</tr>
+<tr>
+<td>Memobase</td>
+<td>buffer 累积到 flush 合并画像</td>
+<td>纠正写入后多久才对下一次读取可见</td>
+</tr>
+<tr>
+<td>Graphiti</td>
+<td>Episode → 实体消歧 → 边冲突裁决</td>
+<td>规范 UUID、生效日期与旧边失效状态</td>
+</tr>
+<tr>
+<td>Cognee</td>
+<td>多类型管线路由、安全路径检查</td>
+<td>跨关系/图/向量库中途失败怎么恢复</td>
+</tr>
+<tr>
+<td>HippoRAG</td>
+<td>文档 OpenIE 三元组与来源图索引</td>
+<td>关键跨段连接是否被正确抽出</td>
+</tr>
+<tr>
+<td>MemoryOS</td>
+<td>短期容量溢出转页 + 热度触发长期分析</td>
+<td>单次例外有没有在摘要提升时被压丢</td>
+</tr>
+<tr>
+<td>MemOS</td>
+<td>Reader 处理与 Scheduler 异步队列</td>
+<td>队列积压监控与失败重试状态</td>
+</tr>
+<tr>
+<td>Hippo Memory</td>
+<td>本地捕获与 <code>sleep</code> 集中巩固</td>
+<td>合并后能否追溯回原始轨迹</td>
+</tr>
+<tr>
+<td>A-MEM</td>
+<td>新笔记描述生成与邻居属性修改</td>
+<td>邻居改完后向量索引是否同步刷新</td>
+</tr>
+<tr>
+<td>Letta Code</td>
+<td>MemFS 编辑、Git commit 与下次编译</td>
+<td>本轮立即可见 vs 下轮编译生效的边界</td>
+</tr>
+<tr>
+<td>Basic Memory</td>
+<td>Markdown 解析与链接同步</td>
+<td>文件改名、死链与并发写入冲突</td>
+</tr>
+<tr>
+<td>MCP Memory Service</td>
+<td>客户端提交 + FTS5/向量存储与巩固</td>
+<td>直接 store 不等于内容已筛选有价值</td>
+</tr>
+<tr>
+<td>Agent Beacon</td>
+<td>跨宿主工具活动归一为 <code>runtime.jsonl</code></td>
+<td>采集覆盖、重复去重与敏感参数脱敏</td>
+</tr>
+<tr>
+<td>TencentDB</td>
+<td>L0 留底 + L1 同会话去重 + L2/L3 归纳</td>
+<td>去重范围与读取范围的隔离区别</td>
+</tr>
+<tr>
+<td>Hermes Jev Skills</td>
+<td>轻量决策与精确匹配 memo 缓存</td>
+<td>不承担长期事实写入职责</td>
+</tr>
+</tbody></table>
+</details>
+</article><nav class="pager" aria-label="章节导航"><a href="02-taxonomy.html"><small>上一章</small>记忆类型与数据模型</a><a href="04-from-scratch.html"><small>下一章</small>从零实现持久记忆</a></nav></main><div class="toolbar" role="group" aria-label="阅读工具"><a class="control" href="../index.html" aria-label="返回目录">目录</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></div></div><script src="../assets/wiki.js"></script></body></html>

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 Octop v1.0.3b7 源码的架构解剖：单进程宿主、托管专家、多层存储、多副本租约与安全边界"><meta name="author" content="独立源码研究">
+<title>前端状态机：离线订阅、五道恢复门与历史竞态 · Octop 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">O</span><span>Octop 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 13</div><div class="rail-title">前端状态机：离线订阅、五道恢复门与历史竞态</div><ol><li><a href="#为什么把-chatstore-搬出-react-组件树">为什么把 chatStore 搬出 React 组件树</a></li><li><a href="#帧归属与多说话人合并">帧归属与多说话人合并</a></li><li><a href="#wsresumegate-ts-里的五道恢复门">wsResumeGate.ts 里的五道恢复门</a></li><li><a href="#历史回填与实时增量的竞态治理">历史回填与实时增量的竞态治理</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 13 章</div><h1>前端状态机：离线订阅、五道恢复门与历史竞态</h1><div class="chapter-meta">Octop v1.0.3b7 快照 2026-11-18 · 约 12 分钟</div></header><div class="prose"><p>写一个简单聊天页只要维护一个 <code>messages</code> 数组，收到 token 就往最后一条拼字，收到 <code>done</code> 就解锁输入框。但放到 Octop 的真实对话里，这套玩具写法几分钟就会崩：用户切去设置页再切回来，在途流状态全丢了；工具执行 40 秒没吐字，前端误以为断线把气泡封死了；团队房间里成员 A 刚吐完 <code>done</code>，主持人还在汇总，输入框就被错误解锁了；下拉刷新历史请求慢半拍回来，把屏幕上刚生成的新回答一把冲掉。</p>
+<p>Octop 的 React 18 + TypeScript 前端（<code>dashboard/</code>）之所以把聊天核心做成一台独立的外部状态机，就是为了把这些并发时序锁死。</p>
+<h2 id="为什么把-chatstore-搬出-react-组件树">为什么把 chatStore 搬出 React 组件树<a class="anchor" href="#为什么把-chatstore-搬出-react-组件树" aria-label="链接到本节">#</a></h2>
+<p>打开 <code>dashboard/src/pages/Chat/hooks/chatStore.ts</code>，最核心的设计决策写在开头：WebSocket 实例、流式累计消息、在途说话人集合和订阅状态全部放在<strong>模块级 store</strong> 里，React 页面组件只通过快照订阅读取状态。</p>
+<p>这样一来，用户在工作台里从对话页切到知识库、云主机或设置页，聊天组件被 React 卸载，底层 WebSocket 和累计缓冲区纹丝不动；切回聊天页时组件直接接上最新快照，屏幕不闪烁也不丢字。同时要分清边界：这个模块级 store 只跨越单页应用内部的路由切换，页面真正刷新或关掉浏览器后，仍然要靠服务端历史接口和 <code>turn_active</code> 标志重新接轨。</p>
+<p>另外从 <code>v1.0.3b5</code> 起，服务重启升级后前端会主动清理 Service Worker 缓存再重载（PR #2901），避免旧版静态 JS 与新版后端协议字段错位；Monaco 编辑器资源也改为从同源提供（<code>v1.0.3b3</code>），不依赖外网 CDN。</p>
+<h2 id="帧归属与多说话人合并">帧归属与多说话人合并<a class="anchor" href="#帧归属与多说话人合并" aria-label="链接到本节">#</a></h2>
+<p>服务端推送下来的原始帧，经过 <code>dashboard/src/utils/parseHarnessChunk.ts</code> 统一翻译成前端事件，再由 <code>frameThread.ts</code> 决定它该落进哪条线程的缓冲区。这里有三个容易踩坑的边界：</p>
+<ul>
+<li><strong>同一条 WebSocket 上不止一位说话人</strong>：团队房间里，主持人和多位成员的流通过同一条房间订阅推下来，前端必须严格按帧里的说话人标识分别归并气泡，成员的 <code>done</code> 事件只能封口该成员的气泡，不能把仍在活跃状态的主持人或整条房间流误判为结束。</li>
+<li><strong>本轮改动文件清单</strong>：<code>v1.0.3b6</code> 起，对话流会把本轮编辑过的文件路径、所在目录与增删行数汇总展示在聊天区，让开发者不用切终端就能核对原生或托管专家到底动了哪些文件。</li>
+<li><strong>多方同时共享会话防重叠</strong>：<code>v1.0.3b5</code> 修复了共享对话场景下并发回复重叠和消息顺序错乱的问题，结合前端乐观渲染生成的 <code>client_message_id</code>（后端在 <code>turn.py</code> 原样校验并沿用），保证用户提问和模型回复顺序对齐，也避免已经结束的一轮在历史加载后再重复追加一次（<code>v1.0.3b2</code> 修复）。</li>
+</ul>
+<h2 id="wsresumegate-ts-里的五道恢复门">wsResumeGate.ts 里的五道恢复门<a class="anchor" href="#wsresumegate-ts-里的五道恢复门" aria-label="链接到本节">#</a></h2>
+<p><code>dashboard/src/pages/Chat/hooks/wsResumeGate.ts</code> 是整套前端里含金量最高的小模块，全文件只有一百多行，把弱流式恢复拆成了五个纯函数门禁，每个门禁都直接对应一种线上事故：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>门禁函数</th>
+<th>解决什么问题</th>
+<th>关键常量与判断条件</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>shouldResumeStreamAfterClose</code></td>
+<td>意外断线后要不要自动重订阅</td>
+<td>非主动关闭、正在流式、线程有效、未超 <code>MAX_STREAM_RESUME_ATTEMPTS = 8</code>、且当前标签处于聚焦状态（后台标签不疯狂重连）</td>
+</tr>
+<tr>
+<td><code>shouldProbeActiveTurn</code></td>
+<td>打开历史页时要不要探测在途任务</td>
+<td>仅在本地 <code>isStreaming</code> 或服务端历史返回 <code>turn_active === true</code> 时探测，绝不靠猜最后一条消息像不像没说完</td>
+</tr>
+<tr>
+<td><code>shouldBlockHistoryRefresh</code></td>
+<td>下拉刷新历史把在途新回复冲掉</td>
+<td>仅当 socket 仍存活且存在正在生成的流、活跃说话人或 <code>streaming</code> 气泡时拦截；断线状态放行恢复路径</td>
+</tr>
+<tr>
+<td><code>shouldForceSealStream</code></td>
+<td>断线太久连不上，气泡永远转圈</td>
+<td>仅在无活 socket、聚焦状态且距上次活动满 <code>STREAM_STALE_WITHOUT_SOCKET_MS = 20_000</code> 毫秒才强制封口；活 socket 豁免，绝不误杀长工具调用</td>
+</tr>
+<tr>
+<td><code>shouldEmitStreamResumeNotice</code></td>
+<td>重连成功后的提示控制</td>
+<td>仅在非首次重连（<code>resumeAttempt &gt; 0</code>）且服务端确认 <code>turnActive</code> 时弹一次提示</td>
+</tr>
+</tbody></table></div>
+<p>把这五个判断从巨大的 React 组件和 store 里抽成纯函数，有两个立竿见影的收益：第一，不会再有人提议“20 秒没收到 token 就把加载关掉”这种会误杀 60 秒工具调用的拍脑袋逻辑；第二，每个边界都能用极快的单元测试把边界条件全铺满。</p>
+<h2 id="历史回填与实时增量的竞态治理">历史回填与实时增量的竞态治理<a class="anchor" href="#历史回填与实时增量的竞态治理" aria-label="链接到本节">#</a></h2>
+<p>在弱网或慢查询下，历史加载经常和实时流撞车：比如前端先发了一个拉取历史的 HTTP 请求，等它返回前 WebSocket 又推来了三段新文本和一条工具结果。如果直接粗暴地用历史响应覆盖当前列表，新字瞬间消失；如果无脑拼接，同一条工具结果又会出现两遍。</p>
+<p>除了上面提到的 <code>shouldBlockHistoryRefresh</code>，<code>chatStore.history.test.ts</code> 里专门用事件序列测试锁死了各类合并边界：审批暂停时刷新历史、成员结束但主持人未结束、历史请求失败保留本地内容、取消后收到迟到帧，以及老版本里出现过的过期缓存把历史顺序倒置的问题（<code>v1.0.3b3</code> 修复）。类似的竞态也出现在记忆管理页：连续切换不同专家加载记忆列表时，慢返回的旧响应不能覆盖新专家的列表，这也是 <code>v1.0.3b7</code> 专门补齐的一处防过期响应守卫。</p>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/dashboard/package.json"><code>dashboard/package.json</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/dashboard/src/pages/Chat/hooks/chatStore.ts"><code>dashboard/src/pages/Chat/hooks/chatStore.ts</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/dashboard/src/pages/Chat/hooks/wsResumeGate.ts"><code>dashboard/src/pages/Chat/hooks/wsResumeGate.ts</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/dashboard/src/pages/Chat/hooks/frameThread.ts"><code>dashboard/src/pages/Chat/hooks/frameThread.ts</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/dashboard/src/utils/parseHarnessChunk.ts"><code>dashboard/src/utils/parseHarnessChunk.ts</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/dashboard/src/pages/Chat/hooks/chatStore.history.test.ts"><code>dashboard/src/pages/Chat/hooks/chatStore.history.test.ts</code></a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="12-security.html"><small>上一章</small><strong>安全边界：MFA、权限分离、审批串行与云凭证隔离</strong></a><a class="next" href="14-interop.html"><small>下一章</small><strong>跨端协作：托管 ACP 回环与 Bridge 实例隧道</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：看懂一个 Agent 宿主如何拼起来</a><a href="../chapters/01-requirements.html"><span>01</span>需求推导：脱离模型 SDK 之后要守住什么</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：单进程宿主与四套可复用运行库</a><a href="../chapters/03-lifecycle.html"><span>03</span>启动与退出：装配顺序、延迟绑库与有序收尾</a><a href="../chapters/04-agent-runtime.html"><span>04</span>Agent 装配：原生专家、托管专家与中间件顺序</a><a href="../chapters/05-identity.html"><span>05</span>身份与会话：四种标识与共享专家的线程隔离</a><a href="../chapters/06-storage.html"><span>06</span>存储与历史：六类数据平面、下线归档与安全清理</a><a href="../chapters/07-workspace.html"><span>07</span>工作区后端：内容访问、对象存储与容器挂载边界</a><a href="../chapters/08-turn-path.html"><span>08</span>一次对话：从 WebSocket 入队到工具熔断与推送</a><a href="../chapters/09-memory-rag.html"><span>09</span>记忆与知识库：命名空间维护、图谱扩展与重排序</a><a href="../chapters/10-extensions.html"><span>10</span>工具与扩展：Skill、Plugin、Connector 与 MCP OAuth</a><a href="../chapters/11-teams.html"><span>11</span>多 Agent 团队：共享展示时间线，隔离执行状态</a><a href="../chapters/12-security.html"><span>12</span>安全边界：MFA、权限分离、审批串行与云凭证隔离</a><a href="../chapters/13-dashboard.html"><span>13</span>前端状态机：离线订阅、五道恢复门与历史竞态</a><a href="../chapters/14-interop.html"><span>14</span>跨端协作：托管 ACP 回环与 Bridge 实例隧道</a><a href="../chapters/15-operations.html"><span>15</span>部署与运维：Electron 壳、镜像分层与多副本租约</a><a href="../chapters/16-tradeoffs.html"><span>16</span>架构取舍：单机够用到何时，复杂度卡在哪里</a><a href="../chapters/17-mini-host.html"><span>17</span>代码实战：用两百行标准库模型验证六条边界</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.0.3b7 源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Octop v1.0.3b7 · 快照 ecd2cdbce3a5 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

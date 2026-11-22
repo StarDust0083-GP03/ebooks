@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 Octop v1.0.3b7 源码的架构解剖：单进程宿主、托管专家、多层存储、多副本租约与安全边界"><meta name="author" content="独立源码研究">
+<title>前言：看懂一个 Agent 宿主如何拼起来 · Octop 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">O</span><span>Octop 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 00</div><div class="rail-title">前言：看懂一个 Agent 宿主如何拼起来</div><ol><li><a href="#分析快照与研究边界">分析快照与研究边界</a></li><li><a href="#从-v1-0-3b1-到-v1-0-3b7-的变化导读">从 v1.0.3b1 到 v1.0.3b7 的变化导读</a></li><li><a href="#阅读之前先避开三个常见误判">阅读之前先避开三个常见误判</a></li><li><a href="#怎么读这本书">怎么读这本书</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 00 章</div><h1>前言：看懂一个 Agent 宿主如何拼起来</h1><div class="chapter-meta">Octop v1.0.3b7 快照 2026-11-18 · 约 12 分钟</div></header><div class="prose"><p>调通一个大模型 SDK 往往只需要几十行 Python，但把它做成一个家庭或小团队长期跑在自己机器上的多用户助手，真正消耗工程量的事情几乎全在模型循环之外。谁能看哪位专家的对话、浏览器关掉后长任务怎么继续跑、工具调进死循环怎么刹住、切到 PostgreSQL 多副本之后定时任务和飞书通道怎么避免跑两遍、托管外部编程 Agent 时怎么把知识库和插件递给它，这些才是决定平台能不能稳住的骨架。</p>
+<p>TencentCloud/Octop 的价值正在这层宿主设计。它把四套独立发布的运行库（<code>octop-harness</code>、<code>octop-gateway</code>、<code>octop-memory</code>、<code>octop-browser</code>）和一个 React 前端，装进同一个 Python 包里。读它的源码时，与其按目录从头翻到尾，不如追着真实故障和边界问题看：谁持有状态、哪条边界真拦得住越权、哪项能力在单机和集群模式下表现完全不同。</p>
+<h2 id="分析快照与研究边界">分析快照与研究边界<a class="anchor" href="#分析快照与研究边界" aria-label="链接到本节">#</a></h2>
+<p>全书基于 TencentCloud/Octop 的 <code>v1.0.3b7</code> 标签，对应提交 <code>ecd2cdbce3a54dee0f424f021d0a144d9669685e</code>，上游发布日期为 2026-11-18，本次源码采集日期为 2026-11-22。<code>pyproject.toml</code> 固定的四个核心运行库版本下限分别为 <code>octop-harness[all]&gt;=1.0.11</code>、<code>octop-memory&gt;=1.0.5</code>、<code>octop-gateway&gt;=1.0.4</code> 和 <code>octop-browser&gt;=1.0.0</code>。文末与附录里的 92 个源码链接全部锁死在该提交上，不会随默认分支变动失效。</p>
+<p>本书的工作边界交代在前面，正文不再每节重复：</p>
+<ul>
+<li>书里的模块职责、调用链、常量、表结构与边界条件，均来自对固定快照代码与文档的静态核对。</li>
+<li>本书未在真实生产环境中对 Octop 执行模型调用评测、并发压测或渗透测试；提到仓库中的 <code>pytest</code> 或前端测试文件时，只表示源码提供了对应验证入口。</li>
+<li>四个外部运行库独立发版，本书聚焦 Octop 宿主如何装配、调用和约束它们，不替上游运行库背书其全部内部实现。</li>
+<li>第 17 章配套的 <code>examples/mini_host.py</code> 是零依赖 Python 教学模型，用来离线运行并验证 6 条核心架构不变量，18 个单元测试全部在本机实跑通过。</li>
+</ul>
+<h2 id="从-v1-0-3b1-到-v1-0-3b7-的变化导读">从 v1.0.3b1 到 v1.0.3b7 的变化导读<a class="anchor" href="#从-v1-0-3b1-到-v1-0-3b7-的变化导读" aria-label="链接到本节">#</a></h2>
+<p>如果你的印象还停留在早期的 <code>v1.0.3b1</code>，这六个小版本里落地的架构改动相当密集，好几条旧结论在 <code>v1.0.3b7</code> 里已经过时：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>版本</th>
+<th>核心架构变化</th>
+<th>对应章节</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>v1.0.3b2</code></td>
+<td>账号加入 TOTP 与 Passkey 二次验证及无密码登录；新增 RAGFlow 知识库连接器；虚拟桌面和系统浏览器改为默认不启动；改密码退出其他设备</td>
+<td>第 10、12、15 章</td>
+</tr>
+<tr>
+<td><code>v1.0.3b3</code></td>
+<td>落地 ADR 003，PostgreSQL 模式接管技能包源与知识库（含 <code>pgvector</code>）；引入 90s/30s/25s 同行租约协调多实例 Cron 与 IM 通道；拆分 Docker 精简/完整镜像；新增火山引擎 TOS 后端；Windows SQLite 关闭每句 fsync</td>
+<td>第 6、7、9、15 章</td>
+</tr>
+<tr>
+<td><code>v1.0.3b4</code></td>
+<td>工作台新增腾讯云 CVM 运维页，多实例下授权存入控制面；Docker 默认 <code>:latest</code> 改为精简版，完整版移至 <code>:full</code></td>
+<td>第 12、15 章</td>
+</tr>
+<tr>
+<td><code>v1.0.3b5</code></td>
+<td>桌面端从 Wails 全面切换为 Electron 45 壳；下线 <code>history_v2</code>，启动时单次迁回 <code>thread_messages</code>；共享专家支持主动共享对话；自定义 MCP 支持填写 OAuth 应用凭证；新增 <code>octop migrate openclaw/hermes</code></td>
+<td>第 3、5、6、10、15 章</td>
+</tr>
+<tr>
+<td><code>v1.0.3b6</code></td>
+<td>发布多副本 Helm Chart 与集群运维文档；新增托管专家（<code>kind=&quot;managed&quot;</code>），把 OpenCode、Claude Code、Codex、CodeBuddy 等 ACP Runner 当一等专家运行；知识库加入实体图谱与二阶段重排序；管理员可限制创建专家时可选的存储后端；修复 Cursor 重叠审批卡死</td>
+<td>第 4、7、9、12、14、15 章</td>
+</tr>
+<tr>
+<td><code>v1.0.3b7</code></td>
+<td>托管专家支持固定会话模式，并通过 6 个回环 MCP 服务接入连接器、知识库、专家回调、文件、定时任务与已启用插件；工具调用上限改为仅拦截连续相同调用（默认 40 次）；Docker 部署的 Octop 保留宿主机目录挂载进 Docker 专家，裸机安装继续剔除 <code>volumes</code>；PostgreSQL 孤儿 checkpoint 清理改为只统计不删除；带路径的 MCP OAuth 按 RFC 8414 发现元数据</td>
+<td>第 4、6、7、8、10、14 章</td>
+</tr>
+</tbody></table></div>
+<h2 id="阅读之前先避开三个常见误判">阅读之前先避开三个常见误判<a class="anchor" href="#阅读之前先避开三个常见误判" aria-label="链接到本节">#</a></h2>
+<p>阅读 <code>README_CN.md</code> 时，容易看到早期留下的概念印象，对照 <code>docs/architecture.md</code> 和 <code>src/octop/infra/server.py</code> 后有三个事实必须先对齐。</p>
+<p>第一，<code>AgentManager</code>、<code>Gateway</code>、<code>CronManager</code> 都是进程级单例，按数据行字段区分用户和专家，早就不再为每个用户维护一套独立的管理器对象。</p>
+<p>第二，聊天主通道已经从旧版 SSE 迁到双向 WebSocket（<code>/api/agents/{agent_id}/chat/ws</code>），哪怕前端个别辅助文件仍保留历史命名，也只有 HITL 恢复路由 <code>POST /api/agents/{agent_id}/chat/hitl/resume</code> 还在用 SSE 推送续跑流。</p>
+<p>第三，选择 SQLite 还是 PostgreSQL 不再只是换一张连接表。随着 ADR 003 与同行租约落地，PostgreSQL 模式下技能包源、知识库原文和 <code>pgvector</code> 向量、专家记忆以及通道和定时任务租约都迁进了共享库，但每台实例的本机工作区和飞书去重表仍留在各自磁盘上，需要按数据类别分别盘点。</p>
+<h2 id="怎么读这本书">怎么读这本书<a class="anchor" href="#怎么读这本书" aria-label="链接到本节">#</a></h2>
+<p>如果你是第一次拆解自托管 Agent 平台，按目录顺读最省力：前四章看宿主如何把多入口和四套运行库装进一个进程，第 5 到第 9 章啃透身份、多层存储、工作区后端、请求链路和知识记忆，第 10 到第 14 章看扩展机制、多 Agent 团队、安全边界、前端状态机和托管 ACP/Bridge，最后三章落到多副本部署、架构取舍和可运行的最小宿主代码。</p>
+<p>如果你已经在维护类似的 Agent 平台，可以直接跳到第 8 章看一次 WebSocket 回合的完整处理，再对照第 6 章的存储分层、第 4 章的托管专家与熔断中间件，以及第 15 章的多副本租约，最后翻附录的源码索引直达对应文件。</p>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/pyproject.toml"><code>pyproject.toml</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/README_CN.md"><code>README_CN.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/architecture.md"><code>docs/architecture.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/AGENTS.md"><code>AGENTS.md</code></a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a class="next" href="01-requirements.html"><small>下一章</small><strong>需求推导：脱离模型 SDK 之后要守住什么</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：看懂一个 Agent 宿主如何拼起来</a><a href="../chapters/01-requirements.html"><span>01</span>需求推导：脱离模型 SDK 之后要守住什么</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：单进程宿主与四套可复用运行库</a><a href="../chapters/03-lifecycle.html"><span>03</span>启动与退出：装配顺序、延迟绑库与有序收尾</a><a href="../chapters/04-agent-runtime.html"><span>04</span>Agent 装配：原生专家、托管专家与中间件顺序</a><a href="../chapters/05-identity.html"><span>05</span>身份与会话：四种标识与共享专家的线程隔离</a><a href="../chapters/06-storage.html"><span>06</span>存储与历史：六类数据平面、下线归档与安全清理</a><a href="../chapters/07-workspace.html"><span>07</span>工作区后端：内容访问、对象存储与容器挂载边界</a><a href="../chapters/08-turn-path.html"><span>08</span>一次对话：从 WebSocket 入队到工具熔断与推送</a><a href="../chapters/09-memory-rag.html"><span>09</span>记忆与知识库：命名空间维护、图谱扩展与重排序</a><a href="../chapters/10-extensions.html"><span>10</span>工具与扩展：Skill、Plugin、Connector 与 MCP OAuth</a><a href="../chapters/11-teams.html"><span>11</span>多 Agent 团队：共享展示时间线，隔离执行状态</a><a href="../chapters/12-security.html"><span>12</span>安全边界：MFA、权限分离、审批串行与云凭证隔离</a><a href="../chapters/13-dashboard.html"><span>13</span>前端状态机：离线订阅、五道恢复门与历史竞态</a><a href="../chapters/14-interop.html"><span>14</span>跨端协作：托管 ACP 回环与 Bridge 实例隧道</a><a href="../chapters/15-operations.html"><span>15</span>部署与运维：Electron 壳、镜像分层与多副本租约</a><a href="../chapters/16-tradeoffs.html"><span>16</span>架构取舍：单机够用到何时，复杂度卡在哪里</a><a href="../chapters/17-mini-host.html"><span>17</span>代码实战：用两百行标准库模型验证六条边界</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.0.3b7 源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Octop v1.0.3b7 · 快照 ecd2cdbce3a5 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

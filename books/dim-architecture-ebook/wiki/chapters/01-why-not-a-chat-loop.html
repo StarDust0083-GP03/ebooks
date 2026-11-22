@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从时间总线、分支路由、rutis 跨语言数据面到权限与压缩重放，源码级解剖 arcships/dim Agent v4 架构"><meta name="author" content="独立源码研究">
+<title>为什么不用普通对话循环 · Dim 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">D</span><span>Dim 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 01</div><div class="rail-title">为什么不用普通对话循环</div><ol><li><a href="#dim-的反常识起点">Dim 的反常识起点</a></li><li><a href="#两种架构的工程对照">两种架构的工程对照</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 01 章</div><h1>为什么不用普通对话循环</h1><div class="chapter-meta">arcships/dim v0.1.0-alpha.27 · 快照 2026-11-22 · 约 10 分钟</div></header><div class="prose"><p>写一个最小可用的编程 Agent 并不难：维护一个 <code>messages</code> 数组，循环调用模型接口，拿到 <code>tool_use</code> 就本地执行函数，把结果塞回数组再调下一轮。这套结构在单终端、同步工具、单次问答的场景里跑得顺手，但在真实工程里很快会撞上四堵墙。</p>
+<p>第一堵墙是并发竞态。客户端不只是终端一个窗口，用户可能同时开着本地 TUI 和 Web 工作区，甚至还有一个 ACP 协议网关连在同一个后台守护进程上。模型发出一个需要确认的写文件请求后，两个界面几乎同时回传审批结果，一个点同意、一个点拒绝，或者用户在审批刚发出的瞬间按下了中断键。如果审批状态只存在 <code>while</code> 循环的局部变量或内存哈希表里，谁先拿到锁、网络回调快慢一毫秒，就会让客户端看到的终态和实际执行的动作对不上。</p>
+<p>第二堵墙是崩溃与热重载后的重放灾难。Agent 正在执行第 12 轮，调用了一个外部脚本或创建了子分支，守护进程突然重启，或者用户在会话中途修改并重载了一个插件。普通循环要想恢复现场，通常只能把历史对话重新喂给逻辑层，一不小心就会触发重复写文件、重复拉起子任务，或者把未结算的审批请求永久卡死在界面上。</p>
+<p>第三堵墙是上下文膨胀与旁路污染。随着功能增多，压缩摘要、Hook 注入、技能指令、后台命令通知、多分支状态提示都想往模型输入里塞文字。如果每个功能都直接拼接 <code>messages</code> 数组，很快就没人说得清某段提示词是谁在什么时候加进去的，压缩之后哪些系统状态该保留、哪些临时通知该扔掉，历史导出和模型实际看到的输入也会彻底分家。</p>
+<p>第四堵墙是跨语言扩展的胶水爆炸。很多 Agent 框架允许外部用 TypeScript 或 Python 写工具，但一旦插件需要读取会话配置、订阅事件流、注册自定义 RPC 方法或管理跨会话的定时任务，宿主就得手写一大堆语言桥接器和注册表，结果核心模块和外围扩展纠缠成一团。</p>
+<h2 id="dim-的反常识起点">Dim 的反常识起点<a class="anchor" href="#dim-的反常识起点" aria-label="链接到本节">#</a></h2>
+<p>面对这四堵墙，<code>arcships/dim</code> 在 Agent v4 里做了一个看起来很重、实际极其克制的架构决定：把内存里的控制流全部降级为围绕日志运转的状态机。上游在 <code>docs/architecture/rust-agent/time-bus.md</code> 里把这条根基写得很直白：Timeline 是每条分支的时间总线，事件写上总线，总线分配序号，按序号依次驱动订阅它的状态机，持久化只是总线的性质，时间定序才是它的本质。</p>
+<p>这个起点带来三条直接推论，贯穿了整个 28 Crate 的代码库：</p>
+<p><strong>一切先后只看序号。</strong> 网络响应快慢、协程调度顺序、插件订阅注册的先后，都不构成业务语义上的顺序。两次审批响应竞争同一个请求，谁分到的 <code>sequence</code> 在前谁就生效，另一条自动失效；中断信号 <code>stop/interrupt</code> 与迟到的工具请求谁先谁后，同样由序号一锤定音。</p>
+<p><strong>副作用留在总线外，总线上只记结果。</strong> 调大模型、跑 Shell 命令、写磁盘文件都在总线之外异步发生，总线只记录开启事实和终态事实。无论是进程崩溃重启，还是插件热重载换代，新一代状态机从明确的序号截点接手历史，只折叠内存视图和结算未闭合的在途工作，绝不重放任何过去的副作用。</p>
+<p><strong>宿主内核不写业务逻辑，一切能力皆插件。</strong> 连核心的对话主循环 <code>Loop</code>、输入队列 <code>InputQueue</code>、提示词管理 <code>Prompt</code>、权限裁决 <code>Permission</code>、审批门禁 <code>Approval</code>、分支树 <code>TimelineTree</code> 都是装配在 <code>rutis</code> 上的插件部件。在 <code>docs/architecture/rust-agent/generated/catalog.md</code> 记录的真实 App Server 产品装配里，共有 20 个分支级状态机（Capability）各自消费自己关心的事件键，互相不读对方内存，也不替对方改状态。</p>
+<h2 id="两种架构的工程对照">两种架构的工程对照<a class="anchor" href="#两种架构的工程对照" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>传统对话循环（Chat Loop）</th>
+<th>Dim Agent v4（时间总线 + 插件状态机）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>并发裁决</td>
+<td>依赖协程锁与回调到达时序</td>
+<td>统一写入分支 Timeline，以单调 <code>sequence</code> 裁决</td>
+</tr>
+<tr>
+<td>崩溃与重载</td>
+<td>易丢在途状态或重复执行副作用</td>
+<td>副作用不重放，按截点重建视图并结算未决操作</td>
+</tr>
+<tr>
+<td>上下文组装</td>
+<td>各模块直接修改 <code>messages</code> 列表</td>
+<td>仅已采用输入与工具结果入上下文，渲染与存储分离</td>
+</tr>
+<tr>
+<td>后台长任务</td>
+<td>往往引入独立全局任务调度层</td>
+<td>归发起能力自持，以 <code>SessionLifecycle::take_hold</code> 保护空闲卸载</td>
+</tr>
+<tr>
+<td>并行探索</td>
+<td>复制完整对话数组或另起无关联进程</td>
+<td>同 Session 内按父历史截点分叉，共享事实不共享上下文</td>
+</tr>
+<tr>
+<td>扩展机制</td>
+<td>宿主暴露特定语言的工具回调钩子</td>
+<td>1 个进程行注册多作用域部件，经跨语言数据面互通</td>
+</tr>
+</tbody></table></div>
+<p>这条路线显然有门槛：一个简单的功能也要先想清楚状态归谁、事实怎么记、重启后怎么从历史恢复。但正因为把规则压在了基础设施层，Dim 才能在同一个 Rust 二进制里同时撑起终端 TUI、Web 工作区、ACP 网关、rquickjs 代码执行、分支时间线和会话内热写 TypeScript 插件，而没有在模块之间堆出失控的特殊分支。后面几章会沿着真实的 Crate 边界、事件流与源码细节，把这套骨架一层层拆开。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="00-preface.html"><small>上一章</small><strong>前言与全景导读</strong></a><a class="next" href="02-workspace-and-scopes.html"><small>下一章</small><strong>28 个 Crate 与三层作用域</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言与全景导读</a><a href="../chapters/01-why-not-a-chat-loop.html"><span>01</span>为什么不用普通对话循环</a><a href="../chapters/02-workspace-and-scopes.html"><span>02</span>28 个 Crate 与三层作用域</a><a href="../chapters/03-time-bus.html"><span>03</span>时间总线与只认序号的事实流</a><a href="../chapters/04-event-driven-contracts.html"><span>04</span>事件驱动契约：Dispatcher、before 与重启重建</a><a href="../chapters/05-timeline-branches.html"><span>05</span>分支时间线：默认分支、父子通信与配额路由</a><a href="../chapters/06-rutis-and-data-faces.html"><span>06</span>rutis 插件引擎与跨语言数据面</a><a href="../chapters/07-self-evolving-plugins.html"><span>07</span>在会话里给自己写插件与热重载自演化</a><a href="../chapters/08-context-compaction-and-replay.html"><span>08</span>上下文投影、压缩与历史渲染边界</a><a href="../chapters/09-detached-work-and-permissions.html"><span>09</span>脱离工作、工具审批与权限边界</a><a href="../chapters/10-codemode-and-aimux.html"><span>10</span>Code Mode 与 Aimux 模型宿主</a><a href="../chapters/11-server-cli-web-and-protocols.html"><span>11</span>App Server、CLI、Web 与 ACP / MCP 网关</a><a href="../chapters/12-tradeoffs-and-boundaries.html"><span>12</span>架构权衡与工程边界</a><a href="../chapters/13-teaching-model.html"><span>13</span>零依赖 Python 教学模型与 18 个单元测试</a><a href="../chapters/appendix-sources.html"><span>A</span>附录 A：源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · arcships/dim v0.1.0-alpha.27 · 快照 88a3df366940 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

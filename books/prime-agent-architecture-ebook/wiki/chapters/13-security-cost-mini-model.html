@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="源码拆解 PrimeIntellect-ai/prime-agent v0.10.5：Rust 多进程宿主、Protocol v3 Python REPL、持久信箱、递归子 Agent 与 Continual Harness"><meta name="author" content="独立源码研究">
+<title>安全边界、成本账本与可运行教学模型 · Prime Agent 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">PA</span><span>Prime Agent 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 13</div><div class="rail-title">安全边界、成本账本与可运行教学模型</div><ol><li><a href="#真实安全边界-进程隔离不等于安全沙箱">真实安全边界：进程隔离不等于安全沙箱</a></li><li><a href="#模型路由-缓存定价与成本账本">模型路由、缓存定价与成本账本</a></li><li><a href="#用-350-行零依赖-python-跑通六大核心不变量">用 350 行零依赖 Python 跑通六大核心不变量</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 13 章</div><h1>安全边界、成本账本与可运行教学模型</h1><div class="chapter-meta">Prime Agent v0.10.5 快照 2026-11-21 · 约 16 分钟</div></header><div class="prose"><p>任何能执行任意 Shell 命令、运行生成代码并联网调用外部服务的编程 Agent，在生产团队落地前都必须回答两个最尖锐的问题：它到底能不能防住恶意代码和提示词注入？跑上一整夜的费用和失控风险怎么封顶？</p>
+<p>拆完 Prime Agent 的全部源码后，最务实的一点在于它把<strong>哪些防线是真的、哪些地方绝不是沙箱</strong>写得清清楚楚。</p>
+<h2 id="真实安全边界-进程隔离不等于安全沙箱">真实安全边界：进程隔离不等于安全沙箱<a class="anchor" href="#真实安全边界-进程隔离不等于安全沙箱" aria-label="链接到本节">#</a></h2>
+<p>先看上游在 <code>README.md</code> 首页挂出的醒目警告：</p>
+<blockquote>
+<p>Prime Agent executes model-generated Python and project commands with your user permissions. Its worker and kernel processes improve lifecycle isolation and recovery; they are <strong>not</strong> a security sandbox.</p>
+</blockquote>
+<p>把整个代码库里的防御措施按真实强制力排开，界限一目了然：</p>
+<p><strong>第一层，语言内存安全与输入防伪造（硬约束）</strong>，全工作区通过 <code>Cargo.toml</code> 启用 <code>unsafe_code = &quot;forbid&quot;</code>，从编译期消除了 Rust 宿主的内存破坏面。线协议和队列层严格拦截客户端伪造守护进程内部保留类型（<code>inbox_notice</code>、<code>rlm_child_terminal_notice</code>、<code>rlm_child_failure</code> 以及 <code>inbox:arrival</code>/<code>inbox:reminder</code> 合并键）；<code>InboxReadFilter</code> 用 <code>deny_unknown_fields</code> 防止参数拼写错误导致误清空信箱；<code>agent_message</code> 的发送方身份由守护进程强制派生，模型无法冒名顶替。</p>
+<p><strong>第二层，代码自动导入与凭据隔离（硬约束）</strong>，<code>crates/pa-core/src/skills/mod.rs</code> 第 145 行直接阻断 <code>SourceScope::Project</code> 作用域的 Python 技能自动导入内核，防止打开一个不可信仓库就在对话开始前悄悄执行恶意代码。MCP 认证与 OAuth 令牌由 Rust 宿主保管，内核目录接口不返回原始凭据；stdio MCP 子进程仅继承 <code>_SAFE_ENV</code> 七个基础环境变量，错误输出经过正则脱敏。</p>
+<p><strong>第三层，外部工具探测加固（尽力收敛，存在已知残余）</strong>，自主模式的质量门禁在跑 Git 工作树快照时，通过命令行覆盖禁用了 <code>fsmonitor</code>、索引写钩子、promisor 懒拉取、外部 diff 与 textconv 转换器及子模块读取；但如 <code>crates/pa-core/src/autonomous/gates.rs</code> 注释所坦言，<code>.gitattributes</code> 中的 <code>clean</code> 与 <code>process</code> 过滤器无法通过 Git 标志禁用，处理完全不可信的仓库时仍是攻击面。</p>
+<p><strong>第四层，用户态命令与代码执行（无沙箱）</strong>，一旦你同意让 Agent 在本地目录干活，模型在 <code>python_repl</code> 里运行的 Python 代码和 <code>bash()</code> 启动的 Shell 命令，都直接持有你当前操作系统用户的全部读写、网络与凭据权限。再加上 <code>bash(..., persistent=True)</code> 创建的进程在会话删除后仍可作为孤儿继续运行，如果面对不信任的外部代码库、不可信提示词或第三方指令，唯一稳妥的办法是把整个 <code>prime-agent</code> 放进外部容器、独立虚拟机或云端沙箱里运行，并使用可随时丢弃还原的 Git 工作树。</p>
+<h2 id="模型路由-缓存定价与成本账本">模型路由、缓存定价与成本账本<a class="anchor" href="#模型路由-缓存定价与成本账本" aria-label="链接到本节">#</a></h2>
+<p>长程任务里，钱怎么花出去往往比代码怎么写更隐蔽。Prime Agent 在费用可见性与控制上铺了四条线：</p>
+<ol>
+<li><strong>多级模型目录与容灾兜底</strong>：<code>pa-models</code> 拉取在线 Prime Inference 目录并落盘缓存到 <code>&lt;agent-dir&gt;/prime-inference-models-cache.json</code>，断网时回退到 <code>crates/pa-ai/src/models_generated.rs</code> 的手写编译期兜底表（包含真实上下文窗口、输出上限、思考等级支持和缓存读取单价）。如果用户通过 <code>--model</code> 选了一个目录里无法精确匹配的模型，系统会在标准错误或聊天区弹出明确告警行，而不会默默按编造的模型 ID 继续跑（<code>.changes/sebastian-surface-model-resolution-warning.md</code>）。</li>
+<li><strong>供应商故障自动切换与防空转</strong>：<code>crates/pa-core/src/session_engine/</code> 的 <code>provider_retry.rs</code>、<code>auto_retry.rs</code> 和 <code>provider_failover.rs</code> 把失败分类为永久错误与可重试错误，遵守 <code>Retry-After</code> 退避；当主供应商耗尽快速重试且目录中有其他已配置供应商提供同一模型时，自动按目录顺序切换备用供应商并发送 <code>reason: &quot;backup&quot;</code> 事件。</li>
+<li><strong>前缀缓存保护与变量卸载</strong>：静态系统提示词字节级稳定，<code>[harness-digest]</code> 按状态指纹按需追加，避免每轮重写前缀；大段日志和源码留在 CPython 变量里，减少重复进入注意力窗口的输入 Token。</li>
+<li><strong>子 Agent 墓碑留账与硬预算封顶</strong>：如第 6 章所见，即使子 Agent 已被删除清理，<code>rlm_ledger.rs</code> 依然在墓碑记录里保存 <code>deleted_usage</code> 与按模型拆分的消耗统计，保证整棵递归树的开销可完整汇总；而在 <code>/goal</code> 与 <code>/autonomous</code> 模式下，<code>token_budget</code>、<code>max_tokens</code>、<code>max_turns</code> 和 <code>timeout_ms</code> 提供了硬性止损线。</li>
+</ol>
+<h2 id="用-350-行零依赖-python-跑通六大核心不变量">用 350 行零依赖 Python 跑通六大核心不变量<a class="anchor" href="#用-350-行零依赖-python-跑通六大核心不变量" aria-label="链接到本节">#</a></h2>
+<p>源码读到最后，最好的检验方式是剥掉网络、终端 UI 和多进程样板，把 Prime Agent 最值钱的六条核心不变量放进一个零第三方依赖的离线教学模型里亲手跑一遍。</p>
+<p>本书在 <code>examples/mini_prime_agent.py</code> 中用纯 Python 3.10+ 标准库实现了这套精简模型，并在 <code>examples/test_mini_prime_agent.py</code> 中编写了 19 个单元测试，逐一对应前面章节拆解过的真实源码机制：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>教学模型组件</th>
+<th>对应上游源码</th>
+<th>验证的核心不变量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>HeadTailBuffer</code></td>
+<td><code>crates/pa-core/src/kernel/manager/requests.rs</code></td>
+<td>3:1 头尾切分、滚动尾窗口线性内存裁剪、省略字符数精确统计</td>
+</tr>
+<tr>
+<td><code>PersistentReplKernel</code></td>
+<td><code>prime-agent-runtime/src/rlm/repl.py</code></td>
+<td>跨单元格变量持久与尾表达式绑定 <code>_</code>、跳过保留名、<code>os.replace</code> 原子快照、仅对超单变量上限执行 <code>prune_oversized</code>（聚合超限只跳过不删内存）</td>
+</tr>
+<tr>
+<td><code>SessionInbox</code></td>
+<td><code>crates/pa-core/src/session_engine/inbox.rs</code></td>
+<td><code>inbox.jsonl</code> 断写容错重放与单调 ID、未知过滤字段严格报错防误清空、按条件局部消费、同一心跳任务仅保留最新未读、合并计数唤醒文本</td>
+</tr>
+<tr>
+<td><code>SubagentRegistry</code></td>
+<td><code>crates/pa-core/src/session_engine/rlm_host.rs</code></td>
+<td><code>DEFAULT_RLM_MAX_DEPTH = 2</code> 深度拦截、兄弟唯一命名、UTF-16 码元计数的 512 长度上限与 10 秒 <code>progress_note</code> 节流、非阻塞 <code>collect</code> 快照</td>
+</tr>
+<tr>
+<td><code>compaction_threshold</code> / <code>should_compact</code></td>
+<td><code>crates/pa-core/src/session_engine/compaction.rs</code></td>
+<td>联合输出上限截顶、防频繁重摘要的 <code>retention_floor = keep_recent + 2 * reserve + 1</code> 抬升</td>
+</tr>
+<tr>
+<td><code>MiniAgentLoop</code></td>
+<td><code>crates/pa-agent/src/agent.rs</code> &amp; <code>agent_loop/run.rs</code></td>
+<td>Claim-First 排他占位防重叠运行、<code>rlm.end_turn()</code> 跑完同批其余调用后无额外回复停机、Steering → Follow-Up → Continuation 严格三级优先级</td>
+</tr>
+</tbody></table></div>
+<p>下面这段调用代码展示了教学模型如何把持久 REPL、严格信箱过滤和 <code>end_turn</code> 批终止串在一起（完整代码见 <code>examples/mini_prime_agent.py</code>）：</p>
+<pre><code class="language-python">from mini_prime_agent import (
+    AssistantTurn,
+    MiniAgentLoop,
+    PersistentReplKernel,
+    SessionInbox,
+)
+
+inbox = SessionInbox()
+inbox.push(&quot;bash-done&quot;, &quot;cargo test: 42 passed&quot;, arrived_at_ms=1_000, sender=&quot;cargo test&quot;)
+inbox.push(&quot;heartbeat&quot;, &quot;check gpu util&quot;, arrived_at_ms=2_000, sender=&quot;hb-1&quot;)
+inbox.push(&quot;heartbeat&quot;, &quot;check gpu util (latest)&quot;, arrived_at_ms=3_000, sender=&quot;hb-1&quot;)
+
+kernel = PersistentReplKernel(max_output_chars=128)
+kernel.install_binding(&quot;inbox&quot;, inbox)
+loop = MiniAgentLoop(kernel)
+
+def fake_model(_transcript):
+    return AssistantTurn(
+        text=&quot;reading bash completions and ending turn&quot;,
+        tool_calls=[
+            &quot;done_msgs = inbox.read({&#39;class&#39;: &#39;bash-done&#39;})\nlen(done_msgs)&quot;,
+            &quot;end_turn()&quot;,
+        ],
+    )
+
+transcript = loop.run(inbox.wake_notice_text(), fake_model)
+assert kernel.namespace[&quot;done_msgs&quot;][0].text == &quot;cargo test: 42 passed&quot;
+assert inbox.count()[&quot;count&quot;] == 1  # 只剩最新一条 heartbeat，未被误清空
+</code></pre>
+<p>在本书仓库根目录运行以下命令，即可离线复验全部 19 个单元测试：</p>
+<pre><code class="language-bash">python3 -m unittest discover -s examples -v
+</code></pre>
+<p>测试全部通过后，你不仅看懂了 Prime Agent 这 55 万行 Rust 与 Python 源码里的设计决策，手里也有了一套可以随时改参数、加断言、验证边界条件的最小实验台。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="12-tui-observability.html"><small>上一章</small><strong>把渲染留在关键路径上：TUI 卡片、延迟护栏与可观测性</strong></a><a class="next" href="appendix-sources.html"><small>下一章</small><strong>源码索引、关键常量表、术语与核验命令</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：把长程自主编程收进一个持久 Python REPL</a><a href="../chapters/01-why-rlm.html"><span>01</span>为什么传统工具调用在长程任务上会失速</a><a href="../chapters/02-workspace-topology.html"><span>02</span>十个 Rust Crate 与一层 Python 运行时的双层拓扑</a><a href="../chapters/03-agent-loop.html"><span>03</span>Turn 循环、Claim-First 抢占与三层消息队列</a><a href="../chapters/04-python-repl.html"><span>04</span>Protocol v3 内核：<code>python_repl</code> 如何把状态、输出和中断管稳</a><a href="../chapters/05-bash-edit-skills.html"><span>05</span>单工具收口下的程序化工具链：<code>bash</code>、<code>edit</code> 与可执行技能</a><a href="../chapters/06-subagents-delegation.html"><span>06</span>递归子 Agent 树、Spawn 账本与状态机工厂</a><a href="../chapters/07-agent-inbox.html"><span>07</span>持久信箱 <code>rlm.inbox</code> 与跨进程消息投递</a><a href="../chapters/08-session-search-acp.html"><span>08</span>会话生命周期、流式全文搜索与 ACP 外部协议</a><a href="../chapters/09-prompt-continual-harness.html"><span>09</span>分层系统提示词与 Continual Harness 自我改进</a><a href="../chapters/10-context-compaction-autonomy.html"><span>10</span>自动压缩、目标驱动与有界自主运行</a><a href="../chapters/11-mcp-bridge.html"><span>11</span>宿主管认证、内核跑协议的 MCP 桥接层</a><a href="../chapters/12-tui-observability.html"><span>12</span>把渲染留在关键路径上：TUI 卡片、延迟护栏与可观测性</a><a href="../chapters/13-security-cost-mini-model.html"><span>13</span>安全边界、成本账本与可运行教学模型</a><a href="../chapters/appendix-sources.html"><span>A</span>源码索引、关键常量表、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Prime Agent v0.10.5 · 快照 783acb5d72a9 · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

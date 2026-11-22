@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从时间总线、分支路由、rutis 跨语言数据面到权限与压缩重放，源码级解剖 arcships/dim Agent v4 架构"><meta name="author" content="独立源码研究">
+<title>零依赖 Python 教学模型与 18 个单元测试 · Dim 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">D</span><span>Dim 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 13</div><div class="rail-title">零依赖 Python 教学模型与 18 个单元测试</div><ol><li><a href="#模型结构与上游源码的精确映射">模型结构与上游源码的精确映射</a></li><li><a href="#核心代码片段拆解">核心代码片段拆解</a></li><li><a href="#18-个单元测试的覆盖矩阵">18 个单元测试的覆盖矩阵</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 13 章</div><h1>零依赖 Python 教学模型与 18 个单元测试</h1><div class="chapter-meta">arcships/dim v0.1.0-alpha.27 · 快照 2026-11-22 · 约 18 分钟</div></header><div class="prose"><p>光读 Rust 工作区的 28 个 crate 和几十万字设计文档，脑子里很容易记住一堆名词，却对边界条件缺乏手感：到底为什么 <code>Dispatcher::consume</code> 要先暂存实时事件再跑重建；为什么默认分支切回 <code>main</code> 后计数会瞬间超额却不该关闭已有分支；为什么破坏了快照的 SHA-256 摘要以后，上下文投影照样能完整保留压缩摘要。</p>
+<p>本书在 <code>examples/mini_dim.py</code> 里用纯 Python 3.10+ 标准库写了一个不到四百行的教学模型，配套 <code>examples/test_mini_dim.py</code> 共 18 个单元测试，把 Dim 最核心的五组机制剥离网络与 SQLite 细节，缩成一眼能看穿的可运行代码。</p>
+<h2 id="模型结构与上游源码的精确映射">模型结构与上游源码的精确映射<a class="anchor" href="#模型结构与上游源码的精确映射" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th><code>examples/mini_dim.py</code> 模块</th>
+<th>对应上游 Rust 位置</th>
+<th>验证的核心不变量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Timeline</code>、<code>EventDraft</code>、<code>RESERVED_DOMAINS</code></td>
+<td><code>crates/dim-agent-types/src/events.rs</code>、<code>crates/dim-agent-runtime/src/core/timeline.rs</code></td>
+<td>13 个核心保留域拦截外部写入；<code>before</code> 链同步变换并留 <code>TraceStep</code>，任意钩子抛错回退原始草稿；<code>append_batch</code> 登记失败整批中止；<code>committed()</code> 与 <code>published()</code> 双水位隔离</td>
+</tr>
+<tr>
+<td><code>Dispatcher</code></td>
+<td><code>crates/dim-agent-runtime/src/core/dispatcher.rs</code></td>
+<td>按发布序号严格派发；<code>consume(name, keys, rebuild, handler)</code> 先开启暂存闸门再执行重建，随后只派发序号严格大于 <code>cutoff</code> 的实时事件</td>
+</tr>
+<tr>
+<td><code>TimelineTree</code>、<code>BranchNode</code></td>
+<td><code>crates/dim-agent-capabilities/src/timeline_tree.rs</code></td>
+<td>仅 <code>ROOT_BRANCH_ID</code>（<code>main</code>）与当前默认分支有工具开线权；<code>counted_tool_lines</code> 排除默认分支及其祖先链；预留即占槽、失败释放槽并写 <code>branch/create-failed</code>；禁止结束保护链并级联关闭子孙；仅父子亲缘可发消息与按游标读历史；重启读 <code>main</code> 最新 <code>branch/default</code> 或 <code>session/forked</code> 恢复</td>
+</tr>
+<tr>
+<td><code>ApprovalCapability</code></td>
+<td><code>crates/dim-agent-capabilities/src/permission.rs</code>（<code>Approval</code>）</td>
+<td>双端并发应答时首条有效 <code>approval/respond</code> 胜出；<code>stop/interrupt</code> 写 <code>approval/cancelled</code> 并阻断迟到同意；重启重建只恢复已决表，绝不重放已执行过的工具副作用</td>
+</tr>
+<tr>
+<td><code>RecoverySnapshot</code>、<code>project_context</code></td>
+<td><code>crates/dim-agent-capabilities/src/context_preparation.rs</code>、<code>history.rs</code></td>
+<td>校验解释器版本、锚点与 SHA-256 摘要后增量续读；摘要篡改或缺失时自动回退全量重放，同时完整保留 <code>context/compaction</code> 摘要</td>
+</tr>
+</tbody></table></div>
+<h2 id="核心代码片段拆解">核心代码片段拆解<a class="anchor" href="#核心代码片段拆解" aria-label="链接到本节">#</a></h2>
+<p>先看 <code>Dispatcher.consume</code> 怎么堵死“重建与实时事件重叠”的竞态窗口：</p>
+<pre><code class="language-python">def consume(
+    self,
+    name: str,
+    keys: tuple[str, ...],
+    rebuild: Callable[[Timeline], int],
+    handler: Callable[[AgentEvent], None],
+) -&gt; int:
+    held: list[AgentEvent] = []
+    holding = True
+
+    def gate(ev: AgentEvent) -&gt; None:
+        if holding:
+            held.append(ev)
+        else:
+            handler(ev)
+
+    self.subscribe(name, keys, gate)
+    cutoff = rebuild(self.timeline)
+    holding = False
+    for ev in held:
+        if ev.sequence &gt; cutoff:
+            handler(ev)
+    return cutoff
+</code></pre>
+<p>这段 20 行代码就是 <code>crates/dim-agent-runtime/src/core/dispatcher.rs</code> 里 <code>Held</code> 结构的忠实微缩：哪怕在 <code>rebuild</code> 正在读历史的过程中，第 3 号新事件被提交并发布，它也会稳稳落进 <code>held</code>；等 <code>rebuild</code> 返回 <code>cutoff = 2</code> 并撤掉闸门，只有序号大于 2 的第 3 号事件被放行给实时 <code>handler</code>，1 号和 2 号绝不会二次投递。</p>
+<p>再看 <code>TimelineTree</code> 里最容易写错的“受保护路径配额”算法，它直接对应 <code>crates/dim-agent-capabilities/src/timeline_tree.rs</code> 的 <code>counted_tool_lines</code> 和 <code>protects</code>：</p>
+<pre><code class="language-python">def protected_path(self) -&gt; set[str]:
+    protected: set[str] = set()
+    cur: str | None = self._default_branch
+    while cur is not None:
+        protected.add(cur)
+        node = self.nodes.get(cur)
+        cur = node.parent if node else None
+    return protected
+
+def counted_tool_lines(self) -&gt; int:
+    protected = self.protected_path()
+    return sum(
+        1
+        for bid, node in self.nodes.items()
+        if node.source == &quot;tool&quot; and not node.ended and bid not in protected
+    )
+</code></pre>
+<p>每次切换默认分支，不需要在节点上维护容易漂移的加减计数器，而是直接对全树活跃工具线减掉当前保护路径做集合差。这样无论子树有多深，从 <code>main → A → B</code> 切回 <code>main</code> 时，A、B 以及 B 新开的子线 C 都会瞬间重新计额，既不会漏算，也不会强关任何已有分支。</p>
+<p>最后看 <code>ApprovalCapability._rebuild</code> 怎么体现“副作用不重放”：</p>
+<pre><code class="language-python">def _rebuild(self, timeline: Timeline) -&gt; int:
+    cutoff = timeline.published()
+    for ev in timeline.query(
+        through=cutoff, keys=(&quot;approval/*&quot;, &quot;stop/interrupt&quot;)
+    ):
+        self._fold(ev, execute_side_effects=False)
+    return cutoff
+</code></pre>
+<p>同一套折叠函数 <code>_fold</code> 通过一个布尔开关区分重建和实时两条路径：重建时把历史上的 <code>approval/request</code>、<code>approval/respond</code>、<code>approval/cancelled</code> 折叠成完全等价的内存状态，却绝不触发 <code>on_allow</code> 回调，也不向 <code>executed_side_effects</code> 追加记录。</p>
+<h2 id="18-个单元测试的覆盖矩阵">18 个单元测试的覆盖矩阵<a class="anchor" href="#18-个单元测试的覆盖矩阵" aria-label="链接到本节">#</a></h2>
+<p>在仓库根目录执行 <code>python3 -m unittest discover -s examples -v</code>，全部 18 个用例在数毫秒内跑完：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>用例编号</th>
+<th>测试名称</th>
+<th>验证的关键边界</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>01</td>
+<td><code>test_01_sequence_is_monotonic_and_batch_end_marks_boundary</code></td>
+<td>批次序号单调递增，仅末事件 <code>batch_end=True</code></td>
+</tr>
+<tr>
+<td>02</td>
+<td><code>test_02_reserved_domains_reject_extension_appends</code></td>
+<td>扩展写入 13 保留域被拒，自定义域放行</td>
+</tr>
+<tr>
+<td>03</td>
+<td><code>test_03_before_hook_transforms_draft_and_records_trace</code></td>
+<td><code>before</code> 同步变形草稿并记录 <code>TraceStep</code></td>
+</tr>
+<tr>
+<td>04</td>
+<td><code>test_04_before_hook_failure_commits_original_draft</code></td>
+<td><code>before</code> 抛错整链回退并提交原草稿</td>
+</tr>
+<tr>
+<td>05</td>
+<td><code>test_05_register_callback_failure_aborts_entire_batch</code></td>
+<td>提交锁内登记回调失败时整批中止、水位不动</td>
+</tr>
+<tr>
+<td>06</td>
+<td><code>test_06_committed_and_published_watermarks_stay_distinct</code></td>
+<td>未发布事件仅内部可见，发布后才触发 Dispatcher</td>
+</tr>
+<tr>
+<td>07</td>
+<td><code>test_07_dispatcher_consume_holds_live_facts_and_delivers_above_cutoff</code></td>
+<td>重建期间到达的实时事件暂存并在截点后不重不漏交付</td>
+</tr>
+<tr>
+<td>08</td>
+<td><code>test_08_only_root_and_default_branch_can_open_tool_lines</code></td>
+<td>非默认工具线开线被拒，晋升默认后与 <code>main</code> 双双可开</td>
+</tr>
+<tr>
+<td>09</td>
+<td><code>test_09_protected_path_excluded_from_cap_and_switch_back_counts_all</code></td>
+<td>保护链免计额；切回 <code>main</code> 超额不关旧线，仅拒新开</td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>test_10_failed_build_releases_cap_slot_and_records_create_failed</code></td>
+<td>构建失败释放预留配额并写 <code>branch/create-failed</code></td>
+</tr>
+<tr>
+<td>11</td>
+<td><code>test_11_user_and_plugin_lines_never_spend_tool_cap_and_plugin_cannot_be_default</code></td>
+<td>用户线与插件线不占工具配额；插件线不可选为默认分支</td>
+</tr>
+<tr>
+<td>12</td>
+<td><code>test_12_ending_root_default_or_ancestor_is_refused_and_cascade_ends_children</code></td>
+<td>保护链拒绝结束；切离后结束父线先级联结束子线</td>
+</tr>
+<tr>
+<td>13</td>
+<td><code>test_13_kinship_messaging_and_read_cursor_enforcement</code></td>
+<td>兄弟互发互读返回 <code>branch_not_kin</code>；子读父自动抬高至切点并续读游标</td>
+</tr>
+<tr>
+<td>14</td>
+<td><code>test_14_default_branch_restores_from_root_and_resets_after_session_forked</code></td>
+<td>从 <code>main</code> 恢复默认分支，遇到 <code>session/forked</code> 重置回 <code>main</code></td>
+</tr>
+<tr>
+<td>15</td>
+<td><code>test_15_approval_first_decision_wins_under_concurrent_clients</code></td>
+<td>双客户端并发拒绝与同意，先落盘序号者胜出</td>
+</tr>
+<tr>
+<td>16</td>
+<td><code>test_16_stop_interrupt_cancels_pending_approval_and_prevents_late_allow</code></td>
+<td><code>stop/interrupt</code> 写 <code>approval/cancelled</code> 并拦截迟到同意</td>
+</tr>
+<tr>
+<td>17</td>
+<td><code>test_17_restart_rebuild_reconstructs_state_without_replaying_side_effects</code></td>
+<td>同存储重启构建第二代 <code>ApprovalCapability</code>，状态等价且零重放副作用</td>
+</tr>
+<tr>
+<td>18</td>
+<td><code>test_18_compaction_snapshot_accelerates_projection_and_falls_back_on_corruption</code></td>
+<td>SHA-256 正常快照走增量续读，篡改摘要自动回退全量重放并保留摘要</td>
+</tr>
+</tbody></table></div>
+<p>需要强调一次定位边界：<code>examples/mini_dim.py</code> 是单进程同步教学模型，省去了 SQLite 异步写入轮、真实 <code>rutis</code> 跨进程通道、文件系统权限探针和真实模型网络流。它的价值在于用极低阅读成本，让读者亲手改一行条件就能观察到对应不变量立刻报警，再回头翻 Rust 源码时就能一眼认出每把锁和每个状态字段为什么长在那个位置。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="12-tradeoffs-and-boundaries.html"><small>上一章</small><strong>架构权衡与工程边界</strong></a><a class="next" href="appendix-sources.html"><small>下一章</small><strong>附录 A：源码索引、术语与核验命令</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言与全景导读</a><a href="../chapters/01-why-not-a-chat-loop.html"><span>01</span>为什么不用普通对话循环</a><a href="../chapters/02-workspace-and-scopes.html"><span>02</span>28 个 Crate 与三层作用域</a><a href="../chapters/03-time-bus.html"><span>03</span>时间总线与只认序号的事实流</a><a href="../chapters/04-event-driven-contracts.html"><span>04</span>事件驱动契约：Dispatcher、before 与重启重建</a><a href="../chapters/05-timeline-branches.html"><span>05</span>分支时间线：默认分支、父子通信与配额路由</a><a href="../chapters/06-rutis-and-data-faces.html"><span>06</span>rutis 插件引擎与跨语言数据面</a><a href="../chapters/07-self-evolving-plugins.html"><span>07</span>在会话里给自己写插件与热重载自演化</a><a href="../chapters/08-context-compaction-and-replay.html"><span>08</span>上下文投影、压缩与历史渲染边界</a><a href="../chapters/09-detached-work-and-permissions.html"><span>09</span>脱离工作、工具审批与权限边界</a><a href="../chapters/10-codemode-and-aimux.html"><span>10</span>Code Mode 与 Aimux 模型宿主</a><a href="../chapters/11-server-cli-web-and-protocols.html"><span>11</span>App Server、CLI、Web 与 ACP / MCP 网关</a><a href="../chapters/12-tradeoffs-and-boundaries.html"><span>12</span>架构权衡与工程边界</a><a href="../chapters/13-teaching-model.html"><span>13</span>零依赖 Python 教学模型与 18 个单元测试</a><a href="../chapters/appendix-sources.html"><span>A</span>附录 A：源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · arcships/dim v0.1.0-alpha.27 · 快照 88a3df366940 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

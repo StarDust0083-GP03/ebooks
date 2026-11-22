@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从时间总线、分支路由、rutis 跨语言数据面到权限与压缩重放，源码级解剖 arcships/dim Agent v4 架构"><meta name="author" content="独立源码研究">
+<title>rutis 插件引擎与跨语言数据面 · Dim 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">D</span><span>Dim 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 06</div><div class="rail-title">rutis 插件引擎与跨语言数据面</div><ol><li><a href="#为什么选-rutis-0-23-0-以及单行装配模型">为什么选 rutis 0.23.0，以及单行装配模型</a></li><li><a href="#跨语言数据面的六条硬规定">跨语言数据面的六条硬规定</a></li><li><a href="#真实装配盘点-75-个数据面与-36-个内部面">真实装配盘点：75 个数据面与 36 个内部面</a></li><li><a href="#真实跨语言插件长什么样">真实跨语言插件长什么样</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 06 章</div><h1>rutis 插件引擎与跨语言数据面</h1><div class="chapter-meta">arcships/dim v0.1.0-alpha.27 · 快照 2026-11-22 · 约 20 分钟</div></header><div class="prose"><p>很多用 Rust 写核心的 Agent 运行时，做到一半都会卡在扩展层：Rust trait 在进程内很好用，可一旦想让用户用 TypeScript 或 Python 写插件，就不得不给每个核心接口手写一套 JSON-RPC 适配层，最后 Rust 版接口和跨语言接口越跑越远，文档里写一套、代码里两套。</p>
+<p>Dim 在 <code>docs/design/rutis-usage.md</code> 和 <code>docs/design/service-faces.md</code> 里定了一条近乎苛刻的收敛原则：<strong>公开服务只有一张合同，就是跨语言数据面（Data Face）；不写第二套适配层，也不留两套业务逻辑。</strong></p>
+<h2 id="为什么选-rutis-0-23-0-以及单行装配模型">为什么选 rutis 0.23.0，以及单行装配模型<a class="anchor" href="#为什么选-rutis-0-23-0-以及单行装配模型" aria-label="链接到本节">#</a></h2>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 262" width="420" height="262" role="img" aria-label="rutis 跨语言运行时与数据面边界">
+<title>rutis 跨语言运行时与数据面边界</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="12" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">rutis 0.23.0（协议 5）：每个插件占 1 行进程配置，服务面统一为数据面</text><rect x="8" y="24" width="178" height="124" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="16" y="39.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Rust 宿主内核</text><text x="16" y="53.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">1. 进程根与共享目录（111 服务）</text><text x="16" y="65.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">2. 75 个跨语言 data 数据面</text><text x="16" y="78.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">3. 36 个 internal(reason) 私有面</text><text x="16" y="90.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">4. Session / Branch = 普通插件</text><text x="16" y="103.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">   （ADR 015 mark_scope）</text><text x="16" y="115.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">5. xtask types 生成 .d.ts 契约</text><rect x="226" y="24" width="186" height="56" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="234" y="39.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Node / TypeScript 运行时</text><text x="234" y="53.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">@arcships/rutis 0.23 · Cordis 4</text><text x="234" y="65.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">workflow / light-ocr / 自写插件</text><text x="234" y="78.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">通过 partRegistry 登记定义</text><rect x="226" y="92" width="186" height="56" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="234" y="107.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Python 运行时（py:&lt;module&gt;）</text><text x="234" y="121.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">独立进程会话 · isolate 表解析</text><text x="234" y="133.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">相同 inject / use / provide</text><text x="234" y="146.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">与 Rust/TS 互调同一数据面</text><line x1="186" y1="48" x2="226" y2="48" stroke="var(--amber)" stroke-width="1.05" marker-end="url(#arrow)"/><line x1="226" y1="62" x2="186" y2="62" stroke="var(--amber)" stroke-width="1.05" marker-end="url(#arrow)"/><line x1="186" y1="114" x2="226" y2="114" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><line x1="226" y1="128" x2="186" y2="128" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="162" width="404" height="72" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="16" y="177.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">数据面契约（HostDispatch at host_key(name) + 共享目录项）</text><text x="16" y="191.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">参数、返回值、错误均为 serde 数据（{code, message}）；句柄与 &amp;mut 不跨语言</text><text x="16" y="203.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">对象拆成 id + 操作（execHost / fsHost / store / timelineStore / toolRegistry）</text><text x="16" y="216.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">单帧 16 MiB 上限，超长走 0.23 chunk 分片（单片 8 MiB，默认上限 256 MiB）</text><text x="16" y="228.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">禁止手写第二层适配逻辑：Rust 本地绑定与跨语言线协议共用同一所有者实现</text><text x="8" y="250" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.1" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">注意：before 回调在提交锁内同步运行，禁止跨进程调用，只限进程内 Rust 注册。</text>
+</svg><figcaption>rutis 跨语言运行时与数据面边界</figcaption></figure>
+<p>在工作区 <code>Cargo.toml</code> 和 <code>docs/adr/025-rutis-0-23.md</code> 里，Dim 把全栈（Rust 工作区 <code>rutis</code>/<code>rutis-loader</code>/<code>rutis-bridge</code>、<code>xtask</code> 类型生成器、内置 Node 运行时 <code>@arcships/rutis-runtime</code>、TypeScript 插件包以及 Python SDK）统一锁死在 <code>rutis 0.23.0</code>（会话协议版本 5）。没有任何双版本兼容垫片：只要握手对端还在说协议 4，连接直接以 <code>incompatible session</code> 拒绝。</p>
+<p>在装载结构上，Dim 遵循 ADR 006 D3 定下的单行规则：<strong>一个插件在进程配置里只占一个 loader row</strong>，不管它横跨了 Process、Session 还是 Branch 几个作用域。</p>
+<ul>
+<li>插件的入口模块在进程级 <code>apply</code> 里运行一次，从进程服务 <code>partRegistry</code> 登记自己要在每个 Session 或每条 Branch 里挂载的部件。</li>
+<li>Rust 插件注册的是生成器函数（<code>AgentBuilder::feature</code> 或 <code>AgentBuilder::plugin</code>）；TypeScript 和 Python 插件注册的是由 <code>definePlugin</code> 构造出的插件定义（<code>partRegistry.registerDefinition</code>）。</li>
+<li>每当新的 Session 或 Branch 打开，作用域根挂载的 <code>required</code> 和 <code>optional</code> 两个 mounter 会把登记表里的部件实例化为自己的子插件；当原插件卸载或重载时，它登记在 <code>partRegistry</code> 里的定义自动撤回，所有活跃实例里的副本同步卸载。</li>
+</ul>
+<p>对于外部语言插件，唯一需要在启动前静态声明给宿主 loader 目录的，是它打算在 Session 或 Branch 内部向别处提供的服务名（<code>instanceNames</code>），因为 loader 目录在运行时启动前就已经定型。至于工具、提示词源、Session 方法命名空间和宿主管理方法命名空间，在 R6 改造落地之后全部不再占独立服务名，而是由插件在 <code>apply</code> 里直接向各自的所有者注册（<code>toolRegistry.register</code>、<code>promptRegistry.register</code>、<code>sessionMethods.register</code>、<code>managementMethods.register</code>）。注册与调用方生命周期绑定，插件一卸载，注册项立刻自动撤回；如果此时有正在执行的调用，会明确返回可能已生效的状态，后续调用直接拒绝。</p>
+<h2 id="跨语言数据面的六条硬规定">跨语言数据面的六条硬规定<a class="anchor" href="#跨语言数据面的六条硬规定" aria-label="链接到本节">#</a></h2>
+<p>要让 Python 插件直接调用 Rust 实现的存储、让 TypeScript 插件直接消费分支事件并注册工具，光有名字解析还不够，接口形状必须天然能过线。<code>docs/design/service-faces.md</code> 给数据面立了六条硬规则：</p>
+<ol>
+<li><strong>输入输出全是 serde 数据</strong>：普通结构体、标量、数组、枚举，绝不出现进程内句柄、<code>Arc&lt;dyn Trait&gt;</code>、<code>&amp;mut</code>、迭代器、通道或 <code>PathBuf</code>/<code>OsString</code>。</li>
+<li><strong>身份一律是值</strong>：Session、Branch、Task、File、Root、Subscription 在接口上都只是字符串或整数 id；id 只是标识，不等于授权。</li>
+<li><strong>操作代替对象</strong>：把原来面向对象式的长生命周期句柄拆成“id + 一组无状态操作”。比如原来的 <code>FileStorage</code> 句柄拆成 <code>fsHost</code>（<code>stat</code>/<code>readBytes</code>/<code>openRead</code>/<code>readAt</code>/<code>closeRead</code>/<code>lock</code>/<code>replace</code> 等 12 个操作），<code>HostPlatform</code> 进程树拆成 <code>execHost</code>，<code>TimelineStore</code> 拆成 17 个操作的 <code>timelineStore</code> 数据面，活对象留在所有者内部托管。</li>
+<li><strong>流靠事件或分页，回调不在锁内跑</strong>：大输出走游标分页；回调函数可以经 bridge 按引用跨语言传递（<code>RemoteFunction</code>），但严禁在提交锁内部同步回调。</li>
+<li><strong>错误是结构化数据</strong>：统一为 <code>{ code, message }</code>，转发方原样透传错误码，绝不靠正则匹配错误文案（ADR 025 D5）。</li>
+<li><strong>取消是协议动作</strong>：调用方丢弃调用或触发取消回调即可经协议通知对端，不在业务参数里塞状态标志。</li>
+</ol>
+<p>在 <code>rutis 0.23.0</code> 的传输层上，单帧默认上限是 16 MiB，但协议 5 新增了 <code>chunk</code> 分片帧：超过 16 MiB 的大帧自动按每片最大 8 MiB 切分并在派发前重组，总上限由 <code>RUTIS_MAX_TRANSFER</code> 控制（默认 256 MiB）。Dim 没有因为有了分片就放任大载荷横飞，而是在应用层主动补回了准入红线，例如 <code>pluginFiles</code> 的文本 <code>replace</code> 明确在写入前拒绝超过 16 MiB 的序列化记录，返回业务错误 <code>too_large</code>。</p>
+<h2 id="真实装配盘点-75-个数据面与-36-个内部面">真实装配盘点：75 个数据面与 36 个内部面<a class="anchor" href="#真实装配盘点-75-个数据面与-36-个内部面" aria-label="链接到本节">#</a></h2>
+<p>纸面愿景和工程现状往往有距离，而 Dim 最好的一点是把迁移进度直接写进了 <code>xtask graph</code> 自动生成的 <code>docs/architecture/rust-agent/generated/catalog.md</code>，并用 <code>xtask check</code> 每天巡检。</p>
+<p>按当前提交 <code>88a3df3669405730cbee6bfd113a7f75cf520677</code> 的真实 App Server 产品装配统计，全目录共有 <strong>111 个服务</strong>（Process 58、Session 31、Branch 22）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>分类</th>
+<th>数量</th>
+<th>判定规则（<code>service-faces.md</code> §2.3）</th>
+<th>代表服务</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>data</code>（跨语言数据面）</td>
+<td>75</td>
+<td>在目录中声明为 <code>shared</code> 且在 <code>host_key(name)</code> 挂有 <code>HostDispatch</code></td>
+<td><code>sessions</code>、<code>settings</code>、<code>store</code>、<code>sqliteStorage</code>、<code>fsHost</code>、<code>timelineStore</code>、<code>treeCommands</code>、<code>toolRegistry</code>、<code>timeline</code>、<code>dispatcher</code>、<code>approval</code>、<code>permission</code>、<code>branchLine</code></td>
+</tr>
+<tr>
+<td><code>internal(hot-path)</code></td>
+<td>16</td>
+<td>每轮或每条输入上的高频热路径，尚未操作化</td>
+<td><code>agentLoop</code>、<code>loopState</code>、<code>prompt</code>、<code>contextPreparation</code>、<code>toolExecutor</code>、<code>historyRenderer</code>、<code>managedWorktrees</code></td>
+</tr>
+<tr>
+<td><code>internal(owner-api)</code></td>
+<td>7</td>
+<td>所有者原生 Rust 绑定，大多已有对应数据兄弟</td>
+<td><code>agentIndex</code>（兄弟 <code>sessions</code>）、<code>sessionStore</code>（兄弟 <code>store</code>）、<code>settingsService</code>（兄弟 <code>settings</code>）、<code>modelHost</code>、<code>loader</code>、<code>timelineTree</code></td>
+</tr>
+<tr>
+<td><code>internal(control)</code></td>
+<td>5</td>
+<td>守护进程或作用域控制句柄</td>
+<td><code>serverControl</code>、<code>connectionHub</code>、<code>uiHost</code>、<code>uiExtensions</code>、<code>timelineFactory</code></td>
+</tr>
+<tr>
+<td><code>internal(secret)</code></td>
+<td>3</td>
+<td>含 OAuth 或供应商凭据，凭据留在所有者内部</td>
+<td><code>providerService</code>、<code>grokOAuthService</code>、<code>openAICodexOAuthService</code></td>
+</tr>
+<tr>
+<td><code>internal(host-resource)</code></td>
+<td>3</td>
+<td>宿主本地资源索引或连接解析器</td>
+<td><code>mentionIndex</code>、<code>providerConnectionResolver</code>（另注：<code>hooksService</code> 与 <code>mcpService</code> 已迁成 <code>data</code>）</td>
+</tr>
+<tr>
+<td><code>internal(object)</code></td>
+<td>2</td>
+<td>正在迁往操作面的原生对象包装</td>
+<td><code>fileStorage</code>（数据面 <code>fsHost</code>）、<code>hostPlatform</code>（目标数据面 <code>execHost</code>）</td>
+</tr>
+</tbody></table></div>
+<p><code>xtask check</code> 对这 111 个条目执行六选一硬校：既共享又没 dispatcher 报错，有 dispatcher 却没共享报错，既不共享又不标明合法迁移原因报错，把共享和内部标记混用也报错。任何想跑在独立节点或跨语言运行时里的叶子部件（leaf-ready），要求它 <code>inject</code> 和 <code>provides</code> 的每一个名字都必须是 <code>data</code>。</p>
+<h2 id="真实跨语言插件长什么样">真实跨语言插件长什么样<a class="anchor" href="#真实跨语言插件长什么样" aria-label="链接到本节">#</a></h2>
+<p>在 <code>runtime/plugins/</code> 下，仓库自带了两个用 TypeScript 写的生产级跨语言插件，正好展示了这套数据面不是空壳：</p>
+<p><strong><code>runtime/plugins/workflow</code>（多作用域工作流引擎）</strong>，它的 <code>dim-plugin.json</code> 只占一个进程行，入口 <code>index.ts</code> 直接注入 7 个 Rust 提供的进程数据面：<code>sessions</code>、<code>settings</code>、<code>pluginFiles</code>、<code>workflowFiles</code>、<code>managementMethods</code>、<code>partRegistry</code> 和 <code>processActivity</code>，同时反向向全进程提供一个异步数据面 <code>workflowRuns { call: &quot;async&quot; }</code>。进程入口在 <code>apply</code> 里注册工作流设置源、注册管理 RPC 方法，再通过 <code>partRegistry.registerDefinition</code> 把 <code>session.ts</code> 里的 Session 部件挂进每一个会话，给模型提供 <code>workflow</code> 工具。整个引擎（定义解析、DAG 调度、持久化、状态机）全用 TypeScript 写成，却与 Rust 宿主无缝共享会话启动、停止、权限上限校验和空闲关机保护（<code>processActivity.hold</code>）。</p>
+<p><strong><code>runtime/plugins/light-ocr</code>（极简跨语言能力提供者）</strong>，整个 <code>index.ts</code> 不到 35 行，不注入任何宿主服务，只在 <code>apply</code> 里提供一个单方法异步数据面 <code>ocrHelper { describe: &quot;async&quot; }</code>，告诉 Rust 侧的 <code>dim-ocr</code> 和 <code>dim-modality</code> 本地 <code>node</code> 可执行文件路径、<code>helper.cjs</code> 位置和只读目录列表，随后实际的受限子进程执行仍交回 Rust 的 <code>HostPlatform</code> 监管。</p>
+<p>同时，<code>xtask types</code> 会根据所有标记了 <code>#[rutis::service]</code> 的 Rust 类型自动生成 <code>npm/branch-services.d.ts</code>（在 <code>rutis 0.23</code> 下全部输出为 <code>type</code> 别名而非 <code>interface</code>），并由 <code>xtask check</code> 检查新鲜度。只要 Rust 侧改了一个数据面字段，TypeScript 侧的类型定义就会立刻报过时。</p>
+<p>有了这套单行装载、跨语言数据面和热卸载基础设施，Dim 才得以实现它最具辨识度的产品场景：让 Agent 在正在运行的会话里给自己写一个 TypeScript 插件，当场安装、立刻调用、改完热重载。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="05-timeline-branches.html"><small>上一章</small><strong>分支时间线：默认分支、父子通信与配额路由</strong></a><a class="next" href="07-self-evolving-plugins.html"><small>下一章</small><strong>在会话里给自己写插件与热重载自演化</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言与全景导读</a><a href="../chapters/01-why-not-a-chat-loop.html"><span>01</span>为什么不用普通对话循环</a><a href="../chapters/02-workspace-and-scopes.html"><span>02</span>28 个 Crate 与三层作用域</a><a href="../chapters/03-time-bus.html"><span>03</span>时间总线与只认序号的事实流</a><a href="../chapters/04-event-driven-contracts.html"><span>04</span>事件驱动契约：Dispatcher、before 与重启重建</a><a href="../chapters/05-timeline-branches.html"><span>05</span>分支时间线：默认分支、父子通信与配额路由</a><a href="../chapters/06-rutis-and-data-faces.html"><span>06</span>rutis 插件引擎与跨语言数据面</a><a href="../chapters/07-self-evolving-plugins.html"><span>07</span>在会话里给自己写插件与热重载自演化</a><a href="../chapters/08-context-compaction-and-replay.html"><span>08</span>上下文投影、压缩与历史渲染边界</a><a href="../chapters/09-detached-work-and-permissions.html"><span>09</span>脱离工作、工具审批与权限边界</a><a href="../chapters/10-codemode-and-aimux.html"><span>10</span>Code Mode 与 Aimux 模型宿主</a><a href="../chapters/11-server-cli-web-and-protocols.html"><span>11</span>App Server、CLI、Web 与 ACP / MCP 网关</a><a href="../chapters/12-tradeoffs-and-boundaries.html"><span>12</span>架构权衡与工程边界</a><a href="../chapters/13-teaching-model.html"><span>13</span>零依赖 Python 教学模型与 18 个单元测试</a><a href="../chapters/appendix-sources.html"><span>A</span>附录 A：源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · arcships/dim v0.1.0-alpha.27 · 快照 88a3df366940 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

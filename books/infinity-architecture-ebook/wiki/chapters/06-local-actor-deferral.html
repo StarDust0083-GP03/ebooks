@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从无阻塞执行切片、RAP 响应式工具协议到堆叠沙箱与跨主机热迁移，解剖 hydro-project/infinity 的 Rust Agent 运行时架构"><meta name="author" content="独立源码研究">
+<title>单线程本地调度器、延迟队列与抢占打断 · Infinity 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">∞</span><span>Infinity 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 06</div><div class="rail-title">单线程本地调度器、延迟队列与抢占打断</div><ol><li><a href="#为什么选择单线程-localset-加-futuresunordered">为什么选择单线程 LocalSet 加 FuturesUnordered</a></li><li><a href="#准入策略-绝不为幽灵或已停线程唤醒驱动">准入策略：绝不为幽灵或已停线程唤醒驱动</a></li><li><a href="#deferqueue-与-is-passive-什么时候该等-什么时候能打断">DeferQueue 与 is_passive：什么时候该等，什么时候能打断</a></li><li><a href="#流式抢占打断与优雅关闭">流式抢占打断与优雅关闭</a></li><li><a href="#同步原子退出与订阅安装-ack">同步原子退出与订阅安装 ACK</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 06 章</div><h1>单线程本地调度器、延迟队列与抢占打断</h1><div class="chapter-meta">hydro-project/infinity 快照 e1a3e4b36e5f · 约 22 分钟</div></header><div class="prose"><p>在云端 AWS Lambda 上，每个活跃线程的切片由 SQS FIFO 自动串行调度，跑完进程就销毁，不存在长期驻留的调度器。但把同一套 <code>infinity-agent-core</code> 搬回开发者本机守护进程或者嵌入式应用时，立刻会碰到四个本地运行特有的竞态难题：</p>
+<ol>
+<li>几万个历史线程如果每个都在后台养一个常驻 <code>tokio::spawn</code> 任务，光任务结构体和通道缓存就会吃掉可观内存。</li>
+<li>父线程刚刚派发了一个耗时十秒的 <code>execute_command</code>，跑了一半时另一个子线程发回一条 <code>report_to_parent</code>。如果父线程立刻处理这条汇报，就会因为历史末尾还有未应答的工具调用，被迫给 <code>execute_command</code> 注入一条中断结果，把本来好端端在跑的构建平白无故杀掉。</li>
+<li>用户正在看模型流式吐字，突然发现方向错了，直接敲下一句新指令回车。运行时必须立刻停掉当前流式生成、保存已经吐出来的半截内容，还得确保不能把模型还没响应过的未验证输入提前写坏。</li>
+<li>某个线程刚准备空闲退出，就在释放通道前的一微秒，一条新消息或一个新前端订阅请求撞了进来，怎么保证不丢消息、也不把同一个线程同时拉起两个驱动？</li>
+</ol>
+<p><code>crates/infinity-agent-core/src/system/local/</code> 里的 <code>router.rs</code>、<code>driver.rs</code> 加上 <code>system/defer.rs</code> 与 <code>system/thread.rs</code>，用单线程协作式调度和极克制的状态机把这四件事全部收敛清楚了。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 288" width="640" height="288" role="img" aria-label="本地单线程路由器与线程驱动状态机">
+<title>本地单线程路由器与线程驱动状态机</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker><marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--amber)"/></marker><marker id="arrow-forest" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--forest)"/></marker></defs>
+<text x="10" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">本地单线程 LocalSet 路由器、延迟队列与抢占状态机</text><rect x="10" y="34" width="286" height="100" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="20" y="53" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--forest)" text-anchor="start">route_loop (单线程 LocalSet)</text><text x="20" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">所有线程驱动直接托管于 FuturesUnordered</text><text x="20" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">准入检查: 非用户文本查 thread_exists 与</text><text x="20" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">is_thread_stopped (存储故障时 fail-open)</text><text x="20" y="118" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">异常经 log_panic 隔离，不拖垮其他线程</text><line x1="296" y1="84" x2="334" y2="84" stroke="var(--forest)" stroke-width="1.2" marker-end="url(#arrow-forest)"/><text x="315" y="74" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="600" fill="var(--forest)" text-anchor="middle">拉起</text><rect x="336" y="34" width="294" height="100" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="346" y="53" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--amber)" text-anchor="start">drive_thread (每活跃线程 1 个 Future)</text><text x="346" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">批量排空同线程通道，调用 filter_deferrable</text><text x="346" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">流式执行中若收到用户文本: cancel() 中断</text><text x="346" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">附加 &lt;interrupt&gt; 前缀并通知 RAP 取消工具</text><text x="346" y="118" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">Token &gt; 75% 上下文窗时触发自动压缩子线程</text><line x1="483" y1="134" x2="483" y2="162" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="10" y="164" width="296" height="88" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="20" y="183" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start">DeferQueue 延迟策略 (本地 vs Lambda)</text><text x="20" y="200" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">尾部有未答非被动工具 (!is_passive()):</text><text x="20" y="216" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">  暂存订阅事件、子线程报告与父线程消息</text><text x="20" y="232" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">sleep 家族标记 is_passive() == true 可打断</text><text x="20" y="248" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">Lambda 默认 NoDeferral，直接按中断处理</text><rect x="326" y="164" width="304" height="88" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="336" y="183" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--forest)" text-anchor="start">check_before_idle (同步原子退出)</text><text x="336" y="200" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">与路由共享 LocalSet，检查期间不让出调度</text><text x="336" y="216" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">有待答非 close_thread 工具 -&gt; AwaitInput</text><text x="336" y="232" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">仅剩活跃订阅或完全空闲 -&gt; Exit 释放内存</text><text x="336" y="248" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">DriverGuard::drop 发出 Idle 生命周期事件</text><line x1="306" y1="208" x2="326" y2="208" stroke="var(--muted)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow)"/><text x="10" y="274" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="400" fill="var(--muted)" text-anchor="start">客户端通过 SubscribeHandle 的 oneshot ACK 确认重放 ReplaySnapshot 安装完成，避免丢失并发事件。</text>
+</svg>
+<figcaption>本地单线程路由器与线程驱动状态机</figcaption></figure>
+<h2 id="为什么选择单线程-localset-加-futuresunordered">为什么选择单线程 LocalSet 加 FuturesUnordered<a class="anchor" href="#为什么选择单线程-localset-加-futuresunordered" aria-label="链接到本节">#</a></h2>
+<p>翻开 <code>crates/infinity-agent-core/src/system/local/router.rs</code>，整个本地 Actor 系统刻意运行在单线程的 <code>tokio::task::LocalSet</code> 上，而不是多线程工作窃取池。驱动内部大量使用了轻量的 <code>Rc</code>、<code>RefCell</code> 和 <code>Cell</code>（<code>HistoryManager</code> 和 <code>Thread</code> 都不需要 <code>Arc&lt;Mutex&lt;...&gt;&gt;</code> 锁竞争）。更重要的是，单线程 <code>LocalSet</code> 带来了确定性的协作切换点：只要一段函数里没有 <code>.await</code>，路由器 <code>route_loop</code> 和各线程驱动 <code>drive_thread</code> 之间就不会互相抢占，这正是后面无竞态原子退出检查的前提。</p>
+<p>另一个省内存的关键手笔在 <code>route_loop</code>（第 256 至 261 行）：路由器<strong>没有</strong>用 <code>tokio::spawn</code> 给每个线程建独立任务，而是用一个 <code>FuturesUnordered</code> 直接持有所有活跃线程的 <code>drive_thread</code> future，再配一张 <code>workers: HashMap&lt;ThreadId, WorkerChannels&gt;</code> 路由表。</p>
+<p>当某个线程空闲返回时，它的 future 从 <code>FuturesUnordered</code> 中产出 <code>ThreadId</code>，整个驱动状态机连同 <code>HistoryManager</code> 的内存立刻彻底释放，路由器紧接着把 <code>workers</code> 里对应通道已关闭的条目删掉（代码特意检查 <code>w.input_tx.is_closed()</code>，防止误删同一瞬间刚重新拉起的新驱动条目）。为了让单个线程的意外 bug 不至于拖垮整台守护进程，每个驱动 future 外层都包了 <code>rap_protocol::log_panic(&quot;thread_driver&quot;, driver)</code>，用 <code>AssertUnwindSafe(...).catch_unwind()</code> 捕获 panic 并记日志，其余线程照常运转。</p>
+<h2 id="准入策略-绝不为幽灵或已停线程唤醒驱动">准入策略：绝不为幽灵或已停线程唤醒驱动<a class="anchor" href="#准入策略-绝不为幽灵或已停线程唤醒驱动" aria-label="链接到本节">#</a></h2>
+<p>外部 RAP 服务随时可能迟到几小时推回来一条过期回调，或者针对一个已经被用户手工停止的会话发来订阅事件。如果路由器照单全收、见消息就拉起驱动，就会平白创建出幽灵线程记录，或者把已经停止的代理偷偷叫醒。</p>
+<p><code>route_loop</code>（第 310 至 356 行）在拉起新驱动之前加了一道准入门禁：</p>
+<ul>
+<li><strong>普通用户文本直接放行</strong>（<code>is_user_text_input</code> 为真），因为发新文本正是用户创建新线程和唤醒已停止线程的合法入口。</li>
+<li><strong>订阅客户端请求直接放行</strong>，允许 UI 在线程第一条消息到来之前提前挂载监听。</li>
+<li><strong>其余一切事件型输入</strong>（工具结果、订阅事件、子线程回报、OAuth、用户选择）必须过两关：先查 <code>conversation_store.thread_exists(&amp;thread_id)</code>，不存在则直接丢弃并记日志；再查 <code>state_store.is_thread_stopped(&amp;thread_id)</code>，已停止则直接丢弃。两关遇到存储短暂报错时都采用 <strong>fail-open</strong> 策略（记录警告并放行），宁可让驱动醒来走一遍 <code>prepare_input</code> 吸收脏消息，也不因存储抖动误丢真实的工具回调。</li>
+</ul>
+<h2 id="deferqueue-与-is-passive-什么时候该等-什么时候能打断">DeferQueue 与 is_passive：什么时候该等，什么时候能打断<a class="anchor" href="#deferqueue-与-is-passive-什么时候该等-什么时候能打断" aria-label="链接到本节">#</a></h2>
+<p>再看前面提到的第二个难题：子线程回报撞上正在执行的工具调用。</p>
+<p><code>crates/infinity-agent-core/src/system/defer.rs</code> 定义了 <code>DeferQueue</code> trait，只有 <code>push</code> 和 <code>drain</code> 两个方法，提供两种内置实现：本地常驻模式用 <code>InMemoryDeferQueue</code> 暂存在内存向量里；无服务器 Lambda 模式用 <code>NoDeferral</code>（<code>push</code> 永远返回 <code>Ok(false)</code>），因为 Lambda 没有驻留进程可存内存，除非调用方自己实现基于 SQS 延迟重投的传输层队列，否则直接接受打断语义。</p>
+<p>真正决定一条事件该不该被延迟的逻辑，在 <code>Thread::pending_active_tool_call</code> 和 <code>Thread::filter_deferrable</code>（<code>crates/infinity-agent-core/src/system/thread.rs</code> 第 216 至 291 行）里，依赖 <code>Tool::is_passive()</code> 这个精细的布尔标记：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>尾部挂起的工具状态</th>
+<th>到来的新消息类型</th>
+<th><code>filter_deferrable</code> 处理动作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>无未应答工具，或挂起的是被动工具（如 <code>sleep</code> / <code>sleep_until</code> / <code>sleep_until_event_or_input</code>）</td>
+<td>任何消息</td>
+<td>立即放行，并排空此前积压的延迟队列一起拼进本批；若原工具在休眠，则按正常中断逻辑唤醒</td>
+</tr>
+<tr>
+<td>挂起的是活跃工具（<code>is_passive() == false</code>，如 <code>execute_command</code>）</td>
+<td>恰好是该工具的 <code>ToolResult</code>，或普通用户文本</td>
+<td>立即放行，并将延迟队列排空追加在后面（保持本批先结算挂起调用、再处理延迟事件的顺序）</td>
+</tr>
+<tr>
+<td>挂起的是活跃工具（<code>is_passive() == false</code>）</td>
+<td>可延迟合成事件（<code>SubscriptionEvent</code>、<code>ThreadReport</code>、<code>ParentMessage</code>）</td>
+<td>压入 <code>DeferQueue</code> 暂存，不打断正在运行的工具调用</td>
+</tr>
+</tbody></table></div>
+<p>这条规则把语义分得极细：<code>sleep</code> 家族工具虽然也在等结果，但它们代表原地待命，标记为 <code>is_passive() == true</code>，允许外部订阅事件或子线程回报随时叫醒；真正在跑构建、改文件的工具属于活跃任务，无关合成事件乖乖在 <code>InMemoryDeferQueue</code> 里排队，等构建结果一到（或者用户主动发话打断）再按顺序接上。</p>
+<h2 id="流式抢占打断与优雅关闭">流式抢占打断与优雅关闭<a class="anchor" href="#流式抢占打断与优雅关闭" aria-label="链接到本节">#</a></h2>
+<p>本地驱动 <code>drive_thread</code>（<code>crates/infinity-agent-core/src/system/local/driver.rs</code>）用 <code>InFlightStep</code> 把正在执行的 <code>step_no_defer</code> future 和它的 <code>oneshot::Sender&lt;()&gt;</code> 取消句柄绑在同一个结构体里。这样做的好处是所有权天然同步：取消步骤会消费掉整个 <code>InFlightStep</code>，哪怕驱动因为外层关闭被直接 <code>drop</code>，<code>cancel_tx</code> 也会随之释放，内层的 <code>run_completion</code> 立刻收到取消信号。</p>
+<p>当一个步骤正在流式推理中，<code>drive_thread</code> 在 <code>tokio::select! { biased; ... }</code> 里同时监听步骤完成、新输入通道 <code>rx</code> 和新订阅通道 <code>subscribe_rx</code>：</p>
+<ul>
+<li>如果 <code>rx</code> 收到的批次里<strong>包含用户文本</strong>，驱动立即调用 <code>in_flight.take().cancel().await</code> 中断当前补全流。如果此时模型已经吐出部分文本，取消路径会把已生成的半截内容正常 <code>flush_turn</code> 并 <code>sync()</code> 落盘，不会丢掉用户刚才在屏幕上看到的话；如果模型还没吐出第一个字节就取消了，本轮输入留在内存的 <code>unvalidated_items</code> 里不落盘，下一轮连同新的打断消息一起发给模型。接着驱动把批次拆成用户文本和非用户消息两部分，给第一条用户文本加上 <code>&lt;interrupt&gt;</code> 前缀（前端回显 <code>input_event</code> 时会剥掉这个前缀，模型则能明确感知自己被用户中途打断），非用户消息放进 <code>pending_batch</code> 留待后续处理。</li>
+<li>如果 <code>rx</code> 收到的批次里<strong>全是异步事件</strong>（没有用户文本），驱动不打断当前推理，只是顺手塞进 <code>pending_batch</code>，等当前步骤自然跑完再接手。</li>
+<li>如果 <code>rx</code> 关闭（代表整个 <code>RunningSystem::shutdown()</code> 被触发），驱动同样显式 <code>cancel().await</code> 等待当前步骤把已验证历史刷盘完毕再退出。路由器侧也会 <code>drop(workers)</code> 后把 <code>drivers</code> 排空，绝不在持久化中途把进程掀翻。</li>
+</ul>
+<h2 id="同步原子退出与订阅安装-ack">同步原子退出与订阅安装 ACK<a class="anchor" href="#同步原子退出与订阅安装-ack" aria-label="链接到本节">#</a></h2>
+<p>最后看本地驱动最容易出并发 Bug 的两个边角：空闲退出与中途订阅。</p>
+<p>当 <code>pending_batch</code>、<code>rx</code> 和 <code>defer</code> 队列都为空时，<code>drive_thread</code> 调用一个<strong>完全同步、不含任何 <code>.await</code></strong> 的函数 <code>check_before_idle</code>（<code>driver.rs</code> 第 331 行）：先排空 <code>subscribe_rx</code> 处理所有刚到的订阅请求，再 <code>try_recv()</code> 确认 <code>rx</code> 确实空了；接着检查 <code>thread.awaiting_tool_result()</code>（即历史最后一条是不是除 <code>close_thread</code> 之外的未应答工具调用）。如果是，返回 <code>IdleDecision::AwaitInput</code>，驱动继续挂在 <code>select!</code> 上等工具回包；如果不是（即便线程还挂着活跃订阅，也不必常驻驱动，事件来了路由器会再拉起它），立刻返回 <code>IdleDecision::Exit</code> 退出驱动。</p>
+<p>因为 <code>check_before_idle</code> 里没有让出点，且与 <code>route_loop</code> 共享同一个单线程 <code>LocalSet</code>，所以新消息要么在检查前就已经躺进了 <code>rx</code> 被它当场捞走，要么一定发生在驱动退出、接收端关闭之后，被路由器检测到 <code>is_closed()</code> 并拉起新驱动，绝不存在消息掉进两头裂缝的可能。驱动退出时，<code>DriverGuard::drop</code> 在同一临界区里移除 <code>active_threads</code> 集合成员并向 <code>lifecycle_tx</code> 发出 <code>ThreadLifecycleState::Idle</code>，让外部宿主（例如守护进程）据此精准回收该会话关联的附加资源。</p>
+<p>前端订阅也用同样的严谨手法消除了竞态：<code>SubscribeHandle::subscribe</code> 带一个 <code>oneshot::Sender&lt;()&gt;</code>，直到目标线程驱动把 <code>thread.replay_snapshot()</code> 交给了 <code>observer.on_subscribe</code> 并真正把监听者注册完成，才会发回 ACK。调用方只要 <code>await</code> 完 <code>subscribe()</code> 再发 <code>send_user_text()</code>，就能百分之百保证不会漏收第一批流式事件。</p>
+<p>把本地调度器拆透后，再往下看一个经常被低估的边界：核心运行时是怎么在不认识任何一家大模型 SDK、也不解析一句报错文本的前提下，处理五花八门的限流、超窗、断流和跨进程模型供应的？下一章拆解模型供应协议。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="05-threading-compaction.html"><small>上一章</small><strong>线程树、上下文继承与位置索引压缩</strong></a><a class="next" href="07-provider-error-boundary.html"><small>下一章</small><strong>模型供应协议、跨进程隔离与错误分类契约</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：为什么一台树莓派能装下七万五千个 Agent</a><a href="../chapters/01-blocking-trap.html"><span>01</span>阻塞式 Agent 的死结与无阻塞切片不变量</a><a href="../chapters/02-workspace-topology.html"><span>02</span>21 个 Crate 的分层版图与类型化 ID 体系</a><a href="../chapters/03-slice-and-history.html"><span>03</span>切片执行循环与三阶段 HistoryManager</a><a href="../chapters/04-rap-protocol.html"><span>04</span>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</a><a href="../chapters/05-threading-compaction.html"><span>05</span>线程树、上下文继承与位置索引压缩</a><a href="../chapters/06-local-actor-deferral.html"><span>06</span>单线程本地调度器、延迟队列与抢占打断</a><a href="../chapters/07-provider-error-boundary.html"><span>07</span>模型供应协议、跨进程隔离与错误分类契约</a><a href="../chapters/08-stacked-sandboxes.html"><span>08</span>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</a><a href="../chapters/09-daemon-remote-migration.html"><span>09</span>本地守护进程、SSH 远程代理与跨主机热迁移</a><a href="../chapters/10-serverless-aws.html"><span>10</span>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</a><a href="../chapters/11-clients-and-hydro-dataflow.html"><span>11</span>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</a><a href="../chapters/12-tradeoffs-and-limits.html"><span>12</span>失败模式、安全边界与架构取舍</a><a href="../chapters/13-mini-infinity.html"><span>13</span>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：源码索引、实测统计与核心术语对照</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · hydro-project/infinity · 快照 e1a3e4b36e5f · 2026-11-05</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

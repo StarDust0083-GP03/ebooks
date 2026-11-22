@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从时间总线、分支路由、rutis 跨语言数据面到权限与压缩重放，源码级解剖 arcships/dim Agent v4 架构"><meta name="author" content="独立源码研究">
+<title>28 个 Crate 与三层作用域 · Dim 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">D</span><span>Dim 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 02</div><div class="rail-title">28 个 Crate 与三层作用域</div><ol><li><a href="#28-个工作区成员的分层地图">28 个工作区成员的分层地图</a></li><li><a href="#为什么按状态所有者划三层作用域">为什么按状态所有者划三层作用域</a></li><li><a href="#五种合法跨层关系与-adr-015-的轻量化重构">五种合法跨层关系与 ADR 015 的轻量化重构</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 02 章</div><h1>28 个 Crate 与三层作用域</h1><div class="chapter-meta">arcships/dim v0.1.0-alpha.27 · 快照 2026-11-22 · 约 16 分钟</div></header><div class="prose"><p>打开一个中大型 Rust 工作区，最怕看到所有业务代码都堆在 <code>server</code> 里，或者底层 <code>types</code> 偷偷反向引用了上层实现。Dim 根目录 <code>Cargo.toml</code> 里一共列了 28 个工作区成员（<code>crates/</code> 下 23 个业务与协议包、<code>xtask</code> 与 <code>xtask/check</code> 共 2 个工程门禁包、<code>tests/</code> 下 3 个集成与扩展测试包，另有 <code>vendor/grok-build</code> 处于 <code>exclude</code>）。这套拆法由 <code>xtask/check/src/boundaries.rs</code> 在编译之外强制校验单向依赖红线，不靠口头约定。</p>
+<h2 id="28-个工作区成员的分层地图">28 个工作区成员的分层地图<a class="anchor" href="#28-个工作区成员的分层地图" aria-label="链接到本节">#</a></h2>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 406" width="420" height="406" role="img" aria-label="工作区四层依赖与三层作用域树">
+<title>工作区四层依赖与三层作用域树</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="12" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">28 个 Cargo 成员 · 依赖自上而下受 xtask-check 硬门禁约束</text><rect x="8" y="22" width="294" height="40" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="16" y="37.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.4" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">协议与入口层</text><text x="16" y="51.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">dimcode · dim-cli · dim-acp · dim-client · web</text><text x="308" y="45" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.0" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">薄客户端 / 网关</text><line x1="155" y1="62" x2="155" y2="70" stroke="var(--line)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="70" width="294" height="40" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="16" y="85.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.4" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">宿主与业务装配层</text><text x="16" y="99.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">dim-app-server · aimux · codemode · goal · scheduler</text><text x="308" y="93" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.0" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">进程装配 / RPC v3</text><line x1="155" y1="110" x2="155" y2="118" stroke="var(--line)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="118" width="294" height="40" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="16" y="133.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.4" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">能力插件层</text><text x="16" y="147.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">dim-agent-capabilities（20 个分支 Capability）</text><text x="308" y="141" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.0" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">Loop / 权限 / 树</text><line x1="155" y1="158" x2="155" y2="166" stroke="var(--line)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="166" width="294" height="40" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="16" y="181.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.4" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">运行内核与契约层</text><text x="16" y="195.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">dim-agent-runtime（rutis 0.23）→ dim-agent-types</text><text x="308" y="189" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.0" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">总线 / 13 保留域</text><line x1="8" y1="220" x2="412" y2="220" stroke="var(--line)" stroke-width="0.7" stroke-dasharray="3 3"/><text x="8" y="236" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">三层作用域树（ADR 002 / ADR 015）：按状态所有者放置部件</text><rect x="8" y="246" width="404" height="38" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="16" y="261.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Process 根作用域（58 个服务）</text><text x="16" y="275.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">SessionStore · Provider · Mcp · SkillsCatalog · Settings · PartRegistry</text><rect x="26" y="294" width="386" height="38" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="34" y="309.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Session 作用域（31 个服务，一个主体）</text><text x="34" y="323.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">TimelineTree · ToolRegistry · PromptRegistry · WorkspaceTools</text><rect x="44" y="342" width="368" height="38" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="52" y="357.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Branch 作用域（22 个服务，一条行为线）</text><text x="52" y="371.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">Timeline · Dispatcher · Loop · InputQueue · Permission · Approval</text><line x1="22" y1="284" x2="22" y2="313" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><line x1="40" y1="332" x2="40" y2="361" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><text x="8" y="396" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--amber)" text-anchor="start" opacity="1">可见性：向父级注入服务；向下经 treeCommands；兄弟分支不直接互调。</text>
+</svg><figcaption>工作区四层依赖与三层作用域树</figcaption></figure>
+<p>上面这张图把代码仓库的静态依赖和运行时的作用域树摆在了一起。上半部分是编译期可见的包分层，<code>xtask-check</code> 用四条硬检查卡死反向依赖：<code>dim-agent-types</code> 不允许依赖运行时或能力层，<code>dim-agent-runtime</code> 不能碰 <code>dim-agent-capabilities</code> 和 <code>dim-app-server</code>，<code>dim-agent-capabilities</code> 不能反向依赖 <code>dim-app-server</code>，而 <code>xtask-check</code> 自身甚至不允许依赖任何 <code>dim-*</code> 包或 <code>rutis</code>，保证纯静态检查不用等整个业务工作区编译完就能秒跑。</p>
+<p>把 28 个成员按职责收拢，可以分成五组：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>分组</th>
+<th>包含成员</th>
+<th>核心职责</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>契约与运行内核（2）</td>
+<td><code>dim-agent-types</code>、<code>dim-agent-runtime</code></td>
+<td>定义 <code>AgentEvent</code>、13 个保留域、冻结的 v1 线格式，以及 <code>Timeline</code>、<code>Dispatcher</code>、<code>AgentBuilder</code> 和 <code>PartRegistry</code></td>
+</tr>
+<tr>
+<td>核心能力与模型宿主（6）</td>
+<td><code>dim-agent-capabilities</code>、<code>dim-agent-aimux</code>、<code>dim-agent-attachments</code>、<code>dim-agent-questions</code>、<code>dim-agent-scheduler</code>、<code>dim-event-hub</code></td>
+<td>提供 20 个分支 Capability、Aimux 多协议模型宿主、附件、交互式提问、定时唤醒与 <code>/loop</code>、跨会话事件中心</td>
+</tr>
+<tr>
+<td>可选业务插件（9）</td>
+<td><code>dim-codemode</code>、<code>dim-goal</code>、<code>dim-session-title</code>、<code>dim-oauth</code>、<code>dim-report</code>、<code>dim-modality</code>、<code>dim-image-understanding</code>、<code>dim-ocr</code>、<code>dim-modality-aimux</code></td>
+<td>rquickjs 代码沙箱、Pursuit 目标推进、自动会话标题、账户 OAuth、本地诊断报告、多模态任务与本地 OCR</td>
+</tr>
+<tr>
+<td>宿主、协议与客户端（6）</td>
+<td><code>dim-app-server</code>、<code>dim-client</code>、<code>dim-acp</code>、<code>dim-cli</code>、<code>dimcode</code>、<code>dim-migration</code></td>
+<td>SQLite 持久化与守护进程、共享 RPC 帧传输、ACP 协议网关、Ratatui 终端客户端、单二进制入口与旧版数据离线迁移</td>
+</tr>
+<tr>
+<td>门禁与测试（5）</td>
+<td><code>xtask</code>、<code>xtask/check</code>、<code>tests/extension-a</code>、<code>tests/extension-b</code>、<code>tests/integration</code></td>
+<td>生成真实装配图与服务目录、执行静态 AST 检查、验证跨包扩展和端到端行为流程</td>
+</tr>
+</tbody></table></div>
+<p>其中有一个很务实的细节：<code>dimcode</code> 单独作为一个二进制入口 crate，把 <code>dim-cli</code> 和 <code>dim-app-server</code> 打进同一个可执行文件里。终端启动守护进程时，并不是去装第二个独立安装包，而是通过 <code>&lt;home&gt;/rust/dimcode-server</code> 链接调起自身的 <code>app-server</code> 子命令，既方便用 <code>ps</code> 或 <code>pgrep dimcode-server</code> 区分客户端与守护进程，又避免了双二进制版本漂移。</p>
+<h2 id="为什么按状态所有者划三层作用域">为什么按状态所有者划三层作用域<a class="anchor" href="#为什么按状态所有者划三层作用域" aria-label="链接到本节">#</a></h2>
+<p>把包拆清楚只解决了编译期问题，运行时部件该放哪儿更容易踩坑。<code>docs/adr/002-plugin-scope.md</code> 记了一段真实弯路：早期设计曾为了减少能力数量，把大部分新功能塞进 Process 进程级作用域。结果这些进程级插件既要给某个 Session 提供工具，又要监听某个 Session 的事件，还要往具体某条分支写输入，于是设计里被迫长出了一堆接线模块：扩展注册表、注册端口、Session 访问宿主、进程级订阅转发、聚合插件。每个接线模块存在的唯一理由，都是把放错位置的插件硬连回它原本该待的作用域。</p>
+<p>ADR 002 拍板撤回了所有接线模块，定下一条铁律：作用域不按模块大小划分，而是按状态属于谁、生命周期跟谁走来划分。</p>
+<p><strong>Process 根作用域</strong>放跨会话共享或比单个会话活得更久的东西。真实装配目录里有 58 个进程级服务，包括 SQLite 存储 <code>sqliteStorage</code> 与 <code>store</code>、模型供应商目录 <code>providerService</code>、全局设置 <code>settings</code>、技能目录 <code>skillsCatalog</code>、MCP 配置管理 <code>mcpService</code>、宿主进程执行端口 <code>hostPlatform</code>、文件系统端口 <code>fsHost</code>，以及跨会话运行的定时调度器 <code>scheduleJobs</code> 和工作流引擎 <code>workflowRuns</code>。</p>
+<p><strong>Session 作用域</strong>代表一个主体，也就是与用户交互的同一个“我”。它持有该主体全部行为线共用的身份、工作区路径、工具注册表 <code>toolRegistry</code>、提示词源 <code>promptRegistry</code>、工作区文件工具 <code>toolHost</code>、文件访问事实 <code>FileAccessFacts</code>、分支目录 <code>timelineTree</code> 与 <code>treeCommands</code>。共 31 个 Session 级服务。只要任务需要换一个独立身份、独立系统提示或独立工作目录，就必须新建 Session（例如协作子代理或分叉会话），不能硬塞成同一 Session 里的分支。</p>
+<p><strong>Branch 作用域</strong>代表这个主体的一条并行行为线。它拥有自己的 <code>timeline</code> 与 <code>dispatcher</code>，以及围绕这条线折叠出的全部状态机：<code>Loop</code>、<code>InputQueue</code>、<code>Prompt</code>、<code>ContextPreparation</code>、<code>ContextUsage</code>、<code>ToolBinding</code>、<code>ToolExecutor</code>、<code>Permission</code>、<code>Approval</code>、<code>BranchLine</code>、<code>TreeTimeline</code>、<code>BackgroundExec</code>、<code>WaitBranch</code> 等，共 22 个分支级服务。</p>
+<h2 id="五种合法跨层关系与-adr-015-的轻量化重构">五种合法跨层关系与 ADR 015 的轻量化重构<a class="anchor" href="#五种合法跨层关系与-adr-015-的轻量化重构" aria-label="链接到本节">#</a></h2>
+<p>在 <code>docs/architecture/rust-agent/principles.md</code> 第 2 节里，三层作用域之间的交互被收敛成五种明确关系，其余路径一律禁止：</p>
+<ol>
+<li><strong>分支使用能力</strong>：分支部件向上注入 Session 或 Process 服务，例如 <code>Permission</code> 注入 <code>S:CommandRules</code> 与 <code>S:SessionConfig</code>。</li>
+<li><strong>能力在某条分支上被使用</strong>：Session 级工具或方法入口在收到调用时，按调用方携带的 <code>branch_id</code> 路由到该分支的服务，比如 <code>BranchTool</code> 每次调用再查找调用线的 <code>BranchLine</code>。</li>
+<li><strong>能力影响分支</strong>：能力按自身契约向一条或多条分支写输入或事件，例如 <code>Goal</code> 向目标分支写入评估结果。</li>
+<li><strong>分支影响分支</strong>：严格限定在父子之间，通过向对方写入 <code>input/message</code> 或通过工具分页读取对方已提交历史完成，异步且不互相阻塞等待；兄弟分支之间不可见、不互调。</li>
+<li><strong>Session 管理自己的分支</strong>：分支目录、身份预留、创建、就绪发布与关闭结算由 Session 级的 <code>TimelineTree</code> 独占，但分支内由时间线推出来的业务状态绝不泄漏回 Session 层。</li>
+</ol>
+<p>到了 <code>rutis 0.23.0</code>（ADR 015 与 ADR 025），这套作用域树又完成了一次关键瘦身。早期 Session 和 Branch 都是 <code>rutis-loader</code> 里的实例组（instanced loader group），每次打开会话或新建分支都要扫描全量 loader 条目表，连 MCP 连接代次和技能内容也成了嵌套 loader 实例。升级到 <code>rutis 0.23.0</code> 后，宿主可以用 <code>mark_scope</code> 把普通插件标记为作用域根，于是 Session 成为 Agent 挂载的普通子插件，Branch 成为 Session 挂载的普通子插件，Skills 内容与 MCP 连接代次则直接成为各自所属部件的子插件。<code>Loader::entries()</code> 里从此只剩进程行和 Agent 锚点行，创建与关闭会话直接走 <code>rutis</code> 原生的父子所有权树，不再需要扫描或维护第二套实例表。</p>
+<p>理解了 28 个 Crate 的单向边界和三层作用域树，就能看清 Dim 最底层那根脉络：每条分支里真正负责把状态机串起来的时间总线。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="01-why-not-a-chat-loop.html"><small>上一章</small><strong>为什么不用普通对话循环</strong></a><a class="next" href="03-time-bus.html"><small>下一章</small><strong>时间总线与只认序号的事实流</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言与全景导读</a><a href="../chapters/01-why-not-a-chat-loop.html"><span>01</span>为什么不用普通对话循环</a><a href="../chapters/02-workspace-and-scopes.html"><span>02</span>28 个 Crate 与三层作用域</a><a href="../chapters/03-time-bus.html"><span>03</span>时间总线与只认序号的事实流</a><a href="../chapters/04-event-driven-contracts.html"><span>04</span>事件驱动契约：Dispatcher、before 与重启重建</a><a href="../chapters/05-timeline-branches.html"><span>05</span>分支时间线：默认分支、父子通信与配额路由</a><a href="../chapters/06-rutis-and-data-faces.html"><span>06</span>rutis 插件引擎与跨语言数据面</a><a href="../chapters/07-self-evolving-plugins.html"><span>07</span>在会话里给自己写插件与热重载自演化</a><a href="../chapters/08-context-compaction-and-replay.html"><span>08</span>上下文投影、压缩与历史渲染边界</a><a href="../chapters/09-detached-work-and-permissions.html"><span>09</span>脱离工作、工具审批与权限边界</a><a href="../chapters/10-codemode-and-aimux.html"><span>10</span>Code Mode 与 Aimux 模型宿主</a><a href="../chapters/11-server-cli-web-and-protocols.html"><span>11</span>App Server、CLI、Web 与 ACP / MCP 网关</a><a href="../chapters/12-tradeoffs-and-boundaries.html"><span>12</span>架构权衡与工程边界</a><a href="../chapters/13-teaching-model.html"><span>13</span>零依赖 Python 教学模型与 18 个单元测试</a><a href="../chapters/appendix-sources.html"><span>A</span>附录 A：源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · arcships/dim v0.1.0-alpha.27 · 快照 88a3df366940 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

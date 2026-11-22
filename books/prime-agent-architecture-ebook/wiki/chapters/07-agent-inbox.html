@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="源码拆解 PrimeIntellect-ai/prime-agent v0.10.5：Rust 多进程宿主、Protocol v3 Python REPL、持久信箱、递归子 Agent 与 Continual Harness"><meta name="author" content="独立源码研究">
+<title>持久信箱 rlm.inbox 与跨进程消息投递 · Prime Agent 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">PA</span><span>Prime Agent 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 07</div><div class="rail-title">持久信箱 rlm.inbox 与跨进程消息投递</div><ol><li><a href="#六类通知收口与断写可恢复的-inbox-jsonl">六类通知收口与断写可恢复的 inbox.jsonl</a></li><li><a href="#合并唤醒行-防伪造边界与严格过滤读取">合并唤醒行、防伪造边界与严格过滤读取</a></li><li><a href="#agent-message-核家族直连投递与状态语义">agent_message：核家族直连投递与状态语义</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 07 章</div><h1>持久信箱 <code>rlm.inbox</code> 与跨进程消息投递</h1><div class="chapter-meta">Prime Agent v0.10.5 快照 2026-11-21 · 约 18 分钟</div></header><div class="prose"><p>把后台命令、子 Agent 和定时心跳全接进同一个会话后，很快会出现一种经典的“通知洪水”：主 Agent 刚在后台一口气派出去 6 个测试脚本和 4 个子 Agent，然后安心结束回合去等结果。三分钟后它们扎堆跑完，如果宿主把 10 条完整的 <code>[bash-done]</code> 输出和子 Agent 长篇回复全部当成 Steering 用户消息直接灌进主会话上下文，不仅一口气吃掉几万 Token，还会把原本有序的对话历史打成一锅粥，甚至把用户真正想插进来的纠偏指令淹没在机器噪音里。</p>
+<p>Prime Agent 在 v0.10.5 这一轮里做了一项影响全局的重构（对应 <code>.changes/agent-inbox.md</code>、<code>.changes/inbox-tui-cards.md</code>、<code>.changes/inbox-agentmsg-semantics.md</code> 及本次固定提交 <code>#4123</code>）：引入守护进程托管的<strong>持久会话信箱（Agent Inbox）</strong>，把机器通知的“存储”和“唤醒”彻底劈开。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 294" width="480" height="294" role="img" aria-label="持久信箱 rlm.inbox 与核家族消息投递链路">
+<title>持久信箱 rlm.inbox 与核家族消息投递链路</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="12" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.6" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">机器通知不再直接塞满上下文：持久信箱与合并唤醒链路</text><rect x="8" y="24" width="144" height="170" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="17" y="41" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">六类异步事件源</text><text x="17" y="56" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">1. bash-done (后台命令)</text><text x="17" y="69" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">2. factory-progress (工厂)</text><text x="17" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">3. agent-message (核家族)</text><text x="17" y="95" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">4. child-exited (子完成)</text><text x="17" y="108" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">5. child-failed (子失败)</text><text x="17" y="121" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">6. heartbeat (周期心跳)</text><text x="17" y="134" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">   同 job 仅留最新一封</text><rect x="174" y="24" width="150" height="86" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.4"/><text x="183" y="41" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">SessionInbox 存储</text><text x="183" y="56" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">inbox.jsonl 仅追加日志</text><text x="183" y="69" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">断写重放 + 单调递增 ID</text><text x="183" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">写失败显式降级内存态</text><text x="183" y="95" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">已回收 bash 自动撤回</text><rect x="174" y="126" width="150" height="68" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="183" y="143" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">合并唤醒与提醒行</text><text x="183" y="158" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">inbox:arrival 短通知行</text><text x="183" y="171" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">inbox:reminder 周期提醒</text><text x="183" y="184" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">只报数量, 不塞全量正文</text><rect x="346" y="24" width="126" height="86" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.4"/><text x="355" y="41" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">rlm.inbox.read()</text><text x="355" y="56" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">支持 4 个过滤字段:</text><text x="355" y="69" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">sender / class /</text><text x="355" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">sinceMs / beforeMs</text><text x="355" y="95" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">未知字段严格报错</text><rect x="346" y="126" width="126" height="68" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="355" y="143" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">python_repl 卡片</text><text x="355" y="158" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">emit 专有 MIME 帧</text><text x="355" y="171" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">逐条还原信箱消息</text><text x="355" y="184" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">清空后自动撤回提醒</text><line x1="152" y1="68" x2="174" y2="68" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><line x1="249" y1="110" x2="249" y2="126" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><line x1="324" y1="68" x2="346" y2="68" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><line x1="409" y1="110" x2="409" y2="126" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><polyline points="346,160 335,160 335,160 324,160" fill="none" stroke="var(--amber)" stroke-width="1.1" stroke-dasharray="4 3" marker-end="url(#arrow)"/><rect x="8" y="212" width="464" height="52" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="17" y="229" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">家族通信与防伪造边界</text><text x="17" y="244" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">agent_message.send 仅限 parent / sibling / child，优先 Worker 点对点直连，失败回退 Supervisor 转发</text><text x="17" y="257" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">inbox_notice 与 inbox:arrival/reminder 保留键由 Daemon 内部直插，客户端伪造输入直接拒绝</text><text x="8" y="282" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.5" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">全局开关 agentInbox.enabled: false 可回退直插模式；无 Daemon 的 -p 模式不启用信箱。</text>
+</svg><figcaption>持久信箱 rlm.inbox 与核家族消息投递链路</figcaption></figure>
+<p>这张图概括了信箱的完整生命周期：六类异步事件不再把正文直接塞进上下文，而是先落盘进会话专属的 <code>inbox.jsonl</code>，再往队列里放一条合并后的极短计数唤醒行；等模型主动调用 <code>rlm.inbox.read()</code> 按需消费后，唤醒行自动撤回，同时每条被读出的消息借由专有 MIME 帧直接渲染在 <code>python_repl</code> 卡片上。</p>
+<h2 id="六类通知收口与断写可恢复的-inbox-jsonl">六类通知收口与断写可恢复的 <code>inbox.jsonl</code><a class="anchor" href="#六类通知收口与断写可恢复的-inbox-jsonl" aria-label="链接到本节">#</a></h2>
+<p>信箱的核心存储和过滤逻辑位于 <code>crates/pa-core/src/session_engine/inbox.rs</code>（2,127 行），守护进程侧的槽位管理、身份校验和周期提醒位于 <code>crates/pa-daemon/src/agent_inbox.rs</code>。</p>
+<p>所有走信箱的机器通知被严格归纳为 6 个固定类别（<code>inbox_class</code>），每类都有确定的 <code>sender</code> 语义：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th><code>inbox_class</code></th>
+<th>来源</th>
+<th><code>sender</code> 字段含义</th>
+<th>特殊规则</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>bash-done</code></td>
+<td>后台 <code>bash()</code> 命令结束</td>
+<td>命令文本</td>
+<td>附加 <code>exitClass</code>（<code>success</code>/<code>failure</code>）；若内核已通过句柄回收结果（<code>bash.consumed</code>），自动撤回对应未读信件</td>
+</tr>
+<tr>
+<td><code>factory-progress</code></td>
+<td>状态机工厂里程碑</td>
+<td><code>runId</code></td>
+<td>记录运行态关键进展与异常升级</td>
+</tr>
+<tr>
+<td><code>agent-message</code></td>
+<td>核家族 <code>agent_message.send</code></td>
+<td>发送方 Agent 名称</td>
+<td>走信箱后不再受旧版未读数量硬上限（too many pending messages）拦截</td>
+</tr>
+<tr>
+<td><code>child-exited</code></td>
+<td>子 Agent 正常完成</td>
+<td>子会话名称</td>
+<td>由守护进程内部保留类型投影，防客户端伪造</td>
+</tr>
+<tr>
+<td><code>child-failed</code></td>
+<td>子 Agent 异常失败</td>
+<td>子会话名称</td>
+<td>携带子会话 ID 与失败详情</td>
+</tr>
+<tr>
+<td><code>heartbeat</code></td>
+<td>定时心跳触发</td>
+<td><code>job_id</code></td>
+<td>同一个心跳任务在信箱里最多只留 1 封最新信件，新触发自动替换旧未读，暂停或删除任务时立刻撤回残留</td>
+</tr>
+</tbody></table></div>
+<p>每当新消息进入，都会追加写入 <code>&lt;session-artifacts&gt;/&lt;id&gt;/inbox.jsonl</code>。日志重放器专门针对崩溃场景做了加固：如果进程恰好在写盘中途断电留下半截残破 JSON 行，重启打开信箱时会跳过残缺记录、完整恢复前面的所有推入与消费记录，并保持消息 ID 单调递增，绝不复用旧 ID。</p>
+<p>更难得的是它对<strong>写盘失败</strong>的态度。如果磁盘满或权限异常导致 <code>append_journal</code> 失败，<code>SessionInbox</code> 不会默默吞错，而是把错误信息记进 <code>persistence_error</code> 槽位，并在后续发给模型的唤醒行里显式附上一句警告：<code>(inbox persistence failed; messages are memory-only)</code>（常量 <code>INBOX_PERSISTENCE_ERROR_CLAUSE</code>），直到一次完整的日志重写成功把待读集合安全落盘，这个降级标记才会清除。</p>
+<p>在 Worker 会话替换或恢复期间，还有一个微妙的并发竞态：旧会话实例正在退休，新会话实例准备打开同一个 <code>inbox.jsonl</code> 重放，如果此时有异步投递误写进旧实例，两边就会互相踩踏。<code>crates/pa-daemon/src/agent_inbox.rs</code> 第 118 行的 <code>push_to_live_inbox()</code> 用槽位互斥锁 + <code>Arc::ptr_eq</code> 指针身份双重检查化解了这个问题：要么追加抢在退休清理之前落盘，新会话重放自然能看到它；要么退休先完成，本次追加返回 <code>None</code>，调用方重试投递给新实例。</p>
+<h2 id="合并唤醒行-防伪造边界与严格过滤读取">合并唤醒行、防伪造边界与严格过滤读取<a class="anchor" href="#合并唤醒行-防伪造边界与严格过滤读取" aria-label="链接到本节">#</a></h2>
+<p>消息进了信箱，怎么让空闲或忙碌中的模型知道自己有新邮件？</p>
+<p>守护进程只往队列放两类轻量级通知行：</p>
+<p><strong>到达合并行（<code>inbox:arrival</code>）</strong>，同一波并发涌入的 3 条后台完成通知，不会被拆成 3 条消息，而是合并成一行极短的计数提示，例如 <code>3 new bash-done messages</code> 或 <code>3 new messages</code>，附带操作指引 <code>Read them with msgs = await rlm.inbox.read().</code>。</p>
+<p><strong>周期提醒行（<code>inbox:reminder</code>）</strong>，如果模型读完唤醒后忘了处理或者只消费了一部分，后台提醒任务会按 <code>agentInbox.reminderIntervalMs</code> 定期重发一条纯计数提醒（设为 <code>0</code> 时关闭周期提醒，但仍每 60 秒轮询一次设置以便热开启）。如果全局配置了 <code>agentInbox.enabled: false</code>，整套信箱退回旧模式，新通知直接走直插行，但信箱里已有的未读消息依然可读，不会平白丢失。另外，无守护进程的 <code>-p</code> 单次打印模式不启用信箱。</p>
+<p>这里有一条很细的安全校验（见 <code>crates/pa-daemon/README.md</code>）：<code>inbox_notice</code> 自定义行类型没有任何外部客户端接入路由，只能由 Worker 内部直插；如果外部客户端在恢复队列或发消息时，试图伪造一个自定义行冒充 <code>inbox_notice</code>、<code>rlm_child_terminal_notice</code> 或占用 <code>inbox:arrival</code>/<code>inbox:reminder</code> 合并键，校验器会直接报错拒收。否则一条伪造的用户消息可能在下一次清空信箱时被误删，或者反过来伪装成系统通知误导折叠渲染。</p>
+<p>在读取侧，<code>rlm.inbox.read()</code> 支持四个可组合（逻辑 AND）的过滤参数：<code>sender</code>、<code>inbox_class</code>（线协议键 <code>class</code>）、<code>since_ms</code>（包含下界）和 <code>before_ms</code>（排除上界）。注意 Rust 侧 <code>InboxReadFilter</code>（<code>crates/pa-core/src/session_engine/inbox.rs</code> 第 93 行）结构体上加了 <code>#[serde(rename_all = &quot;camelCase&quot;, default, deny_unknown_fields)]</code>。为什么要加 <code>deny_unknown_fields</code>？因为 <code>rlm.inbox.read()</code> 是<strong>消费即清空</strong>语义（只移除命中的消息，未命中的留在信箱）。如果模型把字段名拼错成 <code>sendr</code>，宽容反序列化会把它当成一个全空过滤器，直接把整个信箱误清空！严格拒绝未知字段（同时在处理器里剥离外层路由键 <code>type</code>）确保拼错参数立刻报错，一封消息都不会丢。</p>
+<p>读完之后还有两件自动联动的收尾事：一是执行 Worker 注册的 <code>InboxReadHook</code>，立刻撤回已经清空的唤醒行或按剩余数量重绘提醒行；二是 Python 侧 <code>inbox_read()</code> 对返回的每一条消息调用 <code>emit({&quot;application/vnd.prime-agent.inbox-message+json&quot;: entry})</code>（即固定提交 <code>#4123</code> 刚合入的新特性），让 TUI 的 <code>python_repl</code> 工具卡片直接把读出来的每封信箱消息按原始行样式渲染出来，操作者不用翻代码输出也能一眼看清 Agent 刚收到了什么。</p>
+<h2 id="agent-message-核家族直连投递与状态语义"><code>agent_message</code>：核家族直连投递与状态语义<a class="anchor" href="#agent-message-核家族直连投递与状态语义" aria-label="链接到本节">#</a></h2>
+<p>最后看看 Agent 之间是怎么互相发信的。模型在内核里调用：</p>
+<pre><code class="language-python">receipt = await agent_message.send(
+    &quot;Please inspect the latest result.&quot;,
+    receiver_role=&quot;child&quot;,
+    receiver_name=child.session_name,
+)
+</code></pre>
+<p>也可以用 <code>agent_message.send(&quot;all&quot;, text)</code> 向整个核家族广播。消息发送方身份完全由守护进程根据当前会话自动派生，模型传任何 <code>from</code> 字段都无法伪造身份。</p>
+<p>在底层传输上（<code>crates/pa-daemon/src/agent_messaging.rs</code> 和 <code>peer_client.rs</code>），<code>pa-daemon</code> 采用了两级路由：</p>
+<ol>
+<li><strong>优先 Worker 点对点直连</strong>：源 Worker 向 Supervisor 请求一张 <code>worker</code> 用途的一次性访问授权（<code>get_worker_peer_transport</code>），拿到目标 Worker 的本地 Socket 后直接发起 <code>worker_deliver_message</code> 投递，绕过 Supervisor 转发。</li>
+<li><strong>失败回退 Supervisor 路由</strong>：直连不可达时回退走 Supervisor 的 <code>send_message</code> 路由（且绝不盲目重试导致重复送达）。</li>
+<li><strong>休眠目标按需唤醒</strong>：如果收件方是一个已经休眠落盘的旧会话或已完成的子 Agent，Supervisor 会通过 <code>session_catalog.rs</code> 按 ID 前缀或精确名称解析（先查同工作目录，必要时从 <code>sessions-archive/</code> 懒恢复；若目录未命中，再查 RLM Spawn 账本找到父会话制品树下的子会话文件），拉起一个 Worker 接管该会话文件并投递消息，把目标重新唤醒进入普通回合。但如果目标会话正在关闭中，投递会被明确拒绝，绝不悄悄把消息丢进黑洞（<code>.changes/inbox-agentmsg-semantics.md</code>）。</li>
+</ol>
+<p>收据里的 <code>deliveryStatus</code> 区分两种状态：<code>&quot;delivered&quot;</code> 表示消息已经进入空闲目标的上下文或已安全写入目标的持久信箱；<code>&quot;queued&quot;</code> 表示目标正在忙，消息已作为 Steering 排队等待适当时机投递，且 <code>send()</code> 立刻返回不阻塞发送方。另外，如果操作者在界面里暂停了某个会话的 Agent 消息接收，暂停动作绝不会删除信箱里已有消息，清空操作也只移除尚未通知过模型的未公告消息。</p>
+<p>持久信箱和跨进程消息让多会话协作有条不紊。接下来，我们把镜头拉远到整个守护进程的全局治理：会话 JSONL 树怎么存、怎么在不爆内存的前提下全文搜索历史会话、升级时怎么做无损热更新，以及外部 IDE 如何通过 ACP 协议接入 Prime Agent。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="06-subagents-delegation.html"><small>上一章</small><strong>递归子 Agent 树、Spawn 账本与状态机工厂</strong></a><a class="next" href="08-session-search-acp.html"><small>下一章</small><strong>会话生命周期、流式全文搜索与 ACP 外部协议</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：把长程自主编程收进一个持久 Python REPL</a><a href="../chapters/01-why-rlm.html"><span>01</span>为什么传统工具调用在长程任务上会失速</a><a href="../chapters/02-workspace-topology.html"><span>02</span>十个 Rust Crate 与一层 Python 运行时的双层拓扑</a><a href="../chapters/03-agent-loop.html"><span>03</span>Turn 循环、Claim-First 抢占与三层消息队列</a><a href="../chapters/04-python-repl.html"><span>04</span>Protocol v3 内核：<code>python_repl</code> 如何把状态、输出和中断管稳</a><a href="../chapters/05-bash-edit-skills.html"><span>05</span>单工具收口下的程序化工具链：<code>bash</code>、<code>edit</code> 与可执行技能</a><a href="../chapters/06-subagents-delegation.html"><span>06</span>递归子 Agent 树、Spawn 账本与状态机工厂</a><a href="../chapters/07-agent-inbox.html"><span>07</span>持久信箱 <code>rlm.inbox</code> 与跨进程消息投递</a><a href="../chapters/08-session-search-acp.html"><span>08</span>会话生命周期、流式全文搜索与 ACP 外部协议</a><a href="../chapters/09-prompt-continual-harness.html"><span>09</span>分层系统提示词与 Continual Harness 自我改进</a><a href="../chapters/10-context-compaction-autonomy.html"><span>10</span>自动压缩、目标驱动与有界自主运行</a><a href="../chapters/11-mcp-bridge.html"><span>11</span>宿主管认证、内核跑协议的 MCP 桥接层</a><a href="../chapters/12-tui-observability.html"><span>12</span>把渲染留在关键路径上：TUI 卡片、延迟护栏与可观测性</a><a href="../chapters/13-security-cost-mini-model.html"><span>13</span>安全边界、成本账本与可运行教学模型</a><a href="../chapters/appendix-sources.html"><span>A</span>源码索引、关键常量表、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Prime Agent v0.10.5 · 快照 783acb5d72a9 · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

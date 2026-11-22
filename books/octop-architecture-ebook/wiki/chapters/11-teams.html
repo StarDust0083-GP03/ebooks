@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 Octop v1.0.3b7 源码的架构解剖：单进程宿主、托管专家、多层存储、多副本租约与安全边界"><meta name="author" content="独立源码研究">
+<title>多 Agent 团队：共享展示时间线，隔离执行状态 · Octop 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">O</span><span>Octop 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 11</div><div class="rail-title">多 Agent 团队：共享展示时间线，隔离执行状态</div><ol><li><a href="#主持人是特殊专家-不是一套平行表结构">主持人是特殊专家，不是一套平行表结构</a></li><li><a href="#一个房间-多份独立-checkpoint">一个房间，多份独立 checkpoint</a></li><li><a href="#异步派工-成员并行与回叫串行">异步派工、成员并行与回叫串行</a></li><li><a href="#teamjobtracker-按-job-id-做幂等在途记账">TeamJobTracker：按 job_id 做幂等在途记账</a></li><li><a href="#点停止按钮-究竟停掉了谁">点停止按钮，究竟停掉了谁</a></li><li><a href="#团队与-subagent-别混着用">团队与 Subagent 别混着用</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 11 章</div><h1>多 Agent 团队：共享展示时间线，隔离执行状态</h1><div class="chapter-meta">Octop v1.0.3b7 快照 2026-11-18 · 约 10 分钟</div></header><div class="prose"><p>把调研、法务审核和文档汇总交给三位专家一起干，最偷懒的做法是让三个模型轮流往同一条消息列表和同一份 checkpoint 里写内容。不出三轮就会乱套：谁的工具结果归谁、A 专家的私有工作区和记忆会不会漏给 B 专家、点停止按钮到底停哪一个、成员刚回复完结果该回推给网页还是飞书群。</p>
+<p>Octop 在 <code>docs/expert-teams.md</code> 里定下了一条很清醒的架构原则：<strong>用户看见的是一条共享房间时间线，底层每个专家各自维护独立的 checkpoint、工作区与长期记忆</strong>。</p>
+<h2 id="主持人是特殊专家-不是一套平行表结构">主持人是特殊专家，不是一套平行表结构<a class="anchor" href="#主持人是特殊专家-不是一套平行表结构" aria-label="链接到本节">#</a></h2>
+<p>在数据模型上，专家团队并没有另起一套复杂的独立实体系统。团队主持人本身就是 <code>agents</code> 表里 <code>kind = &quot;team&quot;</code> 的一条专家记录，团队编制（成员列表、分工说明等）存在主持人工作区的 <code>.octop/manifest.json</code> 里，复用同一套 <code>AgentManager</code> 生命周期、分享权限和会话体系。</p>
+<p>区别只在能力边界：主持人的职责是拆解任务、通过 <code>TeamDispatchBriefingMiddleware</code> 向成员下发改写后的任务简报并收尾总结，不直接挂载完整的文件修改、浏览器控制和外部 MCP 执行工具；被编入团队的成员依然是独立的一等专家，同一位专家可以同时加入多个团队。</p>
+<h2 id="一个房间-多份独立-checkpoint">一个房间，多份独立 checkpoint<a class="anchor" href="#一个房间-多份独立-checkpoint" aria-label="链接到本节">#</a></h2>
+<p>当用户在团队房间（会话 ID 即主持人的 <code>thread_id</code>）里发言，平台为房间内的不同角色分配各自隔离的图状态键：</p>
+<pre><code class="language-text">房间展示时间线 = 主持人 conversation_id
+  ├── 主持人 checkpoint：conversation_id
+  ├── 成员 A checkpoint：conversation_id~member_a
+  └── 成员 B checkpoint：conversation_id~member_b
+
+成员各自使用自己的 BackendWorkspace 与 octop-memory 命名空间
+成员流式输出经房间转播，附带明确的说话人（agent）标识，同步到 Web 与 IM
+</code></pre>
+<p>展示共享与状态隔离分开之后，好处立竿见影：</p>
+<ul>
+<li>成员加入团队，不会自动获得读取同事私有工作区或私有长期记忆的权限；团队级准则和汇总记忆留在主持人这一侧。</li>
+<li>主持人把群聊背景和本次交付目标整理成明确派工简报发给成员，成员干完活只把结果交回房间，不把中间几十步探索工具调用全倒进主持人的上下文窗口。</li>
+</ul>
+<h2 id="异步派工-成员并行与回叫串行">异步派工、成员并行与回叫串行<a class="anchor" href="#异步派工-成员并行与回叫串行" aria-label="链接到本节">#</a></h2>
+<p>团队协作有两种调用节奏：普通专家之间互相调用（<code>ask_agent</code>）以同步等待返回为主，托管专家也可以通过第 10 章的 <code>octop-agents</code> 回环 MCP 发起同样的专家回调；而团队主持人向成员派工则是异步的，主持人派完活立刻释放当前流，等成员跑完后由平台自动回叫主持人做下一轮汇总。</p>
+<p>异步回调靠 <code>TeamManager</code> 和 <code>GlobalProcessor</code>（实现 <code>TeamProcessor</code> 协议）串联。每条派工任务都会带上 <code>source_agent_id</code>、<code>source_thread_id</code>、目标成员和 <code>job_id</code>，确保几分钟后成员交付结果时，平台准确知道该写回哪个房间 checkpoint，并通过 <code>on_reply</code> 把消息推回网页或对应的 IM 群聊。</p>
+<p>并发调度遵循两套串行粒度：inbox 按被调用者（callee）协调，同一个成员收到的多条任务串行执行，不同成员之间可以并行跑；成员完成后回叫主持人时，则按源 <code>thread_id</code> 串行排队，避免两位成员同一秒完成把主持人总结流写花。成员在干活时可以同步询问另一位同事，但不允许异步再往群里拉新成员，防止无限套娃。</p>
+<h2 id="teamjobtracker-按-job-id-做幂等在途记账">TeamJobTracker：按 job_id 做幂等在途记账<a class="anchor" href="#teamjobtracker-按-job-id-做幂等在途记账" aria-label="链接到本节">#</a></h2>
+<p>团队正有成员在后台跑任务时，如果管理员突然把该成员移出团队或直接删掉这位专家，在途回调回来就会找不到目标。<code>src/octop/infra/agents/teams/jobs.py</code> 里的 <code>TeamJobTracker</code> 专门记录活跃任务计数，挡住这类破坏性操作。</p>
+<p>看它的 <code>begin()</code> 实现：</p>
+<pre><code class="language-python">def begin(
+    self,
+    team_agent_id: str,
+    member_agent_id: str,
+    job_id: str | None = None,
+) -&gt; None:
+    key = (team_agent_id, member_agent_id)
+    with self._lock:
+        if job_id:
+            if job_id in self._jobs:
+                return
+            self._jobs[job_id] = key
+            return
+        self._counts[key] = self._counts.get(key, 0) + 1
+</code></pre>
+<p>以 <code>job_id</code> 为键做去重比简单加减整数稳得多：同一条任务因为重试或状态重放重复触发 <code>begin</code> 时不会把计数加两遍，结束时按 <code>job_id</code> 摘除也不会减成负数。同时源码注释也坦诚写明了它的边界：<code>TeamJobTracker</code> 是进程内字典加线程锁，进程重启就归零，它不提供跨进程或跨重启的任务 fencing。</p>
+<h2 id="点停止按钮-究竟停掉了谁">点停止按钮，究竟停掉了谁<a class="anchor" href="#点停止按钮-究竟停掉了谁" aria-label="链接到本节">#</a></h2>
+<p>这是多 Agent 界面里最容易让用户困惑的一条边界，也是 <code>docs/expert-teams.md</code> 明确写死的行为：<strong>用户在 Dashboard 点取消，只取消主持人当前的流；已经排队或正在运行的成员任务不会被一并强杀</strong>，成员跑完后依然可能把结果回传并唤醒主持人。</p>
+<p>如果业务方要求一键急停整个任务树并且禁止任何后续外发，光在前端隐藏成员气泡没用，必须在服务端引入整棵任务树的取消传播、回调抑制和工具侧拦截。了解当前的真实停止语义，比把既有行为误解成页面漏消息重要得多。</p>
+<h2 id="团队与-subagent-别混着用">团队与 Subagent 别混着用<a class="anchor" href="#团队与-subagent-别混着用" aria-label="链接到本节">#</a></h2>
+<p>仓库里同时存在 <code>infra/agents/subagents/</code>（子 Agent）和 <code>infra/agents/teams/</code>（专家团队）。两者定位不同：子 Agent 是单个专家运行时内部临时派生出的子任务执行体，适合短平快的局部拆解；专家团队编排的是拥有独立账号归属、工作区、知识库、连接器权限和长期记忆的一等专家。能用单个专家加子 Agent 解决的流程，没必要硬建三四个长期专家来维护编制。</p>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/expert-teams.md"><code>docs/expert-teams.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/agent-interop-mailbox.md"><code>docs/agent-interop-mailbox.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/teams/jobs.py"><code>src/octop/infra/agents/teams/jobs.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/teams/team_manager.py"><code>src/octop/infra/agents/teams/team_manager.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/teams/service.py"><code>src/octop/infra/agents/teams/service.py</code></a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="10-extensions.html"><small>上一章</small><strong>工具与扩展：Skill、Plugin、Connector 与 MCP OAuth</strong></a><a class="next" href="12-security.html"><small>下一章</small><strong>安全边界：MFA、权限分离、审批串行与云凭证隔离</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：看懂一个 Agent 宿主如何拼起来</a><a href="../chapters/01-requirements.html"><span>01</span>需求推导：脱离模型 SDK 之后要守住什么</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：单进程宿主与四套可复用运行库</a><a href="../chapters/03-lifecycle.html"><span>03</span>启动与退出：装配顺序、延迟绑库与有序收尾</a><a href="../chapters/04-agent-runtime.html"><span>04</span>Agent 装配：原生专家、托管专家与中间件顺序</a><a href="../chapters/05-identity.html"><span>05</span>身份与会话：四种标识与共享专家的线程隔离</a><a href="../chapters/06-storage.html"><span>06</span>存储与历史：六类数据平面、下线归档与安全清理</a><a href="../chapters/07-workspace.html"><span>07</span>工作区后端：内容访问、对象存储与容器挂载边界</a><a href="../chapters/08-turn-path.html"><span>08</span>一次对话：从 WebSocket 入队到工具熔断与推送</a><a href="../chapters/09-memory-rag.html"><span>09</span>记忆与知识库：命名空间维护、图谱扩展与重排序</a><a href="../chapters/10-extensions.html"><span>10</span>工具与扩展：Skill、Plugin、Connector 与 MCP OAuth</a><a href="../chapters/11-teams.html"><span>11</span>多 Agent 团队：共享展示时间线，隔离执行状态</a><a href="../chapters/12-security.html"><span>12</span>安全边界：MFA、权限分离、审批串行与云凭证隔离</a><a href="../chapters/13-dashboard.html"><span>13</span>前端状态机：离线订阅、五道恢复门与历史竞态</a><a href="../chapters/14-interop.html"><span>14</span>跨端协作：托管 ACP 回环与 Bridge 实例隧道</a><a href="../chapters/15-operations.html"><span>15</span>部署与运维：Electron 壳、镜像分层与多副本租约</a><a href="../chapters/16-tradeoffs.html"><span>16</span>架构取舍：单机够用到何时，复杂度卡在哪里</a><a href="../chapters/17-mini-host.html"><span>17</span>代码实战：用两百行标准库模型验证六条边界</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.0.3b7 源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Octop v1.0.3b7 · 快照 ecd2cdbce3a5 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

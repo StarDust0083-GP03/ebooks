@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="源码拆解 PrimeIntellect-ai/prime-agent v0.10.5：Rust 多进程宿主、Protocol v3 Python REPL、持久信箱、递归子 Agent 与 Continual Harness"><meta name="author" content="独立源码研究">
+<title>宿主管认证、内核跑协议的 MCP 桥接层 · Prime Agent 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">PA</span><span>Prime Agent 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 11</div><div class="rail-title">宿主管认证、内核跑协议的 MCP 桥接层</div><ol><li><a href="#宿主侧-mcpmanager-绝不启动-mcp-子进程-只管认证与目录">宿主侧 McpManager：绝不启动 MCP 子进程，只管认证与目录</a></li><li><a href="#内核侧-rlm-mcp-按需发现-有界分页与进程卫生">内核侧 rlm.mcp：按需发现、有界分页与进程卫生</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 11 章</div><h1>宿主管认证、内核跑协议的 MCP 桥接层</h1><div class="chapter-meta">Prime Agent v0.10.5 快照 2026-11-21 · 约 12 分钟</div></header><div class="prose"><p>接过 Model Context Protocol（MCP）的人都知道它有两个天然痛点：第一，很多 MCP 服务需要 OAuth 2.0 登录、动态客户端注册、PKCE 交换、本地回调端口监听和令牌自动刷新，把这些交互塞进 Python 子进程里既难和桌面浏览器配合，又容易让运行在 REPL 里的模型代码直接翻到磁盘凭据；第二，一个企业工作区动辄挂五六个 MCP 服务、几百个工具 Schema，如果像传统客户端那样在启动时把所有工具定义全塞进大模型的 <code>tools</code> 参数数组，还没开始干活上下文就已经被工具声明吃掉两万 Token。</p>
+<p>Prime Agent 给出的架构解法非常干脆：<strong>劈成两半</strong>。Rust 宿主管配置、目录、权限和 OAuth 凭据，Python 内核管真正的 MCP 客户端连接和按需协议调用；而且所有 MCP 工具都不进大模型的 JSON 工具定义数组，全部变成 <code>python_repl</code> 里的程序化异步调用。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 282" width="480" height="282" role="img" aria-label="MCP 桥接职责划分与安全信任边界">
+<title>MCP 桥接职责划分与安全信任边界</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="12" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.6" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">MCP 宿主/内核切分与真实安全边界（进程隔离 ≠ 安全沙箱）</text><rect x="8" y="24" width="224" height="118" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.4"/><text x="17" y="41" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Rust 宿主侧 (pa-core/src/mcp + skills)</text><text x="17" y="56" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">• 凭据存储与 OAuth 2.0 (RFC 9728 + PKCE)</text><text x="17" y="69" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">• 本地回调端口 + 令牌刷新</text><text x="17" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">• 响应 mcp.config / mcp.refresh / login</text><text x="17" y="95" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">• 仓库级技能 (SourceScope::Project)</text><text x="17" y="108" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">  禁止自动导入内核，只作 Markdown 文档</text><text x="17" y="121" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">• 目录查询响应不返回原始凭据</text><rect x="248" y="24" width="224" height="118" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="257" y="41" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Python 内核侧 (rlm/mcp.py + 外部服务)</text><text x="257" y="56" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">• 启动 stdio 或连接 Streamable HTTP MCP</text><text x="257" y="69" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">• 子进程仅透传 _SAFE_ENV 基础变量</text><text x="257" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">• tools/list 分页上限 25 页防卡死</text><text x="257" y="95" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">• 关闭超时 2.5s (严于宿主 5s 强杀线)</text><text x="257" y="108" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">• stderr 限 8 KiB / 40 行并正则脱敏</text><text x="257" y="121" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">• mcp.call_tool 原样透传实时结果</text><line x1="232" y1="66" x2="248" y2="66" stroke="var(--forest)" stroke-width="1.1" marker-end="url(#arrow)"/><line x1="248" y1="102" x2="232" y2="102" stroke="var(--muted)" stroke-width="1.1" stroke-dasharray="4 3" marker-end="url(#arrow)"/><rect x="8" y="160" width="464" height="92" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.4"/><text x="17" y="177" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">操作系统权限现实（README.md 明确声明的边界）</text><text x="17" y="192" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">1. Worker 与 Python 内核以当前用户权限运行模型生成的 Python 代码与 bash() 命令</text><text x="17" y="205" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">2. 进程隔离只解决生命周期回收与故障恢复，不构成恶意代码或提示词注入的安全沙箱</text><text x="17" y="218" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">3. 自主质量门禁的 Git 快照已禁用 fsmonitor/钩子/外部 diff，但 .gitattributes 过滤器仍无法关闭</text><text x="17" y="231" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">4. 处理不可信仓库或指令时，必须在外部容器、虚拟机或云端沙箱中隔离运行</text><text x="8" y="270" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.5" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">Rust 全工作区开启 unsafe_code = forbid；密钥不进埋点（pa-telemetry 仅发基础类型）。</text>
+</svg><figcaption>MCP 桥接职责划分与安全信任边界</figcaption></figure>
+<p>这张图同时标出了 MCP 的职责分界与整套系统的底层权限现实。先看上半部分的 MCP 桥接，再在第 13 章展开下半部分的安全边界。</p>
+<h2 id="宿主侧-mcpmanager-绝不启动-mcp-子进程-只管认证与目录">宿主侧 <code>McpManager</code>：绝不启动 MCP 子进程，只管认证与目录<a class="anchor" href="#宿主侧-mcpmanager-绝不启动-mcp-子进程-只管认证与目录" aria-label="链接到本节">#</a></h2>
+<p>翻开 <code>crates/pa-core/README.md</code> 和 <code>crates/pa-core/src/mcp/</code>（18 个模块），顶部就写明了一条非目标边界：<strong>会话引擎从不自己启动任何 MCP 服务进程</strong>。<code>McpManager</code> 专注管好三件事：</p>
+<p><strong>配置解析与目录视图</strong>，汇总内置服务目录、用户 <code>settings.json</code> 里的 <code>mcpServers</code> 声明以及共享凭据库中的连接状态。操作者在终端打开 <code>/mcp</code> 面板查看服务卡片（<code>service_catalog_views</code>）和 API Key 凭据行（<code>api_key_credential_views</code>，例如网页搜索密钥）时，全部从宿主本地状态直接出图，不阻塞去往返查询 Python 内核。</p>
+<p><strong>完整的 OAuth 2.0 认证链路</strong>，<code>crates/pa-core/src/mcp/oauth*.rs</code> 实现了 RFC 9728 资源元数据发现、动态客户端注册、PKCE 挑战、本地 HTTP 回调监听（支持桌面应用固定注册回调端口，如 Slack 公共桌面客户端配置，以及动态端口候选区间）与令牌刷新。登录成功后，凭据按服务端点绑定写入共享认证存储，且通过 <code>pa-daemon</code> 的 <code>WorkerMcpLoginUi</code> 桥接把登录提示送达当前挂载的终端。</p>
+<p><strong>三个受控宿主请求接口</strong>，向 Python 内核暴露 <code>mcp.config</code>、<code>mcp.refresh</code> 和可选的 <code>mcp.begin_login</code> 三个 <code>host_request</code> 处理器。当内核里的模型代码想要调用某个服务时，内核按需向宿主索取该连接的解析配置或刷新后的访问信息；而面向模型探索的目录查询接口（<code>list_plugins</code>、<code>search_plugins</code>、<code>list_connections</code>）只返回白名单元数据，绝不把原始凭据吐给模型。</p>
+<h2 id="内核侧-rlm-mcp-按需发现-有界分页与进程卫生">内核侧 <code>rlm.mcp</code>：按需发现、有界分页与进程卫生<a class="anchor" href="#内核侧-rlm-mcp-按需发现-有界分页与进程卫生" aria-label="链接到本节">#</a></h2>
+<p>真正的 MCP 传输协议跑在 <code>prime-agent-runtime/src/rlm/mcp.py</code>（1,075 行）和 <code>mcp_base.py</code>（337 行）里。模型在 REPL 中面向两个清晰的表面：</p>
+<p><strong>按需发现面</strong>，避免把几百个工具声明预先灌进系统提示词。模型可以用 <code>await mcp.list_connections()</code> 查已连接服务，用 <code>await mcp.search_tools(query, connection_id=..., limit=20)</code> 在最多 8 个活跃服务（<code>_MAX_TOOL_SEARCH_SERVERS = 8</code>）里搜索工具名和描述，或者用 <code>await mcp.describe_tool(connection_id, tool)</code> 单独拉取某一个工具的 <code>inputSchema</code>。</p>
+<p><strong>实时调用面</strong>，<code>await mcp.list_tools(server)</code> 和 <code>await mcp.call_tool(server, tool, arguments=...)</code>。调用时，<code>_Generation</code> 生命周期管理器按需懒加载对应的 stdio 子进程或 Streamable HTTP 连接，加锁串行化调用，原样透传工具 Schema 与实时返回值。</p>
+<p>因为外部 MCP 服务质量参差不齐，<code>mcp.py</code> 里塞满了针对故障服务的防御性常量：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>防御项</th>
+<th>源码常量</th>
+<th>保护目标</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>启动握手超时</td>
+<td><code>_DEFAULT_STARTUP_TIMEOUT = 20.0</code> 秒</td>
+<td>防止卡死的 stdio 服务永久挂起首次连接</td>
+</tr>
+<tr>
+<td>单次工具调用超时</td>
+<td><code>_DEFAULT_CALL_TIMEOUT = 60.0</code> 秒</td>
+<td>对齐默认单元格超时，避免失联服务拖垮调用</td>
+</tr>
+<tr>
+<td>优雅关闭超时</td>
+<td><code>_SHUTDOWN_TIMEOUT = 2.5</code> 秒</td>
+<td>严格小于宿主的 <code>KERNEL_SHUTDOWN_TIMEOUT_MS</code>（5 秒），确保内核退出前能体面回收所有 MCP 子进程</td>
+</tr>
+<tr>
+<td>分页列表上限</td>
+<td><code>_MAX_TOOL_PAGES = 25</code> 页</td>
+<td>遇到死循环游标或无限翻页的恶意/故障服务时直接抛出 <code>McpDiscoveryError</code>，绝不把残缺工具表当成完整列表发布</td>
+</tr>
+<tr>
+<td>环境变量白名单</td>
+<td><code>_SAFE_ENV = (&quot;HOME&quot;, &quot;PATH&quot;, &quot;TMPDIR&quot;, &quot;TEMP&quot;, &quot;TMP&quot;, &quot;SystemRoot&quot;, &quot;WINDIR&quot;)</code></td>
+<td>启动 stdio MCP 子进程时只透传极简基础环境变量，避免把宿主的全部敏感环境变量顺手泄露给第三方 MCP 工具</td>
+</tr>
+<tr>
+<td>错误输出裁剪与脱敏</td>
+<td><code>_STDERR_BYTE_LIMIT = 8 KiB</code>、<code>_STDERR_LINE_LIMIT = 40</code> 行</td>
+<td><code>_StderrTail</code> 独立管道线程截断诊断日志，并用 <code>_SECRET_KEY_PATTERN</code> 和敏感值表清理可能渗入报错的 Token、密码或私钥，同时过滤 ANSI 转义与控制字符</td>
+</tr>
+</tbody></table></div>
+<p>此外，在 <code>crates/pa-daemon/src/mcp_connections.rs</code> 中，当 <code>/mcp</code> 界面确实需要展示每个活跃连接的实时工具清单时，守护进程会通过前面第 4 章提到的带外 <code>mcp_status</code> 通道（默认每服务 10 秒超时）并行拉取，既不阻塞用户正在跑的 Python 单元格，又把单个故障服务的报错隔离在对应连接行里。仓库里还专门配有端到端真机回归测试 <code>crates/pa-daemon/tests/mcp_product_path_e2e.rs</code>，用真实的 Worker、Python 内核和 <code>mcp_echo_server.py</code> 走完 <code>mcp.config</code> 到 <code>mcp.call_tool</code> 全链路。</p>
+<p>后端引擎、多进程守护、信箱、提示词、压缩与 MCP 桥接全部就位后，还有一个最容易被低估的层面决定这套系统用起来到底顺不顺手：终端界面（TUI）如何做到毫秒级首帧、不卡顿地渲染流式代码和信箱卡片，以及后台怎么悄悄把可观测性做扎实。这就是下一章的主题。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="10-context-compaction-autonomy.html"><small>上一章</small><strong>自动压缩、目标驱动与有界自主运行</strong></a><a class="next" href="12-tui-observability.html"><small>下一章</small><strong>把渲染留在关键路径上：TUI 卡片、延迟护栏与可观测性</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：把长程自主编程收进一个持久 Python REPL</a><a href="../chapters/01-why-rlm.html"><span>01</span>为什么传统工具调用在长程任务上会失速</a><a href="../chapters/02-workspace-topology.html"><span>02</span>十个 Rust Crate 与一层 Python 运行时的双层拓扑</a><a href="../chapters/03-agent-loop.html"><span>03</span>Turn 循环、Claim-First 抢占与三层消息队列</a><a href="../chapters/04-python-repl.html"><span>04</span>Protocol v3 内核：<code>python_repl</code> 如何把状态、输出和中断管稳</a><a href="../chapters/05-bash-edit-skills.html"><span>05</span>单工具收口下的程序化工具链：<code>bash</code>、<code>edit</code> 与可执行技能</a><a href="../chapters/06-subagents-delegation.html"><span>06</span>递归子 Agent 树、Spawn 账本与状态机工厂</a><a href="../chapters/07-agent-inbox.html"><span>07</span>持久信箱 <code>rlm.inbox</code> 与跨进程消息投递</a><a href="../chapters/08-session-search-acp.html"><span>08</span>会话生命周期、流式全文搜索与 ACP 外部协议</a><a href="../chapters/09-prompt-continual-harness.html"><span>09</span>分层系统提示词与 Continual Harness 自我改进</a><a href="../chapters/10-context-compaction-autonomy.html"><span>10</span>自动压缩、目标驱动与有界自主运行</a><a href="../chapters/11-mcp-bridge.html"><span>11</span>宿主管认证、内核跑协议的 MCP 桥接层</a><a href="../chapters/12-tui-observability.html"><span>12</span>把渲染留在关键路径上：TUI 卡片、延迟护栏与可观测性</a><a href="../chapters/13-security-cost-mini-model.html"><span>13</span>安全边界、成本账本与可运行教学模型</a><a href="../chapters/appendix-sources.html"><span>A</span>源码索引、关键常量表、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Prime Agent v0.10.5 · 快照 783acb5d72a9 · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

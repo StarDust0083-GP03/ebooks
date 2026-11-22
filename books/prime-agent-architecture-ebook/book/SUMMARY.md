@@ -1,0 +1,17 @@
+# 目录
+
+0. [前言：把长程自主编程收进一个持久 Python REPL](chapters/00-preface.md)
+1. [为什么传统工具调用在长程任务上会失速](chapters/01-why-rlm.md)
+2. [十个 Rust Crate 与一层 Python 运行时的双层拓扑](chapters/02-workspace-topology.md)
+3. [Turn 循环、Claim-First 抢占与三层消息队列](chapters/03-agent-loop.md)
+4. [Protocol v3 内核：`python_repl` 如何把状态、输出和中断管稳](chapters/04-python-repl.md)
+5. [单工具收口下的程序化工具链：`bash`、`edit` 与可执行技能](chapters/05-bash-edit-skills.md)
+6. [递归子 Agent 树、Spawn 账本与状态机工厂](chapters/06-subagents-delegation.md)
+7. [持久信箱 `rlm.inbox` 与跨进程消息投递](chapters/07-agent-inbox.md)
+8. [会话生命周期、流式全文搜索与 ACP 外部协议](chapters/08-session-search-acp.md)
+9. [分层系统提示词与 Continual Harness 自我改进](chapters/09-prompt-continual-harness.md)
+10. [自动压缩、目标驱动与有界自主运行](chapters/10-context-compaction-autonomy.md)
+11. [宿主管认证、内核跑协议的 MCP 桥接层](chapters/11-mcp-bridge.md)
+12. [把渲染留在关键路径上：TUI 卡片、延迟护栏与可观测性](chapters/12-tui-observability.md)
+13. [安全边界、成本账本与可运行教学模型](chapters/13-security-cost-mini-model.md)
+- [源码索引、关键常量表、术语与核验命令](chapters/appendix-sources.md)

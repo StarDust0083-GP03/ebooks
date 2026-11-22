@@ -1,0 +1,74 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>数据平面：execd-as-init、命令流与文件语义 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="09-execd"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#osep-0018-execd-as-init-成为默认拓扑">OSEP-0018：`execd-as-init` 成为默认拓扑</a></li><li><a href="#沙箱级令牌与预热复用时的绑定门禁">沙箱级令牌与预热复用时的绑定门禁</a></li><li><a href="#命令执行-16-mib-切分与-commandtimeout">命令执行、16 MiB 切分与 `CommandTimeout`</a></li><li><a href="#代码执行-pty-与文件系统的防呆边界">代码执行、PTY 与文件系统的防呆边界</a></li><li><a href="#otlp-磁盘指标与共享反向代理池">OTLP 磁盘指标与共享反向代理池</a></li><li><a href="#源码入口">源码入口</a></li></ol></details><article class="content"><h1 id="数据平面-execd-as-init-命令流与文件语义">数据平面：execd-as-init、命令流与文件语义</h1><p>把执行守护进程塞进不可信沙箱里，最容易出事故的地方集中在进程树失控和流式边界含糊：容器里跑了几百条 Agent 命令后堆满僵尸进程；主进程被 <code>kill</code> 却传不出真实退出码；一条没换行的 200 MB 日志直接把守护进程吃 OOM；文件覆盖上传写到一半断网，把仓库里原本完好的配置文件截断成半截垃圾。</p>
+<p><code>components/execd/</code>（Go + Gin，默认监听 <code>44772</code>）是 OpenSandbox 的沙箱内执行平面。它随 Docker 暂存、Kubernetes <code>execd-installer</code> init 容器或 Fast Sandbox 黄金镜像进入沙箱，在 <code>release-1.3.0</code> 里更是直接站到了进程树顶端。</p>
+<h2 id="osep-0018-execd-as-init-成为默认拓扑">OSEP-0018：<code>execd-as-init</code> 成为默认拓扑</h2><p>在 <code>1.2.1</code> 及更早版本中，<code>bootstrap.sh</code> 自己当容器 PID 1，把 <code>execd</code> 丢在后台，再拉起用户 <code>entrypoint</code>。这套经典拓扑有三个硬伤：孤儿进程容易积成僵尸；外部发给容器的信号和退出码很难精准透传；更麻烦的是，用户 <code>entrypoint</code> 不经 <code>execd</code> 启动，哪怕镜像里开启了进程降权地板，入口进程依然拿着完整的容器上限权限在跑，能力探针只能老实回报 <code>degraded</code>。</p>
+<p>从 <code>1.3.0-rc.1</code> 起，<code>runtime.execd_run_as_init</code> 默认值改为 <code>true</code>。服务端在 Docker、Kubernetes 和 Fast Sandbox 模板渲染时注入 <code>EXECD_INIT=1</code>，<code>bootstrap.sh</code> 末尾执行 <code>exec execd --init -- &lt;entrypoint&gt;</code>，让 <code>execd</code> 直接成为容器 PID 1（在 Fast Sandbox 模板里则是 guest init 下的 subreaper）。</p>
+<figure class="diagram"><img src="../assets/diagrams/execd-init.svg" alt="图 3：OSEP-0018 默认拓扑对比与 opensandbox-launcher 降权链。开启 EXECD_INIT=1 后，execd 接管容器 PID 1 或 FSB subreaper，经单一 waitid reaper 回收孤儿并把降权地板覆盖到镜像入口进程。" width="1100" height="860"><figcaption>图 3：OSEP-0018 默认拓扑对比与 opensandbox-launcher 降权链。开启 EXECD_INIT=1 后，execd 接管容器 PID 1 或 FSB subreaper，经单一 waitid reaper 回收孤儿并把降权地板覆盖到镜像入口进程。</figcaption></figure>
+
+<p>翻开 <code>components/execd/pkg/runtime/initmode_linux.go</code>（801 行），几个实现细节直接解释了它为什么靠谱：</p>
+<ul>
+<li><strong>单一 <code>waitid</code> 回收器</strong>：全进程只有唯一一个 reaper 调用 <code>SYS_WAITID</code>，绝不混用 Go 标准库的 <code>os/exec.Cmd.Wait</code>，并在启动子进程与注册子进程之间持有注册表锁，从结构上消灭启动与回收的竞态。无主孤儿由 reaper 自动回收并记日志。</li>
+<li><strong>精准信号处理与 PID 1 信号盾</strong>：<code>execd</code> 转发 <code>SIGTERM</code>、<code>SIGHUP</code>、<code>SIGUSR1</code>、<code>SIGUSR2</code>、<code>SIGWINCH</code> 给用户 <code>entrypoint</code>，并把入口退出码原样透传给底层运行时。作为容器 PID 1，内核天然屏蔽了沙箱内发出的 <code>kill -9 1</code>；而 <code>SIGTERM</code> 故意不屏蔽，收到后转发给入口进程并在默认 10 秒宽限期（<code>initShutdownGrace</code>）内收尾，这是 Kubernetes <code>Restart</code> 池回收策略依赖的停止契约。同时 <code>execd</code> 把自身标为 <code>non-dumpable</code>，防止沙箱内代码通过 <code>/proc/1/environ</code> 偷走它的访问令牌。</li>
+<li><strong>配合 <code>opensandbox-launcher</code> 落实进程降权地板</strong>：镜像里通过 <code>EXECD_ISOLATION_CONFIG</code> 指定一份 TOML 配置（如仓内自带的 <code>components/execd/configs/isolation.hardened.toml</code>）并开启 <code>[hardening] enabled = true</code> 后，<code>execd</code> 通过原生辅助程序 <code>opensandbox-launcher</code> 拉起所有用户代码进程（涵盖镜像 entrypoint、<code>/command</code>、Shell 会话与 PTY）。在 <code>fork</code> 到 <code>execve</code> 之间按固定顺序剥离 execd 凭据环境变量、裁剪 capability bounding set、设置 <code>no_new_privs</code>、切换身份与保留能力、加载可选 Landlock 文件系统白名单、最后安装 seccomp 系统调用拒绝列表。配置语法错误在启动期致命退出，运行时缺失内核特性（例如当前 Fast Sandbox guest 内核不含 Landlock）则按 fail-open 契约跳过并在能力接口中如实标为 <code>unsupported</code>。</li>
+</ul>
+<h2 id="沙箱级令牌与预热复用时的绑定门禁">沙箱级令牌与预热复用时的绑定门禁</h2><p>除永远开放的 <code>/ping</code> 和 <code>/ready</code> 外，所有业务端点共享沙箱级令牌 <code>X-EXECD-ACCESS-TOKEN</code>。</p>
+<p>为了支撑预热池里的 Pod 跨分配安全复用，<code>components/execd/pkg/binding/</code> 实现了一道原子门禁：暖 Pod 分配给具体沙箱时，平台下发 per-allocation 绑定（沙箱 ID、环境变量、访问令牌、生命周期钩子），<code>execd</code> 在完成原子应用前，除健康探针外的所有业务端点一律返回 <code>503</code>。上一任沙箱的环境、凭据和遥测归属因此绝不会漏进下一任。</p>
+<h2 id="命令执行-16-mib-切分与-commandtimeout">命令执行、16 MiB 切分与 <code>CommandTimeout</code></h2><p><code>/command</code> 同时接受 shell 语法和直接 <code>argv</code>（绕过 shell 解析，适合拼入不可信参数）。前台走 SSE 实时推流，后台立即返回并保留已完成任务日志 24 小时（运行中任务永不被清）。</p>
+<p>围绕流式命令执行，最近两个版本补上了几处实打实的线上防爆机制：</p>
+<ul>
+<li><strong>前台超时独立为 <code>CommandTimeout</code></strong>：<code>1.3.0-rc.2</code> 把前台命令超时事件名从宽泛的 <code>CommandExecError</code> 拆成了专门的 <code>CommandTimeout</code>（退出码 <code>-1</code>），并在日志、traceback 和状态里记录请求的超时时长，调用方不再靠解析字符串猜超时。</li>
+<li><strong>单行超 16 MiB 按 UTF-8 边界切块</strong>：<code>components/execd/pkg/runtime/output_limits.go</code> 将扫描行上限钉在 <code>16 * 1024 * 1024</code> 字节。以往一条 200 MB 无换行输出会直接把 <code>execd</code> 撑爆 OOM，现在超长行按合法 UTF-8 字符边界分段推送，仅最后一段携带原始行尾。</li>
+<li><strong>三条契约底线</strong>：原始行尾（<code>\n</code>/<code>\r</code>/<code>\r\n</code>）原样透传；前台成功结束携带 <code>execution_complete</code> 与 <code>exit_code: 0</code>；终止事件前断流视为结果不确定。为照顾老版本 Kotlin/JVM 客户端（<code>sandbox-api &lt; 1.0.18</code>）因 <code>kotlinx-serialization</code> 未知字段触发 <code>AbstractMethodError</code> 挂死的旧账，保留了默认关闭的 <code>EXECD_SSE_LEGACY_COMPAT</code> 开关，不过官方推荐直接升级带阴影依赖的新版 SDK。</li>
+</ul>
+<p>有状态 Shell 会话（<code>/session</code>）在多次调用间保留环境变量与工作目录，合并 stdout 与 stderr 为单路事件流，并在最小镜像里自动从 <code>bash</code> 回退到 POSIX <code>sh</code>；<code>1.2.1</code> 起删除 Bash 会话会连带终止所有仍在运行中的命令。</p>
+<h2 id="代码执行-pty-与文件系统的防呆边界">代码执行、PTY 与文件系统的防呆边界</h2><p><strong>Jupyter 代码上下文（<code>/code</code>）</strong>。<code>execd</code> 托管持久 Jupyter 内核，支持在 <code>JUPYTER_TOKEN</code> 未设时自动发现运行时令牌文件。<code>1.3.0-rc.2</code> 为 <code>/code</code> 增加了回复锚定收尾超时 <code>--jupyter-reply-finalize-timeout</code>（默认 2 秒，输出静默时重置），防止内核完成信号丢失导致 SSE 流永不关闭、会话锁死锁。此外，非法工作目录或非内核语言上下文查询现改为立即返 <code>400</code>，不再白白重试 5 分钟后返 <code>500</code>。</p>
+<p><strong>交互式 PTY（<code>/pty</code>）</strong>，采用一持有者（可写键盘）、多观看者（回放历史 + 实时只读）的 WebSocket 模型。浏览器无法自定义 WS 握手头，因此允许在子协议里同时提供 <code>opensandbox-pty</code> 与无填充 base64url 编码的凭据子协议；但只要请求带了显式 <code>X-EXECD-ACCESS-TOKEN</code> 头，即便值为空或非法也绝不回退到子协议。关闭 PTY 时先发 <code>SIGHUP</code> 并等待最多 500 ms 再清理进程组，兼容 <code>nohup</code> 等忽略 HUP 的后台作业。</p>
+<p><strong>文件系统（<code>/files/*</code>）与隔离会话（<code>/v1/isolated/*</code>）</strong>。文件上传采用<strong>先写同目录隐藏暂存文件（<code>.osb-upload-</code> / <code>.osb-staging-</code>）再 <code>rename</code> 原子替换</strong>，避免断流截断旧文件；目录只读但目标文件可写时回退到原地截断写入。<code>1.3.0-rc.2</code> 堵住了两处路径漏洞：批量重命名在移动任何项前先整体校验，且所有文件 API 一律拒绝展开后的空路径（关闭了 <code>{&quot;&quot;: {&quot;mode&quot;: 700}}</code> 误改守护进程工作目录权限的洞）；同时未命中变量的 <code>$</code> 字面量（如 Java 内部类 <code>Outer$1.class</code>）保持原样不再错误展开。</p>
+<p>Linux 下可信后端还能通过 <code>/v1/filesystem/{uid}/{gid}</code> 在独立 worker 进程里按指定 UID/GID 执行文件操作（不继承 <code>execd</code> 补充组与环境变量），但文档写得很直白：它没有独立 mount namespace，不是租户隔离边界。</p>
+<p>隔离会话（<code>/v1/isolated/*</code>）基于 bubblewrap 为每次会话创建私有挂载命名空间，创建耗时约 100 ms，后续 <code>run</code> 复用同一进程。<code>diff</code>/<code>commit</code> 仍未实现并返回 <code>503</code>，<code>/v1/isolated/capabilities</code> 如实上报支持状态。</p>
+<h2 id="otlp-磁盘指标与共享反向代理池">OTLP 磁盘指标与共享反向代理池</h2><p>除了 CPU 与内存快照（<code>/metrics</code>）以及在 <code>1.3.0-rc.2</code> 修正为准确每秒推送一次的 <code>/metrics/watch</code>，<code>execd</code> 的 OTLP 遥测管道（<code>components/execd/pkg/telemetry/init.go</code>）新增了磁盘指标：</p>
+<ul>
+<li>每挂载点用量仪表 <code>execd.system.disk.usage_bytes</code> 与 <code>execd.system.disk.total_bytes</code>（带 <code>mountpoint</code>/<code>fstype</code>/<code>source</code> 属性），每次挂载点 stat 均设 2 秒硬超时，防止卡死的网络挂载拖垮整个采集管线；</li>
+<li>累计 IO 计数器 <code>execd.system.disk.io.bytes</code> 与 <code>execd.system.disk.io.operations</code>，优先读取沙箱 cgroup 统计，缺失时回退到 <code>/proc/diskstats</code>。</li>
+</ul>
+<p>最后，支撑单端口复用的内置反向代理 <code>/proxy/{port}</code> 在 <code>1.3.0-rc.1</code> 改用共享上游连接池，解决了以往按请求新拨连接并滞留 socket 600 秒的泄露问题。</p>
+<h2 id="源码入口">源码入口</h2><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>components/execd/pkg/runtime/initmode_linux.go</code></td>
+<td>OSEP-0018 单一 <code>waitid</code> reaper、信号转发与 PID 1 退出语义（801 行）</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/runtime/hardening_linux.go</code></td>
+<td><code>opensandbox-launcher</code> 降权链与能力探测上报（685 行）</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/runtime/output_limits.go</code></td>
+<td>16 MiB UTF-8 边界行切分常量与逻辑</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/web/controller/command.go</code></td>
+<td>前台 SSE、<code>CommandTimeout</code> 与后台日志管理</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/web/controller/pty_ws.go</code></td>
+<td>PTY 持有者/观看者模型与子协议鉴权</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/telemetry/init.go</code></td>
+<td>OTLP CPU/内存/磁盘指标导出与 2 秒挂载超时</td>
+</tr>
+<tr>
+<td><code>docs/guides/privilege-reduction.md</code></td>
+<td><code>EXECD_INIT=1</code> 与 <code>isolation.hardened.toml</code> 落地指南</td>
+</tr>
+<tr>
+<td><code>oseps/0018-execd-as-sandbox-init.md</code></td>
+<td>execd-as-init 设计提案</td>
+</tr>
+</tbody></table>
+</article><nav class="pager" aria-label="篇章导航"><a href="08-fast-sandbox.html"><small>上一篇</small>Fast Sandbox：模板、Fastlet 与 Firecracker</a><a href="10-ingress.html"><small>下一篇</small>入向网络：endpoint 解析、ingress 与访问续期</a></nav></main><script src="../assets/wiki.js"></script></body></html>

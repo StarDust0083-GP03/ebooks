@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 Octop v1.0.3b7 源码的架构解剖：单进程宿主、托管专家、多层存储、多副本租约与安全边界"><meta name="author" content="独立源码研究">
+<title>部署与运维：Electron 壳、镜像分层与多副本租约 · Octop 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">O</span><span>Octop 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 15</div><div class="rail-title">部署与运维：Electron 壳、镜像分层与多副本租约</div><ol><li><a href="#三种交付形态的真实边界">三种交付形态的真实边界</a></li><li><a href="#多副本集群-cookie-粘滞加同行租约">多副本集群：Cookie 粘滞加同行租约</a></li><li><a href="#定时任务与-im-通道如何做到多副本单活">定时任务与 IM 通道如何做到多副本单活</a></li><li><a href="#备份边界与分层测试矩阵">备份边界与分层测试矩阵</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 15 章</div><h1>部署与运维：Electron 壳、镜像分层与多副本租约</h1><div class="chapter-meta">Octop v1.0.3b7 快照 2026-11-18 · 约 18 分钟</div></header><div class="prose"><p>自托管软件最容易在“装得上”和“扛得住”之间劈叉：给个人用的桌面安装包要做到点两下就能跑，给小团队用的容器集群又要做到不停服滚动升级、不丢数据、飞书和定时任务不双活乱撞。到了 <code>v1.0.3b7</code>，Octop 在打包形态和集群运维上已经把这两条线收口得非常清楚。</p>
+<h2 id="三种交付形态的真实边界">三种交付形态的真实边界<a class="anchor" href="#三种交付形态的真实边界" aria-label="链接到本节">#</a></h2>
+<p>在 <code>v1.0.3b3</code> 到 <code>v1.0.3b6</code> 之间，Octop 对桌面端、容器镜像和 NAS 包做了一次彻底的分层瘦身：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>分发形态</th>
+<th>核心构成</th>
+<th>包含的扩展能力</th>
+<th>注意事项</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>桌面安装器 / 绿色便携包</td>
+<td>Electron 45 壳 + 绿色 Python 运行时 + Dashboard</td>
+<td>仅捆绑 <code>browser</code> 扩展，桌面控制、OCR 与本地嵌入不内置</td>
+<td><code>v1.0.3b5</code> 彻底移除 Wails；桌面壳只管拉起随机本地回环端口的 Python sidecar、托盘和窗口，登录过期自动续上，拒绝进程内自更新</td>
+</tr>
+<tr>
+<td>Docker 精简版（<code>:1.0.3b7</code> / <code>:latest</code>）</td>
+<td>Python 核心 + Dashboard + Playwright</td>
+<td>轻量运行，默认镜像标签自 <code>v1.0.3b4</code> 起指向精简版</td>
+<td>宿主机目录挂进 Docker 专家仅在容器部署模式下保留（见第 7 章）</td>
+</tr>
+<tr>
+<td>Docker 完整版（<code>:1.0.3b7-full</code> / <code>:full</code>）</td>
+<td>精简版 + 虚拟桌面 + OCR + 本地 ONNX 嵌入</td>
+<td>含桌面流控、<code>rapidocr</code>、<code>fastembed</code></td>
+<td>虚拟桌面和系统浏览器自 <code>v1.0.3b2</code> 起默认不随进程启动，按需开启</td>
+</tr>
+<tr>
+<td>飞牛 fnOS NAS 包</td>
+<td>Docker 精简 / 完整 <code>.fpk</code> 与原生 x86/ARM <code>.fpk</code></td>
+<td>覆盖带或不带 Docker 的 NAS 环境</td>
+<td>原生包不依赖 Docker daemon</td>
+</tr>
+</tbody></table></div>
+<p>还要注意桌面端和远程桌面的名字撞车：<code>desktop/</code> 目录是本机 Electron 客户端壳（基于 pnpm 12.15 + Node 24 构建，运行时采用 Electron 45 内置 Node 24.22 与 Chromium 156），负责托管 sidecar 进程树并在收到 <code>Ctrl+C</code>/<code>SIGTERM</code>/<code>SIGHUP</code> 时优雅清理子进程组；而 <code>src/octop/infra/control/desktop/</code> 才是给 Agent 看屏幕和点鼠标用的远程虚拟桌面流控模块。</p>
+<p>对于已经在使用其他开源助手的老用户，<code>v1.0.3b5</code> 还提供了 <code>octop migrate openclaw</code> 和 <code>octop migrate hermes</code>（<code>src/octop/infra/migration/</code>），可以把原有配置直接迁成一位 Octop 专家，降低切换成本。</p>
+<h2 id="多副本集群-cookie-粘滞加同行租约">多副本集群：Cookie 粘滞加同行租约<a class="anchor" href="#多副本集群-cookie-粘滞加同行租约" aria-label="链接到本节">#</a></h2>
+<p>如果一台 SQLite 实例已经撑满，或者希望升级时先拉起新版本再停旧版本，<code>v1.0.3b6</code> 发布的官方 Helm Chart（<code>deploy/helm/octop/</code>）和集群指南（<code>docs/cluster_CN.md</code>）给出了不引入外部消息队列的多副本解法。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 270" width="420" height="270" role="img" aria-label="多副本集群的 Cookie 粘滞与数据库同行租约">
+<title>多副本集群的 Cookie 粘滞与数据库同行租约</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="11" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.1" font-weight="600" fill="var(--muted)" text-anchor="start">v1.0.3b6 Helm 多副本：Cookie 粘滞管实时流，数据库同行租约管后台单活</text><rect x="130" y="22" width="160" height="38" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="139" y="38" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="600" fill="var(--ink)" text-anchor="start">反向代理 / Ingress</text><text x="139" y="52.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">按 Cookie 粘滞（禁按来源 IP）</text><rect x="14" y="82" width="176" height="74" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="23" y="98" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="600" fill="var(--ink)" text-anchor="start">Octop 副本 A</text><text x="23" y="112.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">内存专家 + 实时 WS 推送</text><text x="23" y="124.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">持有通道/Cron 租约（90s）</text><text x="23" y="137.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">独立本机盘：/data/.octop</text><rect x="230" y="82" width="176" height="74" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="239" y="98" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="600" fill="var(--ink)" text-anchor="start">Octop 副本 B</text><text x="239" y="112.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">内存专家 + 实时 WS 推送</text><text x="239" y="124.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">每 25s 巡检过期租约接管</text><text x="239" y="137.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">独立本机盘（严禁 NFS 共写）</text><line x1="182" y1="60" x2="102" y2="82" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><line x1="238" y1="60" x2="318" y2="82" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><rect x="14" y="182" width="392" height="58" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="23" y="198" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="600" fill="var(--ink)" text-anchor="start">共享 PostgreSQL 16 + pgvector</text><text x="23" y="212.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">控制面 · 技能包源 · 知识库原文与向量 · 专家记忆 · 腾讯云凭证</text><text x="23" y="224.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">租约常量（infra/db/lease.py）：TTL 90s · 续约 30s · 巡检接管 25s · 退出主动释放</text><line x1="102" y1="156" x2="156" y2="182" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><line x1="318" y1="156" x2="264" y2="182" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><text x="8" y="258" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start">工作区若留在容器临时盘会随 Pod 销毁；集群模式应配 PG / S3 / COS / TOS / OpenSandbox。</text>
+</svg><figcaption>多副本集群的 Cookie 粘滞与数据库同行租约</figcaption></figure>
+<p>整套集群架构由三条硬规则托住：</p>
+<ol>
+<li><strong>所有共享资产收进同一台 PostgreSQL 16 + <code>pgvector</code></strong>：用户、角色、模型、连接器、通道、定时任务、JWT 密钥、技能包源文件、知识库原文与向量、专家记忆（每专家按 <code>agent_&lt;id&gt;</code> 命名空间隔离）以及多实例共享的腾讯云 CVM 授权全部在库里。注意数据库层面仍然是单点，高可用靠托管 PostgreSQL 或主从复制解决，Octop 本身不替代数据库故障转移。</li>
+<li><strong>前置入口必须按 Cookie 粘滞，绝不按来源 IP 粘滞</strong>：浏览器的实时流和轨迹只由接手这轮对话的那台实例在内存里持有并推送。反向代理或 Kubernetes Ingress 用 Cookie 把同一浏览器固定到同一台副本；一旦按来源 IP 粘滞，所有经过公司出口 NAT 或统一代理的流量都会被砸进同一台副本。当某台副本下线，已打开的页面会断连一次，刷新后切到存活副本并从 PostgreSQL 读回历史。</li>
+<li><strong>每台副本独享自己的本机数据目录（<code>/data/.octop</code>），严禁 NFS 共享写</strong>：本机工作区和飞书去重表 <code>feishu-dedup.sqlite</code> 都是单机本地文件，用 NFS 挂给多台同写只会把 SQLite 写坏。集群里管理员应通过“限制可选存储后端”开关，引导新建专家使用 PostgreSQL、S3、COS、TOS 或 OpenSandbox 工作区，防止 Pod 重建把临时盘里的工作区文件清空。此外，多副本首次冷启动必须给每台配置完全一致且符合强密码规则（至少 8 位且含字母和数字）的 <code>OCTOP_ADMIN_USERNAME</code> 与 <code>OCTOP_DEFAULT_PASSWORD</code>，否则各台会各自掉进安装向导生成互不相认的向导口令。</li>
+</ol>
+<h2 id="定时任务与-im-通道如何做到多副本单活">定时任务与 IM 通道如何做到多副本单活<a class="anchor" href="#定时任务与-im-通道如何做到多副本单活" aria-label="链接到本节">#</a></h2>
+<p>多开两三台 Octop 副本时，为什么同一条飞书机器人不会连出三条长连接，同一条每天早九点的定时任务也不会跑三遍？答案藏在 <code>src/octop/infra/db/lease.py</code> 只有 35 行的三个常量里：</p>
+<pre><code class="language-python">LEASE_SECONDS = 90
+RENEW_SECONDS = 30
+RECONCILE_SECONDS = 25
+</code></pre>
+<p><code>CronManager</code>（<code>infra/cron/manager.py</code>）和通道管理器在启动时都会生成进程级 <code>instance_id</code>，并按数据库自身时钟（PostgreSQL 用 <code>clock_timestamp()</code>，SQLite 用 <code>strftime(&#39;%s&#39;,&#39;now&#39;)</code>）在 <code>cron_jobs</code> 和通道记录的同一行上抢占租约：</p>
+<ul>
+<li>只有抢到行的那台副本真正运行该定时任务或保持该 IM 通道连接；持有者每 30 秒续租一次，把过期时间往后推 90 秒。</li>
+<li>进程优雅退出（<code>stop()</code>）时主动释放自己持有的租约行；如果进程意外硬崩，最多等 90 秒租约自动过期。</li>
+<li>其他存活副本每 25 秒跑一轮 <code>reconcile</code> 巡检，发现过期或无主行立刻抢占接管。唯一需要留心的小窗口是飞书去重表留在原机器的 <code>feishu-dedup.sqlite</code> 上，通道刚切到新副本的极短窗口内，飞书重发的同一条消息可能会被新副本再处理一次。</li>
+</ul>
+<p>另外，<code>CronManager</code> 在任务行为上也在 <code>v1.0.3b6</code> 做了细化：<code>task_type</code> 依然区分直接推送固定文案（<code>text</code>，不花模型费用）与唤醒专家生成后再推（<code>agent</code>）；而投递目标 <code>session_key</code> 除了默认指向所有者的工作台会话，还可以通过 <code>infra/cron/session_target.py</code> 指定 <code>latest</code>（跟随最新对话）或 <code>thread:&lt;thread_id&gt;</code>（固定续写某一条历史对话），后台标签页收到的定时提醒则改为原生系统通知（<code>v1.0.3b4</code>）。</p>
+<h2 id="备份边界与分层测试矩阵">备份边界与分层测试矩阵<a class="anchor" href="#备份边界与分层测试矩阵" aria-label="链接到本节">#</a></h2>
+<p>备份之前先按模式对账，别把导出一段聊天 JSON 当成整站灾备：</p>
+<ul>
+<li><strong>SQLite 单机模式</strong>：需要停机或按一致快照策略同时备份 <code>config.json</code>、控制面 <code>octop.db</code>、密钥目录、各专家工作区（含 <code>memory.sqlite</code>）以及本地 <code>knowledge/</code> 和 <code>skill-packages/</code>。直接 <code>cp</code> 正在高频写入的 WAL SQLite 文件容易拿到损坏快照。</li>
+<li><strong>PostgreSQL 集群模式</strong>：一次 <code>pg_dump</code> 就能把控制面、技能包源、知识库原文与向量、专家记忆和云凭证一网打尽；如果专家工作区放在 S3/COS/TOS，再配上对象存储侧的版本或跨区复制即可。</li>
+</ul>
+<p>仓库里的自动化验证分成了清晰的层次（入口见 <code>Makefile</code> 与 <code>.github/workflows/ci.yml</code>）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>验证层级</th>
+<th>典型命令 / 标记</th>
+<th>能守住什么</th>
+<th>守不住什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>静态质量门禁</td>
+<td><code>make lint</code>、<code>make typecheck</code>（<code>mypy --strict</code>）、<code>npx tsc -b</code></td>
+<td>代码风格、严格类型契约、前后端编译</td>
+<td>运行时并发与外部接口变化</td>
+</tr>
+<tr>
+<td>单元测试</td>
+<td><code>uv run pytest tests/unit -x -q</code></td>
+<td>路由、熔断中间件、租约算法、权限与状态门禁</td>
+<td>真实网络与数据库方言差异</td>
+</tr>
+<tr>
+<td>集成测试</td>
+<td><code>uv run pytest tests/integration -x -q</code></td>
+<td>JWT/MFA、资源边界、WS 订阅、服务生命周期</td>
+<td>多节点故障与真实 LLM 稳定性</td>
+</tr>
+<tr>
+<td>PostgreSQL 专项</td>
+<td><code>-m postgresql</code>（配 <code>OCTOP_TEST_DATABASE_URL</code>）</td>
+<td>迁移脚本、PG Store、pgvector 检索、命名空间维护</td>
+<td>未模拟的硬件/网络抖动</td>
+</tr>
+<tr>
+<td>真实联调</td>
+<td><code>-m live</code>（默认跳过）</td>
+<td>指定供应商与真实凭证端到端连通</td>
+<td>所有第三方供应商的长期契约</td>
+</tr>
+</tbody></table></div>
+<p>仓库的 <code>.githooks</code> 预提交钩子默认把 <code>make all</code> 和前端构建设为合入门槛，而且 CI 同时跑在 Linux 和 Windows 上。对运维团队来说，上线前再补上六次隔离环境故障演练，比一句口头高可用靠谱得多：模拟模型在工具调用前失败、外部工具超时重试、客户端弱网断线重连、审批挂起时重启服务、磁盘接近写满时触发 SQLite 压缩跳过、以及从备份整机恢复并核对附件与记忆关联。</p>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/desktop/README.md"><code>desktop/README.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/cluster_CN.md"><code>docs/cluster_CN.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/deploy/docker/Dockerfile"><code>deploy/docker/Dockerfile</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/deploy/docker/docker-compose.yml"><code>deploy/docker/docker-compose.yml</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/deploy/docker/docker-compose.cluster.yml"><code>deploy/docker/docker-compose.cluster.yml</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/deploy/helm/octop/Chart.yaml"><code>deploy/helm/octop/Chart.yaml</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/Makefile"><code>Makefile</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/.github/workflows/ci.yml"><code>.github/workflows/ci.yml</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/db/lease.py"><code>src/octop/infra/db/lease.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/cron/manager.py"><code>src/octop/infra/cron/manager.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/cron/job.py"><code>src/octop/infra/cron/job.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/cron/session_target.py"><code>src/octop/infra/cron/session_target.py</code></a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="14-interop.html"><small>上一章</small><strong>跨端协作：托管 ACP 回环与 Bridge 实例隧道</strong></a><a class="next" href="16-tradeoffs.html"><small>下一章</small><strong>架构取舍：单机够用到何时，复杂度卡在哪里</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：看懂一个 Agent 宿主如何拼起来</a><a href="../chapters/01-requirements.html"><span>01</span>需求推导：脱离模型 SDK 之后要守住什么</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：单进程宿主与四套可复用运行库</a><a href="../chapters/03-lifecycle.html"><span>03</span>启动与退出：装配顺序、延迟绑库与有序收尾</a><a href="../chapters/04-agent-runtime.html"><span>04</span>Agent 装配：原生专家、托管专家与中间件顺序</a><a href="../chapters/05-identity.html"><span>05</span>身份与会话：四种标识与共享专家的线程隔离</a><a href="../chapters/06-storage.html"><span>06</span>存储与历史：六类数据平面、下线归档与安全清理</a><a href="../chapters/07-workspace.html"><span>07</span>工作区后端：内容访问、对象存储与容器挂载边界</a><a href="../chapters/08-turn-path.html"><span>08</span>一次对话：从 WebSocket 入队到工具熔断与推送</a><a href="../chapters/09-memory-rag.html"><span>09</span>记忆与知识库：命名空间维护、图谱扩展与重排序</a><a href="../chapters/10-extensions.html"><span>10</span>工具与扩展：Skill、Plugin、Connector 与 MCP OAuth</a><a href="../chapters/11-teams.html"><span>11</span>多 Agent 团队：共享展示时间线，隔离执行状态</a><a href="../chapters/12-security.html"><span>12</span>安全边界：MFA、权限分离、审批串行与云凭证隔离</a><a href="../chapters/13-dashboard.html"><span>13</span>前端状态机：离线订阅、五道恢复门与历史竞态</a><a href="../chapters/14-interop.html"><span>14</span>跨端协作：托管 ACP 回环与 Bridge 实例隧道</a><a href="../chapters/15-operations.html"><span>15</span>部署与运维：Electron 壳、镜像分层与多副本租约</a><a href="../chapters/16-tradeoffs.html"><span>16</span>架构取舍：单机够用到何时，复杂度卡在哪里</a><a href="../chapters/17-mini-host.html"><span>17</span>代码实战：用两百行标准库模型验证六条边界</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.0.3b7 源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Octop v1.0.3b7 · 快照 ecd2cdbce3a5 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

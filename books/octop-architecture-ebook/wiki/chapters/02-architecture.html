@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 Octop v1.0.3b7 源码的架构解剖：单进程宿主、托管专家、多层存储、多副本租约与安全边界"><meta name="author" content="独立源码研究">
+<title>总体架构：单进程宿主与四套可复用运行库 · Octop 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">O</span><span>Octop 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 02</div><div class="rail-title">总体架构：单进程宿主与四套可复用运行库</div><ol><li><a href="#为什么拆成宿主加四套运行库">为什么拆成宿主加四套运行库</a></li><li><a href="#读懂-infra-目录里的硬边界">读懂 infra/ 目录里的硬边界</a></li><li><a href="#单进程如何平滑过渡到多副本集群">单进程如何平滑过渡到多副本集群</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 02 章</div><h1>总体架构：单进程宿主与四套可复用运行库</h1><div class="chapter-meta">Octop v1.0.3b7 快照 2026-11-18 · 约 12 分钟</div></header><div class="prose"><p>很多团队一启动多 Agent 平台项目，图纸上先画出一排框：API 网关、任务队列、Worker 集群、记忆服务、文件服务、通道服务，光把本地开发环境拉起来就要折腾半天 Docker Compose。Octop 反其道而行之，在 <code>docs/adr/001-single-process-model.md</code> 里定下一条铁律：核心平台必须是一个 Python 进程、一个安装包，装完只配模型密钥就能跑，不强制依赖 Redis、RabbitMQ 或独立 Worker。</p>
+<p>单进程不等于代码揉成一团。相反，为了既保住单机安装极简，又能把底层能力复用给其他项目，Octop 把整个架构切成了五层，而且在仓库根目录的 <code>AGENTS.md</code> 里写死了模块之间的依赖禁令。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 334" width="420" height="334" role="img" aria-label="Octop 五层模块化单体边界">
+<title>Octop 五层模块化单体边界</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="11" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="start">依赖严格向内流动：传输层调域层，域层绝不反向引用 API/CLI</text><rect x="8" y="22" width="332" height="44" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="17" y="38" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start">对外入口</text><text x="17" y="52.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">React Dashboard · Click CLI · IM 通道 · Cron</text><rect x="346" y="36" width="66" height="15" rx="7.5" fill="none" stroke="var(--muted)" stroke-width="0.9"/><text x="379.0" y="46.7" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="middle">HTTP/WS/stdio</text><line x1="174" y1="66" x2="174" y2="80" stroke="var(--line)" stroke-width="1.1" marker-end="url(#arrow)"/><rect x="8" y="80" width="332" height="44" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="17" y="96" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start">API 适配层</text><text x="17" y="110.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">FastAPI routers · JWT / MFA / Setup 门禁</text><rect x="346" y="94" width="66" height="15" rx="7.5" fill="none" stroke="var(--muted)" stroke-width="0.9"/><text x="379.0" y="104.7" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="middle">仅校验与映射</text><line x1="174" y1="124" x2="174" y2="138" stroke="var(--line)" stroke-width="1.1" marker-end="url(#arrow)"/><rect x="8" y="138" width="332" height="44" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="17" y="154" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start">宿主领域层 (infra/)</text><text x="17" y="168.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">AgentManager · GlobalProcessor · Gateway · CronManager</text><rect x="346" y="152" width="66" height="15" rx="7.5" fill="none" stroke="var(--amber)" stroke-width="0.9"/><text x="379.0" y="162.7" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--amber)" text-anchor="middle">核心编排</text><line x1="174" y1="182" x2="174" y2="196" stroke="var(--line)" stroke-width="1.1" marker-end="url(#arrow)"/><rect x="8" y="196" width="332" height="44" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="17" y="212" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start">四大独立运行库</text><text x="17" y="226.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">octop-harness · octop-gateway · octop-memory · octop-browser</text><rect x="346" y="210" width="66" height="15" rx="7.5" fill="none" stroke="var(--forest)" stroke-width="0.9"/><text x="379.0" y="220.7" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--forest)" text-anchor="middle">PyPI 固定版本</text><line x1="174" y1="240" x2="174" y2="254" stroke="var(--line)" stroke-width="1.1" marker-end="url(#arrow)"/><rect x="8" y="254" width="332" height="44" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="17" y="270" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start">数据与执行平面</text><text x="17" y="284.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">SQLite/PG 控制面 · 知识库/技能包 · BackendWorkspace</text><rect x="346" y="268" width="66" height="15" rx="7.5" fill="none" stroke="var(--muted)" stroke-width="0.9"/><text x="379.0" y="278.7" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="middle">按类分治</text><text x="8" y="322" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--amber)" text-anchor="start">唯一允许同时 import infra/server 与 api/app 的模块：src/octop/launch.py</text>
+</svg><figcaption>Octop 五层模块化单体边界</figcaption></figure>
+<p>这张分层图把 Octop 的边界划得很直白：所有依赖严格向内流动，传输层调领域层，领域层绝不反向依赖 HTTP 路由或 CLI。整座仓库里只有 <code>src/octop/launch.py</code> 这一个模块允许同时引入 <code>infra/server</code> 和 <code>api/app</code>，用来把后端领域对象树和 FastAPI 装配到 uvicorn 里。</p>
+<h2 id="为什么拆成宿主加四套运行库">为什么拆成宿主加四套运行库<a class="anchor" href="#为什么拆成宿主加四套运行库" aria-label="链接到本节">#</a></h2>
+<p>看 <code>pyproject.toml</code> 的依赖清单，能清楚看到 Octop 把重型垂直能力抽成了四个独立发版的库：</p>
+<ul>
+<li><code>octop-harness</code>（<code>&gt;=1.0.11</code>）承担基于 LangGraph 的 Agent 循环、工具调用、技能加载、存储后端抽象与中间件机制，以及记忆和浏览器工具在回合内的接线。</li>
+<li><code>octop-gateway</code>（<code>&gt;=1.0.4</code>）负责飞书、钉钉、企微、微信、Telegram、Discord 等 IM 平台的协议适配、媒体上传与群聊唤醒规则。</li>
+<li><code>octop-memory</code>（<code>&gt;=1.0.5</code>）管长期记忆的提取、召回、排序、数据库表结构与压缩维护。</li>
+<li><code>octop-browser</code>（<code>&gt;=1.0.0</code>）管 Chrome CDP 连接、浏览器 Profile、DOM 操作与 <code>browser_tool</code>。</li>
+</ul>
+<p>Octop 宿主仓库自己只干一件事：把这四个库包装成多用户产品。用户认证、角色与用户组、专家注册表、线程管理、连接器凭证加密、知识库检索、定时任务、跨实例 Bridge 和 React Dashboard 全部留在 <code>src/octop/</code> 和 <code>dashboard/</code> 里。<code>AGENTS.md</code> 明确要求，遇到属于这四个库的行为缺陷，必须去对应运行库里修并升级 <code>pyproject.toml</code> 的版本下限，禁止把实现复制粘贴进宿主仓库。</p>
+<p>这种拆法把演进节奏解开了：运行库可以独立跑单测、独立升级模型协议或 IM 适配，宿主则专注产品权限、控制面数据和工作台体验。</p>
+<h2 id="读懂-infra-目录里的硬边界">读懂 infra/ 目录里的硬边界<a class="anchor" href="#读懂-infra-目录里的硬边界" aria-label="链接到本节">#</a></h2>
+<p>初看 <code>src/octop/infra/</code>，容易因为目录名把它当成传统 DDD 里的纯基础设施层。其实 Octop 的核心业务编排几乎都在 <code>infra/</code> 里：<code>AgentManager</code> 管进程内全部专家的生命周期与装配，<code>Gateway</code> 管通道连接和 WebSocket Hub，<code>GlobalProcessor</code> 管所有入口汇入后的统一回合处理，<code>CronManager</code> 管定时调度，<code>SharedServices</code> 把各张表的仓储对象打包注入上层。</p>
+<p>为了让这个大目录不退化成网状互相引用，仓库定下了几条刚性红线：</p>
+<ul>
+<li><code>infra/</code> 绝不能引入 <code>api/</code>、<code>cli/</code> 或 <code>launch.py</code>。</li>
+<li><code>infra/db/repos/</code> 只写 SQL，只能依赖 <code>infra/db/_base</code> 和 <code>infra/utils/</code>，不能反向引入 <code>agents/</code> 或 <code>gateway/</code>。</li>
+<li><code>infra/utils/</code> 只放无领域依赖的纯辅助函数（路径、ULID、SSRF 校验、宿主机目录规则等）。</li>
+<li><code>api/routers/</code> 保持薄层，只做 HTTP 参数校验、权限提取、调 <code>infra/</code> 和映射 <code>OctopError</code>，不藏业务规则。</li>
+<li><code>dashboard/</code> 前端 SPA 只通过 <code>/api</code> HTTP 和 WebSocket 与后端通信，绝不直接读 SQLite 文件，构建后的静态资源打包进 <code>src/octop/dashboard/</code> 随 wheel 一并分发。</li>
+</ul>
+<p>Click CLI 也按同样思路分层，不复制业务逻辑。纯配置增删（如 <code>user</code>、<code>provider</code>、<code>cron</code> 列表）走离线仓储直读写本地库；需要真实运行时能力的命令（如 <code>chats send</code>、<code>chats repl</code>、<code>cron run-now</code>、<code>acp</code>）则在进程内拉起一个短生命周期的嵌入式 <code>OctopServer</code>；涉及操作系统或扫码绑定的操作直接走外部子进程。</p>
+<h2 id="单进程如何平滑过渡到多副本集群">单进程如何平滑过渡到多副本集群<a class="anchor" href="#单进程如何平滑过渡到多副本集群" aria-label="链接到本节">#</a></h2>
+<p>早期 <code>v1.0.3b1</code> 时期，ADR 002 虽然支持把控制面换到 PostgreSQL，但单进程内存假设导致它明确不承诺多实例同写：两个进程各自拉起 APScheduler，同一条定时任务就会跑两次；两个进程各自连飞书长连接，消息会乱抢。</p>
+<p>到了 <code>v1.0.3b3</code> 至 <code>v1.0.3b6</code>，Octop 并没有为了多副本推翻单进程模型去上 Redis 和 Celery，而是顺着共享 PostgreSQL 补齐了三块拼图：</p>
+<ol>
+<li><strong>内容平面入库（ADR 003）</strong>，PostgreSQL 模式下技能包源、知识库原文和 <code>pgvector</code> 向量不再绑在单机磁盘上，全部进共享库，每台实例看到同一份资产。</li>
+<li><strong>同行租约（<code>infra/db/lease.py</code>）</strong>，定时任务和 IM 通道在数据库行上抢占 90 秒租约，持有者每 30 秒续约、退出时主动释放，其他实例每 25 秒巡检接管过期行，保证后台任务和长连接单活。</li>
+<li><strong>入口按 Cookie 粘滞（<code>docs/cluster_CN.md</code>）</strong>，浏览器发起的一轮流式对话由接入的那台实例在内存里持有并推送实时帧，前置反向代理或 Kubernetes Ingress 用 Cookie 把同一浏览器固定到同一副本。</li>
+</ol>
+<p>这套组合很有工程节制感：单机用户依然零外部依赖、开箱即用；小团队需要滚动升级或横向扩展对话吞吐时，换上共享 PostgreSQL、配好对象存储或 PG 工作区、套上官方 Helm Chart 就能跑多副本，不需要把单体拆成十几个微服务。代价也很坦诚：单台副本挂掉时正在进行的实时流会断一次，刷新后由新副本从共享库恢复历史，它换来的是部署简洁，而不是无感透明的进程内状态迁移。</p>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/architecture.md"><code>docs/architecture.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/AGENTS.md"><code>AGENTS.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/adr/001-single-process-model.md"><code>docs/adr/001-single-process-model.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/adr/002-database-backends.md"><code>docs/adr/002-database-backends.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/adr/003-skill-package-kb-pg-storage.md"><code>docs/adr/003-skill-package-kb-pg-storage.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/server.py"><code>src/octop/infra/server.py</code></a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="01-requirements.html"><small>上一章</small><strong>需求推导：脱离模型 SDK 之后要守住什么</strong></a><a class="next" href="03-lifecycle.html"><small>下一章</small><strong>启动与退出：装配顺序、延迟绑库与有序收尾</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：看懂一个 Agent 宿主如何拼起来</a><a href="../chapters/01-requirements.html"><span>01</span>需求推导：脱离模型 SDK 之后要守住什么</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：单进程宿主与四套可复用运行库</a><a href="../chapters/03-lifecycle.html"><span>03</span>启动与退出：装配顺序、延迟绑库与有序收尾</a><a href="../chapters/04-agent-runtime.html"><span>04</span>Agent 装配：原生专家、托管专家与中间件顺序</a><a href="../chapters/05-identity.html"><span>05</span>身份与会话：四种标识与共享专家的线程隔离</a><a href="../chapters/06-storage.html"><span>06</span>存储与历史：六类数据平面、下线归档与安全清理</a><a href="../chapters/07-workspace.html"><span>07</span>工作区后端：内容访问、对象存储与容器挂载边界</a><a href="../chapters/08-turn-path.html"><span>08</span>一次对话：从 WebSocket 入队到工具熔断与推送</a><a href="../chapters/09-memory-rag.html"><span>09</span>记忆与知识库：命名空间维护、图谱扩展与重排序</a><a href="../chapters/10-extensions.html"><span>10</span>工具与扩展：Skill、Plugin、Connector 与 MCP OAuth</a><a href="../chapters/11-teams.html"><span>11</span>多 Agent 团队：共享展示时间线，隔离执行状态</a><a href="../chapters/12-security.html"><span>12</span>安全边界：MFA、权限分离、审批串行与云凭证隔离</a><a href="../chapters/13-dashboard.html"><span>13</span>前端状态机：离线订阅、五道恢复门与历史竞态</a><a href="../chapters/14-interop.html"><span>14</span>跨端协作：托管 ACP 回环与 Bridge 实例隧道</a><a href="../chapters/15-operations.html"><span>15</span>部署与运维：Electron 壳、镜像分层与多副本租约</a><a href="../chapters/16-tradeoffs.html"><span>16</span>架构取舍：单机够用到何时，复杂度卡在哪里</a><a href="../chapters/17-mini-host.html"><span>17</span>代码实战：用两百行标准库模型验证六条边界</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.0.3b7 源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Octop v1.0.3b7 · 快照 ecd2cdbce3a5 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

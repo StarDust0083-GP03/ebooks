@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从无阻塞执行切片、RAP 响应式工具协议到堆叠沙箱与跨主机热迁移，解剖 hydro-project/infinity 的 Rust Agent 运行时架构"><meta name="author" content="独立源码研究">
+<title>模型供应协议、跨进程隔离与错误分类契约 · Infinity 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">∞</span><span>Infinity 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 07</div><div class="rail-title">模型供应协议、跨进程隔离与错误分类契约</div><ol><li><a href="#errorclass-契约-供应器分类-核心层只看枚举">ErrorClass 契约：供应器分类，核心层只看枚举</a></li><li><a href="#bedrock-供应器的真实工程细节">Bedrock 供应器的真实工程细节</a></li><li><a href="#插件化架构-通过-unix-socket-跨进程运行供应器">插件化架构：通过 Unix Socket 跨进程运行供应器</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 07 章</div><h1>模型供应协议、跨进程隔离与错误分类契约</h1><div class="chapter-meta">hydro-project/infinity 快照 e1a3e4b36e5f · 约 18 分钟</div></header><div class="prose"><p>做过多模型接入的团队大多写过这种越改越脏的代码：核心 Agent 循环里嵌着一大段 <code>if err.contains(&quot;Throttling&quot;) || err.contains(&quot;429&quot;) || err.contains(&quot;too many requests&quot;)</code>，旁边又叠着一个 120 秒的流式空闲超时定时器。结果一换模型供应商，报错措辞变了，限流被当成致命错误直接放弃；一碰上推理模型思考两分半钟不吐字，核心层的空闲超时把好好的流强行掐断，触发毫无意义的重试，既烧双倍 token 又让用户干等。</p>
+<p>Infinity 在 <code>0.2.0</code>（PR #121）里把这套脆弱的耦合彻底拆干净了。整个模型供应子系统由三个 crate 组成：<code>infinity-provider-protocol</code>（1,280 行）定义协议与跨进程传输，<code>infinity-provider-bedrock</code>（1,445 行）对接 AWS Bedrock ConverseStream，<code>infinity-provider-rig</code>（504 行）基于 <code>rig-core</code> 对接 OpenAI 兼容服务。</p>
+<h2 id="errorclass-契约-供应器分类-核心层只看枚举">ErrorClass 契约：供应器分类，核心层只看枚举<a class="anchor" href="#errorclass-契约-供应器分类-核心层只看枚举" aria-label="链接到本节">#</a></h2>
+<p>翻开 <code>crates/infinity-provider-protocol/src/completion.rs</code>，核心运行时对模型失败的所有认知，全部收敛在四个枚举变体里：</p>
+<pre><code class="language-rust">pub enum ErrorClass {
+    Transient,       // 瞬时故障：断流、后端抖动、建连超时，可短退避重试
+    Throttled,       // 限流配额不足：需要更长退避后重试
+    ContextOverflow, // 上下文超窗：原样重试必败，必须收缩输入或压缩
+    Fatal,           // 永久错误：非法请求、未知模型、无权限，立刻放弃
+}
+</code></pre>
+<p><code>CompletionError::class()</code> 把四类包装错误也归口到这四个值：<code>RequestError</code> 和 <code>JsonError</code> 属于本地构造或解析出错，归为 <code>Fatal</code>；<code>ResponseError</code> 属于读取流时的传输帧故障，归为 <code>Transient</code>；<code>ProviderError { message, class }</code> 直接携带供应器自己填好的 <code>ErrorClass</code>。</p>
+<p>这样一来，<code>infinity-agent-core</code> 里的 <code>run_completion</code> 彻底不再做任何字符串匹配，也删掉了原本硬编码的 60 秒建连超时和 120 秒流中途停顿定时器。它的重试状态机变得极度干净（<code>event_processor.rs</code> 第 1404 至 1599 行）：</p>
+<ul>
+<li>收到 <code>ErrorClass::Throttled</code> 且未超过 <code>MAX_COMPLETION_RETRIES</code>（10 次）：休眠 <code>THROTTLED_RETRY_DELAY</code>（30 秒，休眠期间仍响应用户 <code>cancel_rx</code> 中断）后重试。</li>
+<li>收到 <code>ErrorClass::Transient</code> 且未超过 10 次：休眠 <code>TRANSIENT_RETRY_DELAY</code>（5 秒，可取消）后重试；若中途已经吐过部分块，先调用 <code>history.discard_turn()</code> 扔掉脏缓冲，再从干净历史重发。</li>
+<li>收到 <code>ErrorClass::ContextOverflow</code>：不走普通退避，直接转交第 3 章拆解过的 <code>recover_from_overflow</code>。</li>
+<li>收到 <code>ErrorClass::Fatal</code>：直接报错退出，一次都不重试。</li>
+</ul>
+<p>超时策略也同步下放给供应器自己决定。核心层自己<strong>零超时</strong>，理由很务实：不同后端的延迟特征天差地别，核心层根本猜不准一次深度推理要思考多久。</p>
+<h2 id="bedrock-供应器的真实工程细节">Bedrock 供应器的真实工程细节<a class="anchor" href="#bedrock-供应器的真实工程细节" aria-label="链接到本节">#</a></h2>
+<p><code>crates/infinity-provider-bedrock/src/lib.rs</code> 浓缩了不少对接真实生产云服务踩出来的坑，读它的注释比读官方文档还解渴：</p>
+<ol>
+<li><strong>只卡建连，绝不掐活流</strong>，Bedrock 偶尔会出现请求黑洞（发出去既不返回也不报错），因此 <code>BedrockProvider</code> 在 <code>ConverseStream</code> 请求发起阶段加了 60 秒的 <code>REQUEST_INITIATION_TIMEOUT</code>，超时后显式包装成 <code>ErrorClass::Transient</code> 交给核心层重试。一旦流式响应建立，代码里<strong>刻意不设任何中途停顿或读取超时</strong>，宁可相信底层连接与模型思考，也绝不人为掐断正常长推理。</li>
+<li><strong>细粒度工具流 Beta 绕开服务端看门狗</strong>，Bedrock 上调用 Anthropic 模型吐出一个很大的 <code>edit_file</code> 或 <code>create_file</code> 工具参数时，默认情况下后端会在服务端把整段工具输入缓冲校验完才开始下发。这中间长达数十秒的静默空档经常触发 Bedrock 自己的流看门狗，直接报 <code>ModelTimeoutException</code>。因此供应器主动附带了 <code>fine-grained-tool-streaming-2025-05-14</code> Beta 请求头，让工具参数碎片边生成边下发、流永不静默。源码同时坦诚写明了代价：服务端不再替客户端预校验工具 JSON，碎片拼完后可能解析失败，这部分交由 <code>stream.rs</code> 里的 <code>finish_tool_call</code> 单独分类处理。此外还启用了 <code>context-1m-2025-08-07</code> 百万上下文 Beta 标志，并自动在每次请求的最后一条消息末尾追加 Prompt Caching 缓存点。</li>
+<li><strong>集中式错误映射</strong>，<code>classify_bedrock_error</code> 根据 AWS SDK 错误码和消息启发式完成映射：<code>ThrottlingException</code> / <code>ServiceQuotaExceededException</code> 归 <code>Throttled</code>；包含 <code>&quot;too long&quot;</code>、<code>&quot;too large&quot;</code>、<code>&quot;input length&quot;</code> 或同时含 <code>&quot;exceed&quot;</code> 与 <code>&quot;context&quot;</code> 的 <code>ValidationException</code> 归 <code>ContextOverflow</code>；<code>InternalServerException</code>、<code>ServiceUnavailableException</code>、<code>ModelTimeoutException</code>、<code>ModelNotReadyException</code>、<code>ModelStreamErrorException</code>、<code>ModelErrorException</code> 以及 <code>&quot;unexpected end of stream&quot;</code> 归 <code>Transient</code>；其余默认 <code>Fatal</code>。<code>infinity-provider-rig</code> 则在自己 crate 里维护针对 OpenAI 兼容接口的同类映射。</li>
+<li><strong>反套娃的真实集成测试</strong>，除了常规单测，<code>infinity-provider-bedrock</code> 还准备了非默认特性 <code>live-tests</code>（<code>tests/live.rs</code>），直接用本地 AWS 凭证打真实 Bedrock 端点验证超窗分类、未知模型致命错误和正常流式路径。变更记录里特意提到，正是跑真实测试才抓出了开发期一个算错的 token 估算问题，而光靠写死的单元测试字符串对照表永远测不出真实服务改文案。</li>
+</ol>
+<h2 id="插件化架构-通过-unix-socket-跨进程运行供应器">插件化架构：通过 Unix Socket 跨进程运行供应器<a class="anchor" href="#插件化架构-通过-unix-socket-跨进程运行供应器" aria-label="链接到本节">#</a></h2>
+<p>在 Lambda 部署里，模型供应器直接作为 Rust 库静态链接进二进制即可。但在本地产品 Infinity Code 里，用户希望像装插件一样执行 <code>infinity provider install bedrock --crate infinity-provider-bedrock</code>，随时安装、升级、混用多个不同供应器（比如同时装 Bedrock 和 OpenAI 兼容供应器，在不同线程间实时 <code>/model</code> 切换），而不必把所有云厂商的庞大 SDK 全编进主二进制 <code>infinity-daemon</code>。</p>
+<p><code>crates/infinity-provider-protocol/src/remote.rs</code> 用不到五百行代码搭出了一套极其清爽的跨进程供应器协议：</p>
+<ul>
+<li><strong>启动与发现</strong>：每个独立供应器二进制启动后调用 <code>serve_provider(Arc&lt;dyn ModelProvider&gt;)</code>，在系统临时目录生成一个短路径 Unix Domain Socket（格式 <code>inf-provider-&lt;12位hex&gt;.sock</code>，特意压短路径长度以避开 macOS 上约 104 字节的 Unix Socket 路径上限），把 socket 路径打印到 stdout 交给守护进程读取，然后进入监听循环。</li>
+<li><strong>并发连接模型</strong>：协议使用 <code>LinesCodec</code> 承载换行分隔的 JSON（JSON Lines），<strong>每次请求新建一条独立的 Unix Socket 连接</strong>。这个朴素的选择省掉了在单连接上写多路复用帧 ID、反压和队头阻塞的整套复杂性：十个线程同时推理，就是十条并行的本地 socket 连接，各自独立读写互不干扰。</li>
+<li><strong>两种请求与流式帧</strong>：<code>ProviderRequest::ListModels</code> 返回单行 <code>Models(Vec&lt;ModelEntry&gt;)</code> 或 <code>Error(WireError)</code>；<code>ProviderRequest::InvokeModel</code> 返回 <code>InvokeStarted</code>，随后逐行流式推送 <code>Chunk(Result&lt;StreamChunk, WireError&gt;)</code>，最后以 <code>StreamEnd</code> 收尾。注意流中途的错误也能作为 <code>Chunk(Err(WireError))</code> 沿流透传，与进程内流行为保持完全同构。</li>
+<li><strong>跨进程保留错误分类</strong>：错误在 socket 上包装成 <code>WireError { message, class }</code>，反序列化时如果对方是老版本供应器漏掉了 <code>class</code> 字段，默认兜底为安全的 <code>ErrorClass::Fatal</code>（不盲目重试）。于是 <code>ErrorClass</code> 跨越了进程边界，客户端侧的 <code>RemoteModelProvider</code> 对 <code>infinity-agent-core</code> 呈现出与进程内供应器一模一样的 <code>ModelProvider</code> trait。</li>
+</ul>
+<p>到这里，Agent 怎么运行切片、怎么管历史、怎么调异步工具、怎么分线程、怎么调度本地并发以及怎么连大模型，全都拼装完整了。但对于一个 Coding Agent 来说，最要命的现场还没解决：当三个并发线程同时改写同一个代码仓库时，怎么不把代码改烂，又不让模型一条 <code>rm -rf</code> 误伤开发者的宿主目录？下一章拆解堆叠沙箱子系统。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="06-local-actor-deferral.html"><small>上一章</small><strong>单线程本地调度器、延迟队列与抢占打断</strong></a><a class="next" href="08-stacked-sandboxes.html"><small>下一章</small><strong>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：为什么一台树莓派能装下七万五千个 Agent</a><a href="../chapters/01-blocking-trap.html"><span>01</span>阻塞式 Agent 的死结与无阻塞切片不变量</a><a href="../chapters/02-workspace-topology.html"><span>02</span>21 个 Crate 的分层版图与类型化 ID 体系</a><a href="../chapters/03-slice-and-history.html"><span>03</span>切片执行循环与三阶段 HistoryManager</a><a href="../chapters/04-rap-protocol.html"><span>04</span>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</a><a href="../chapters/05-threading-compaction.html"><span>05</span>线程树、上下文继承与位置索引压缩</a><a href="../chapters/06-local-actor-deferral.html"><span>06</span>单线程本地调度器、延迟队列与抢占打断</a><a href="../chapters/07-provider-error-boundary.html"><span>07</span>模型供应协议、跨进程隔离与错误分类契约</a><a href="../chapters/08-stacked-sandboxes.html"><span>08</span>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</a><a href="../chapters/09-daemon-remote-migration.html"><span>09</span>本地守护进程、SSH 远程代理与跨主机热迁移</a><a href="../chapters/10-serverless-aws.html"><span>10</span>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</a><a href="../chapters/11-clients-and-hydro-dataflow.html"><span>11</span>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</a><a href="../chapters/12-tradeoffs-and-limits.html"><span>12</span>失败模式、安全边界与架构取舍</a><a href="../chapters/13-mini-infinity.html"><span>13</span>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：源码索引、实测统计与核心术语对照</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · hydro-project/infinity · 快照 e1a3e4b36e5f · 2026-11-05</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

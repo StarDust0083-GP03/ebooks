@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从时间总线、分支路由、rutis 跨语言数据面到权限与压缩重放，源码级解剖 arcships/dim Agent v4 架构"><meta name="author" content="独立源码研究">
+<title>App Server、CLI、Web 与 ACP / MCP 网关 · Dim 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">D</span><span>Dim 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 11</div><div class="rail-title">App Server、CLI、Web 与 ACP / MCP 网关</div><ol><li><a href="#守护进程-app-server-受保护传输-优雅关机与单向升级">守护进程 App Server：受保护传输、优雅关机与单向升级</a></li><li><a href="#终端-cli-与-web-工作区-薄客户端的不同接入姿态">终端 CLI 与 Web 工作区：薄客户端的不同接入姿态</a></li><li><a href="#acp-网关-零侵入的协议翻译层">ACP 网关：零侵入的协议翻译层</a></li><li><a href="#mcp-管理与-oauth-代次平滑切换与变量防护">MCP 管理与 OAuth：代次平滑切换与变量防护</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 11 章</div><h1>App Server、CLI、Web 与 ACP / MCP 网关</h1><div class="chapter-meta">arcships/dim v0.1.0-alpha.27 · 快照 2026-11-22 · 约 20 分钟</div></header><div class="prose"><p>一个设计得再干净的 Agent 内核，如果每个前端（终端 TUI、浏览器 Web 界面、Zed / Lody 这类外部 IDE）都各自内嵌一份运行时、各自读写同一个 SQLite 文件，很快就会撞上文件锁冲突、多端状态打架和后台任务随窗口关闭而夭折的问题。</p>
+<p>Dim 的解法是把所有执行、审批、存储和插件装配收拢到唯一的后台守护进程 <code>dim-app-server</code>，再让 CLI、Web 工作区和 ACP 网关都作为讲同一套协议的薄客户端接入。</p>
+<h2 id="守护进程-app-server-受保护传输-优雅关机与单向升级">守护进程 App Server：受保护传输、优雅关机与单向升级<a class="anchor" href="#守护进程-app-server-受保护传输-优雅关机与单向升级" aria-label="链接到本节">#</a></h2>
+<p>App Server 住在 <code>crates/dim-app-server</code>，同时作为子命令 <code>dimcode app-server</code> 被编译进单一二进制 <code>dimcode</code> 里。它只管装配、持久化、传输安全与对外入口，不把具体业务插件逻辑塞回主干（<code>principles.md</code> §1）。</p>
+<p><strong>传输安全边界非常分明。</strong> 产品模式和自定义模型配置模式下，执行与管理类 RPC v3 必须走受保护的本地传输：Unix 上是权限 <code>0700</code> 目录里的 <code>0600</code> 私有套接字（清理时只删除本监听器持有的 inode），Windows 上是带本地身份校验的命名管道。默认的 WebSocket 端点在非 mock 模式下只响应 <code>hello</code> 和 <code>ping</code>，防止局域网或浏览器任意页面直接调起本地执行。为了防止客户端连错守护进程，<code>hello.daemonProfile</code> 会显式声明当前守护进程属于 <code>product</code>、<code>configured</code>（附带模型配置文件原始字节的 64 位小写 SHA-256 摘要，不泄露环境变量值）还是 <code>mock</code>，客户端遇到配置或模式不匹配时直接拒绝连接，绝不擅自杀掉别人的守护进程。</p>
+<p><strong>精细的关机与活动持有协议。</strong> 当客户端发来 <code>daemon.shutdown { ifIdle: true }</code>（协议 v3 特性标记 <code>daemon.shutdown.ifIdle</code>）准备空闲退出或原子升级时，App Server 不会粗暴地只看当前有没有 TCP 连接，而是同时核对四件事：没有其他客户端连接、没有已附着的会话、没有任何分支上的在途工作，也没有任何通过 <code>processActivity.hold()</code> 拿走的进程级活动持有（例如后台脱离工作、正在跑的 Workflow、或者尚未排空的定时投递）。只要其中一项为忙，就返回 <code>daemon_busy</code> 并附带计数详情；一旦判定全部空闲，才会关闭新准入并开始优雅清理。如果请求的是默认优雅关闭（<code>force: false</code>），发起方连接会把最终回复的写通道转交给进程协调器，等整个 <code>rutis</code> 根树彻底卸载、SQLite 刷盘并显式释放 <code>flock</code> 锁之后才回发成功（避免并发派生的子进程继承文件描述符导致下一个守护进程误报数据库被占用）。</p>
+<p><strong>提交确认的不确定性诚实告知。</strong> 在 <code>session.submit</code> 的协议边界上，App Server 明确区分了“保证未落盘的拒绝错误”（<code>invalid_params</code>、<code>session_invalid_input</code>、<code>session_closed</code>、<code>session_build_failed</code>、<code>service_reloading</code>、<code>unknown_method</code>、<code>input_blocked</code>）与“提交后结果不确定的错误”（<code>submission_unknown</code>、存储/发布错误、连接断开）。客户端拿到不确定错误时绝不盲目重试，而是保留 Session id 提示用户恢复检查，避免把同一条指令提交两遍。同时，<code>UserPromptSubmit</code> 这类 Hook 失败但设为 <code>onFailure: continue</code> 时，不把提交判失败，而是通过加法字段 <code>warnings: [{ check, message }]</code> 告知客户端原样展示，绝不混入模型上下文。</p>
+<p><strong>单向原生存储升级与离线运维。</strong> 原生 SQLite 数据库在当前版本采用明确的版本号标记，启动时若检测到支持的旧格式，会在进入任何可写 PRAGMA 之前，在单一准入事务内原地顺序升级，失败则完整回滚，不支持的版本（包括曾移除的分支专用格式）直接拒绝打开并原样保留文件。导出整条会话时间线（<code>dimcode export SESSION_ID</code>）直接以只读快照打开数据库，不争抢守护进程锁，不触发升级；回收空间（<code>dimcode daemon vacuum</code>）则要求守护进程已停机，先校验不存在悬空内容引用、清理不可达的内容寻址节点，再执行 <code>VACUUM</code>。</p>
+<h2 id="终端-cli-与-web-工作区-薄客户端的不同接入姿态">终端 CLI 与 Web 工作区：薄客户端的不同接入姿态<a class="anchor" href="#终端-cli-与-web-工作区-薄客户端的不同接入姿态" aria-label="链接到本节">#</a></h2>
+<p>终端客户端位于 <code>crates/dim-cli</code>（内嵌终端控件源自 xAI <code>grok-build</code> 的 Ratatui 衍生实现，遵循 Apache-2.0 归属），它自己不跑模型也不决定权限，只管输入编辑、终端回滚区渲染和交互式审批。</p>
+<p>有意思的是，交互式 TUI 并不是只开一条普通 RPC 连接那么简单。在 <code>crates/dim-app-server/README.md</code> 描述的 UI 叶子（UI Leaf）协议里，交互式 <code>dimcode</code> 进程本身是一个监听在私有地址上的轻量 <code>rutis</code> 内核，通过 <code>ui.open</code> 让守护进程的 <code>UiLeaf</code> 反向拨号握手并挂载会话，再把普通的协议 v3 业务连接通过 <code>ui.attach</code> 登记上去，支持按代次原子替换（<code>ui.open { replace }</code>）且 20 秒内未附着自动回收。除了交互式 <code>tui</code>，CLI 还提供面向脚本与流水线的 <code>dimcode exec -p</code> / <code>exec --json</code>（审批或提问无法交互时主动停止当前 turn 并以退出码 3 退出，Ctrl+C 等待结算后以 130 退出），以及本地图像缩放校验（发送前统一把图片缩放到 2048 px 与 5,000,000 字节 base64 以内，单次最多 20 张，总请求体不超过 16 MiB）、超 16 KiB 粘贴自动走 <code>attachment.put</code>、跨平台剪贴板和 <code>@</code> 本地文件补全。</p>
+<p>Web 工作区则完全由守护进程按需拉起：通过 <code>web.open</code>（持有者模式）或 <code>web.toggle</code>（守护进程开关）只绑定在 loopback 回环地址，前端静态资源既可读取外部 <code>dimcode-web</code> 目录（每次打开校验 <code>dimcode-web.json</code> 里的协议版本，不匹配返回 <code>web_assets_incompatible</code>），也可通过 <code>embedded-web</code> Cargo 特性编译进二进制。浏览器拿着返回 URL 里的一次性引导令牌换取 Cookie 后，走协议 v3 建立连接，只开放 Session 执行方法和只读模型发现接口，把 <code>daemon.shutdown</code> 等宿主管理方法全部隐藏成 <code>unknown_method</code>。在 <code>v0.1.0-alpha.27</code> 中，Web 端还引入了共享的 <code>chat-ui</code> 工作区包，将 Web 时间线渲染与交互控制（包括运行中 <code>steer</code>、暂存草稿和中断发送）与 TUI 逐步对齐。</p>
+<h2 id="acp-网关-零侵入的协议翻译层">ACP 网关：零侵入的协议翻译层<a class="anchor" href="#acp-网关-零侵入的协议翻译层" aria-label="链接到本节">#</a></h2>
+<p>为了接入 Zed、Lody、acpx 等支持 Agent Client Protocol（ACP）的外部编辑器和工具，Dim 在 <code>crates/dim-acp</code> 实现了 <code>AcpGateway</code>，通过 <code>dimcode acp</code> 在标准输入输出上暴露 ACP v1 协议（固定 <code>agent-client-protocol</code> SDK 3.5.0）。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>架构边界</th>
+<th><code>AcpGateway</code> 的具体做法</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>进程定位</td>
+<td>运行在客户端侧的独立 <code>rutis</code> 进程插件，不是守护进程的 loader row，也不链接 App Server 内部类型</td>
+</tr>
+<tr>
+<td>共享传输</td>
+<td>与 <code>dim-cli</code> 共同依赖提取出来的 <code>crates/dim-client</code>，共用 16 MiB 帧封装、套接字安全校验与 OAuth 环回回调捕获</td>
+</tr>
+<tr>
+<td>协议投影</td>
+<td>只调用公开的 RPC v3 白名单方法，将 <code>session/new</code>、<code>load</code>、<code>resume</code>、<code>prompt</code>、<code>cancel</code>、<code>set_mode</code>、<code>set_config_option</code> 映射到原生方法；<code>approval.request</code> 映射为 <code>session/request_permission</code>（只给 <code>allow_once</code>/<code>reject_once</code>，不提供 <code>always</code>）；<code>ask_user</code> 条件映射为 <code>elicitation/create</code> 表单</td>
+</tr>
+<tr>
+<td>会话级临时 MCP</td>
+<td>ACP 客户端在 <code>session/new</code> 时传入的 <code>mcpServers</code> 通过独立的 <code>TemporaryMcp</code> Session 插件挂载，仅作用于该会话，会话结束立刻丢弃，绝不污染全局持久化 MCP 配置</td>
+</tr>
+<tr>
+<td>严禁补假语义</td>
+<td>现有原生接口无法保证的能力直接声明不支持（如 <code>logout</code>、客户端侧 <code>fs/*</code> 与 <code>terminal/*</code> 反向执行）；<code>session/load</code> 或 <code>resume</code> 要求守护进程明确声明 <code>session.attach.expectedCwd</code> 与 <code>session.history.latestTurn</code>，绝不退回到全量枚举会话或扫描全部历史</td>
+</tr>
+</tbody></table></div>
+<h2 id="mcp-管理与-oauth-代次平滑切换与变量防护">MCP 管理与 OAuth：代次平滑切换与变量防护<a class="anchor" href="#mcp-管理与-oauth-代次平滑切换与变量防护" aria-label="链接到本节">#</a></h2>
+<p>对于持久化的 MCP 服务器，App Server 的 <code>McpPlugin</code> 把配置管理、连接代次和 OAuth 拆得很细：</p>
+<ul>
+<li><strong>三源分层与逐条容错</strong>：支持 <code>user</code>、工作区 <code>.mcp.json</code> 的 <code>project</code>（按 ADR 003 默认禁用）以及插件贡献的 <code>plugin:&lt;id&gt;</code> 三类来源，支持从 Claude Code、Codex、OMP 预览和导入配置。解析配置文件时采用逐条容错，单条格式损坏会进入 <code>invalid</code> 列表并保持原样，不拖垮其余正常条目。</li>
+<li><strong>连接代次无缝交接</strong>：每个 Session 通过子插件托管自己的 MCP 连接代次。修改或刷新配置时，正在执行中的旧工具调用继续跑完旧代次连接，新调用切换到新代次；只有最后一份旧租约释放后才关闭旧连接，而显式禁用则会主动排空并关闭所有会话里的活跃代次。失败重连采用 1 秒起跳、上限 5 分钟的指数退避；远端返回 HTTP 404 会重建会话并重放一次，单次工具调用超时默认 10 分钟（可在条目 <code>timeout</code> 里配 1 秒到 24 小时）。</li>
+<li><strong>环境变量展开防护</strong>：远程 URL、请求头和 Bearer Token 支持 <code>${NAME}</code> 和 <code>${NAME:-default}</code> 展开，但对于工作区 <code>.mcp.json</code> 和插件来源，所有受保护的敏感变量名（模型 Provider 密钥、云凭据、代理、<code>DIM_*</code>/<code>DIMCODE_*</code> 等）在远端字段里会被强制展开为空字符串且忽略默认值，防止恶意仓库借 <code>.mcp.json</code> 把用户的 API Key 偷发到外部服务器。</li>
+<li><strong>按需懒加载的 MCP OAuth</strong>：遇到远端返回 <code>401</code> 时，<code>mcp.auth.start</code> 自动发现受保护资源元数据并完成动态客户端注册，凭据按 <code>0600</code> 原子写入 <code>mcp-oauth.json</code> 并在过期前 30 秒跨会话单飞刷新；只要本地没有任何需要 OAuth 的 MCP 条目，守护进程甚至不会初始化 OAuth HTTP 客户端。</li>
+</ul>
+<p>把整个系统的内内外外走完一遍之后，我们有必要冷静停下来，用工程师的眼光审视这套高度严整的架构究竟付出了哪些工程代价、靠什么守住边界，以及哪些问题在当前 Alpha 里仍然有意留白。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="10-codemode-and-aimux.html"><small>上一章</small><strong>Code Mode 与 Aimux 模型宿主</strong></a><a class="next" href="12-tradeoffs-and-boundaries.html"><small>下一章</small><strong>架构权衡与工程边界</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言与全景导读</a><a href="../chapters/01-why-not-a-chat-loop.html"><span>01</span>为什么不用普通对话循环</a><a href="../chapters/02-workspace-and-scopes.html"><span>02</span>28 个 Crate 与三层作用域</a><a href="../chapters/03-time-bus.html"><span>03</span>时间总线与只认序号的事实流</a><a href="../chapters/04-event-driven-contracts.html"><span>04</span>事件驱动契约：Dispatcher、before 与重启重建</a><a href="../chapters/05-timeline-branches.html"><span>05</span>分支时间线：默认分支、父子通信与配额路由</a><a href="../chapters/06-rutis-and-data-faces.html"><span>06</span>rutis 插件引擎与跨语言数据面</a><a href="../chapters/07-self-evolving-plugins.html"><span>07</span>在会话里给自己写插件与热重载自演化</a><a href="../chapters/08-context-compaction-and-replay.html"><span>08</span>上下文投影、压缩与历史渲染边界</a><a href="../chapters/09-detached-work-and-permissions.html"><span>09</span>脱离工作、工具审批与权限边界</a><a href="../chapters/10-codemode-and-aimux.html"><span>10</span>Code Mode 与 Aimux 模型宿主</a><a href="../chapters/11-server-cli-web-and-protocols.html"><span>11</span>App Server、CLI、Web 与 ACP / MCP 网关</a><a href="../chapters/12-tradeoffs-and-boundaries.html"><span>12</span>架构权衡与工程边界</a><a href="../chapters/13-teaching-model.html"><span>13</span>零依赖 Python 教学模型与 18 个单元测试</a><a href="../chapters/appendix-sources.html"><span>A</span>附录 A：源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · arcships/dim v0.1.0-alpha.27 · 快照 88a3df366940 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

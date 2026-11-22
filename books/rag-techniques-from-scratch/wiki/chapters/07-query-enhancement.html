@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从文档解析、切分、混合检索到纠错、图谱、评估与上线边界的 RAG 工程实战指南"><meta name="author" content="独立源码研究">
+<title>查询增强：用户不一定会说出幂等这个词 · RAG 工程实战</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">RAG</span><span>RAG 工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 07</div><div class="rail-title">查询增强：用户不一定会说出幂等这个词</div><ol><li><a href="#查询改写不能把业务限定改丢">查询改写不能把业务限定改丢</a></li><li><a href="#复合问题拆解与-step-back-的边界">复合问题拆解与 Step-back 的边界</a></li><li><a href="#hyde-查询时借假设文档做跳板">HyDE：查询时借假设文档做跳板</a></li><li><a href="#hype-把生成开销前移到入库阶段">HyPE：把生成开销前移到入库阶段</a></li><li><a href="#什么场景先试哪一招">什么场景先试哪一招</a></li><li><a href="#本章对应代码与资料">本章对应代码与资料</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 07 章</div><h1>查询增强：用户不一定会说出幂等这个词</h1><div class="chapter-meta">RAG_Techniques 快照 2026-11-02 · 约 12 分钟</div></header><div class="prose"><p>值班同学在聊天框里敲下：“为什么同一个通知来了两次，不能再发一次货？”规范文档里写得清清楚楚：“支付回调幂等以渠道流水号和事件类型为键。重复通知不重复发货。”文档没缺、解析没歪、切分也没断，可用户压根没提“幂等”两个字，只靠字面基线很容易把最关键的那段排到后面。查询增强要补的，正是用户口语表达与文档规范术语之间的这道鸿沟。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 540 194" width="540" height="194" role="img" aria-label="查询改写、HyDE 与 HyPE 的对齐路径对比">
+<title>查询改写、HyDE 与 HyPE 的对齐路径对比</title>
+<defs><marker id="arr-query-routing" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" fill="var(--muted)"/></marker></defs>
+<text x="10" y="14" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="600" fill="var(--ink)" text-anchor="start">用户口语问法如何对齐到规范术语（三条路径对比）</text><rect x="10" y="26" width="118" height="122" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="20" y="43" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">原始用户问题</text><text x="20" y="59" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">同一个通知来了</text><text x="20" y="73" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">两次还会不会</text><text x="20" y="87" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">重复发货？</text><text x="20" y="101" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">保留原始限定条件</text><line x1="128" y1="46" x2="152" y2="46" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-query-routing)"/><line x1="128" y1="88" x2="152" y2="88" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-query-routing)"/><line x1="128" y1="130" x2="152" y2="130" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-query-routing)"/><rect x="152" y="24" width="198" height="42" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="162" y="41" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">1. 查询改写与拆解（查询时）</text><text x="162" y="57" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">补充术语并拆子问题，双路按 ID 合并</text><rect x="152" y="72" width="198" height="42" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.4"/><text x="162" y="89" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">2. HyDE 假设文档（查询时）</text><text x="162" y="105" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">先写假设段落再搜原文，严禁当证据</text><rect x="152" y="120" width="198" height="42" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.4"/><text x="162" y="137" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">3. HyPE 问题代理（入库时）</text><text x="162" y="153" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">入库预生问题向量，命中回映射父块</text><line x1="350" y1="45" x2="376" y2="78" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-query-routing)"/><line x1="350" y1="93" x2="376" y2="93" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-query-routing)"/><line x1="350" y1="141" x2="376" y2="108" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-query-routing)"/><rect x="376" y="56" width="154" height="72" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.4"/><text x="386" y="73" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">真实授权原文</text><text x="386" y="89" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">callback-v2:0</text><text x="386" y="103" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">callback-v2:1</text><text x="386" y="117" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">按 parent_id 去重</text><text x="10" y="182" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start">HyDE 消耗查询时延迟；HyPE 把生成成本前移到入库，文档更新时代理必须同步重建。</text>
+</svg><figcaption>查询改写、HyDE 与 HyPE 的对齐路径对比</figcaption></figure>
+<h2 id="查询改写不能把业务限定改丢">查询改写不能把业务限定改丢<a class="anchor" href="#查询改写不能把业务限定改丢" aria-label="链接到本节">#</a></h2>
+<p>改写模块把口语问题翻译成贴近知识库术语的检索语句，比如改写成“支付回调重复投递 幂等 发货去重”。动手写改写提示词时要守住三条线：</p>
+<ul>
+<li>保留原有业务条件：用户问沙箱测试环境，改写绝不能偷换成生产环境；用户问“为什么不能直接重试”，也不能改写成“如何强制重试”。</li>
+<li>保留原查询并行检索：把原始问题和改写结果分别送进检索器，再按 <code>chunk.id</code> 做 RRF 合并，防止改写跑偏时把原本能命中的精准词弄丢。</li>
+<li>控制外传风险：用户提问里常常夹带真实订单号、商户号或报错堆栈。把原始问题发给外部模型做改写之前，必须过一遍脱敏或数据出境策略，别以为“还没生成答案”就不算数据外泄。</li>
+</ul>
+<p>日志里要把原问题、改写后的查询以及各自命中的片段 ID 全部记下来，复盘时才能看清改写到底是帮了忙，还是悄悄换了一道更好答的题。</p>
+<h2 id="复合问题拆解与-step-back-的边界">复合问题拆解与 Step-back 的边界<a class="anchor" href="#复合问题拆解与-step-back-的边界" aria-label="链接到本节">#</a></h2>
+<p>面对“退款失败为什么不能直接再发起？出了问题该找谁评审？”这种两段式提问，直接拿整句话去搜，常常出现前一半返回一堆退款条款、把后一半的负责人线索彻底挤出 top-k。</p>
+<p>查询拆解把原问题切成“退款失败重试规则”和“支付回调/退款模块技术负责人”两条子查询，分别召回并按子问题检查证据覆盖度，防止“总条数够了，其中一个子问题却是零证据”。同时必须给子查询数量、每路 top-k 和总耗时设硬上限，避免一句复杂提问触发十几次连锁调用。</p>
+<p>Step-back 则是把一个过细的问题往上一层抽象，比如把某渠道的具体报错上提成“异步回调一致性风险”。它适合给回答补足背景原理，绝不能替代当前版本规范里的精确条款。</p>
+<h2 id="hyde-查询时借假设文档做跳板">HyDE：查询时借假设文档做跳板<a class="anchor" href="#hyde-查询时借假设文档做跳板" aria-label="链接到本节">#</a></h2>
+<p>短问题和长段落放在同一个向量空间里，句式与信息密度天然不对称。HyDE（Hypothetical Document Embeddings，论文 arXiv:2212.10496）的做法是在查询时先让语言模型写一段“看起来像规范正文”的假设答案，再把这段假设文档编成向量去搜真实知识库。</p>
+<p>这条路线有一条铁律：假设文档只用来算向量、找线索，绝不能混进最终交付给生成器的证据包。假设段落里模型很可能顺手编出一句“按订单号去重”，而真实规范写的是“渠道流水号和事件类型”。把假设当事实，等于自己给系统亲手喂了幻觉。顺便记一笔核对细节：上游仓库 README 里曾有文字把 HyDE 简写成假设问题，但对应 Notebook（<code>HyDe_Hypothetical_Document_Embedding.ipynb</code>）和原论文的核心动作都是生成假设文档，写设计评审时别和下面的 HyPE 搞混。</p>
+<h2 id="hype-把生成开销前移到入库阶段">HyPE：把生成开销前移到入库阶段<a class="anchor" href="#hype-把生成开销前移到入库阶段" aria-label="链接到本节">#</a></h2>
+<p>每次查询都先调一次 LLM 写假设文档，延迟和费用很快吃不消。HyPE（Hypothetical Prompt Embeddings）换了个方向：在文档入库建索引时，提前为每个片段生成若干“用户可能会怎么问”的代理问题，只对这些问题建索引；线上收到用户提问后，直接做“问题对问题”的匹配，命中代理后再回映射拿到原片段。</p>
+<p>配套 <code>examples/mini_rag.py</code> 里的 <code>PromptIndex</code> 和 <code>PromptProxy</code> 在离线环境里完整复现了这套核心契约：</p>
+<pre><code class="language-python">proxies = [
+    PromptProxy(&quot;p1&quot;, &quot;callback-v2:1&quot;, &quot;同一个通知来了两次会不会重复发货&quot;),
+    PromptProxy(&quot;p2&quot;, &quot;callback-v2:1&quot;, &quot;同一笔支付消息推送两遍怎么办&quot;),
+]
+idx = PromptIndex(retriever, proxies)
+hits = idx.search(&quot;同一个通知来了两次怎么办&quot;, user=&quot;alice&quot;, k=3)
+</code></pre>
+<p>看 <code>PromptIndex.search()</code> 的实现就能摸清上线 HyPE 必须盯住的三个工程点：</p>
+<ol>
+<li>权限与版本过滤必须先查父片段：只有当 <code>parent_id</code> 在 <code>retriever.visible(user)</code> 集合里，对应的问题代理才有资格参与打分。单元测试 <code>test_prompt_index_enforces_acl_and_active_view_before_scoring</code> 验证了 Alice 查“排查草稿”时拿不到 Bob 笔记的代理，也拿不到已废弃 <code>callback-v1:0</code> 的代理。</li>
+<li>多代理命中同一父块必须去重：<code>p1</code> 和 <code>p2</code> 都指向 <code>callback-v2:1</code>，返回列表里只保留一条 <code>callback-v2:1</code>，不把同一原文塞两遍。</li>
+<li>代理不是零成本：每块生成 5 个问题，索引体量和入库 LLM 费用会成倍放大，而且原文一旦修改或删除，所有关联代理必须同步重建或清理。此外，查询时依然需要算查询 embedding、做检索和生成答案，只是省掉了查询时的那一次假设生成延迟。</li>
+</ol>
+<p>这里还有一条来自上游实操的工程警示：在 <code>2fd7bd0f</code> 之前，<code>all_rag_techniques/HyPE_Hypothetical_Prompt_Embeddings.ipynb</code> 曾在 <code>FAISS(...)</code> 构造参数里漏写了一个逗号，属于肉眼很难扫出来的语法错误，直到 2026-10-31 上游审计补上无密钥语法检查 CI（<code>notebook-smoke.yml</code>）才彻底拦住。索引构建脚本通常在夜间批处理里跑，离线语法与单测门禁省不得。</p>
+<h2 id="什么场景先试哪一招">什么场景先试哪一招<a class="anchor" href="#什么场景先试哪一招" aria-label="链接到本节">#</a></h2>
+<p>别一上来就把四种查询增强全叠在一起。遇到固定行话对不上（比如“重复投递”对“幂等”），先配一张受控同义词表或“原查询 + 改写”双路融合；遇到多跳复合问题，先加受控拆解；短问题搜长规范持续漏召回时，再拿 HyDE 和 HyPE 对照评估：文档更新慢、查询并发高偏向把成本前移到 HyPE，文档频繁变动、查询量不大则更容易接受查询时的 HyDE。</p>
+<h2 id="本章对应代码与资料">本章对应代码与资料<a class="anchor" href="#本章对应代码与资料" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="appendix-code.html">离线 HyPE 代理索引 <code>PromptIndex</code></a></li>
+<li><a href="appendix-code.html">代理映射、去重与权限隔离测试</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/query_transformations.ipynb">上游 Query Transformations</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/HyDe_Hypothetical_Document_Embedding.ipynb">上游 HyDE</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/HyPE_Hypothetical_Prompt_Embeddings.ipynb">上游 HyPE</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/document_augmentation.ipynb">上游 Document Augmentation</a></li>
+<li><a href="https://arxiv.org/abs/2212.10496">HyDE 论文（arXiv:2212.10496）</a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="06-fusion-reranking.html"><small>上一章</small><strong>混合检索与重排：把不同候选放进同一张账</strong></a><a class="next" href="08-context.html"><small>下一章</small><strong>证据组装：检索到了，还要让模型完整读到</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-opening.html"><span>00</span>开篇：文档都在库里，助手为什么还会答错</a><a href="../chapters/01-requirements.html"><span>01</span>需求篇：先框住哪些问题必须答对</a><a href="../chapters/02-architecture.html"><span>02</span>技术方案：从需求推导一条可追踪的链路</a><a href="../chapters/03-ingestion.html"><span>03</span>资料入库：先把文档读对，再谈检索</a><a href="../chapters/04-chunking.html"><span>04</span>文档切分：验签和幂等，为什么总只召回一半</a><a href="../chapters/05-baseline.html"><span>05</span>基础检索：先交付一条能复现的离线链路</a><a href="../chapters/06-fusion-reranking.html"><span>06</span>混合检索与重排：把不同候选放进同一张账</a><a href="../chapters/07-query-enhancement.html"><span>07</span>查询增强：用户不一定会说出幂等这个词</a><a href="../chapters/08-context.html"><span>08</span>证据组装：检索到了，还要让模型完整读到</a><a href="../chapters/09-evaluation.html"><span>09</span>评估：两条高分结果，未必够答完一个问题</a><a href="../chapters/10-corrective.html"><span>10</span>纠错检索：找不到以后，系统走哪一条路</a><a href="../chapters/11-hierarchy-memory.html"><span>11</span>层次索引与记忆：问题开始面向整份资料</a><a href="../chapters/12-graph.html"><span>12</span>图谱检索：从模块一路查到技术负责人</a><a href="../chapters/13-multimodal-agent.html"><span>13</span>多模态与 Agent：处理图表文档与多步任务</a><a href="../chapters/14-production.html"><span>14</span>上线边界：权限、快照、停服与故障不能靠提示词兜底</a><a href="../chapters/15-wrap-up.html"><span>15</span>完结篇：用一次请求串起整套设计</a><a href="../chapters/appendix-map.html"><span>A</span>附录 A：上游 47 份 Notebook 与 21 份脚本阅读地图</a><a href="../chapters/appendix-sources.html"><span>B</span>附录 B：源码快照、论文范围、术语与研究边界</a><a href="../chapters/appendix-code.html"><span>C</span>附录 C：配套教学实现与样例数据</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · RAG_Techniques 2fd7bd0ffe5b（2026-11-02）· 核对 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

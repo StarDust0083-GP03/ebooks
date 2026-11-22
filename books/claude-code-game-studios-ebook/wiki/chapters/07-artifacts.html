@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从需求、配置、角色到 Hook 与验收，解剖 Claude Code Game Studios 的工作流"><meta name="author" content="独立源码研究">
+<title>产物模型：一页简报与故事、需求、ADR 三张网 · Claude Code 游戏工作室</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">G</span><span>Claude Code 游戏工作室</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 07</div><div class="rail-title">产物模型：一页简报与故事、需求、ADR 三张网</div><ol><li><a href="#场景-为什么模型改着改着就和设计打架了">场景：为什么模型改着改着就和设计打架了</a></li><li><a href="#轻轨底座-一页-design-game-brief-md">轻轨底座：一页 design/game-brief.md</a></li><li><a href="#重轨骨架-故事-注册表-adr-与控制清单">重轨骨架：故事、注册表、ADR 与控制清单</a></li><li><a href="#轻重两套产物怎么拼在一起">轻重两套产物怎么拼在一起</a></li><li><a href="#故事状态机-靠流程管-不靠数据库锁">故事状态机：靠流程管，不靠数据库锁</a></li><li><a href="#常见误解">常见误解</a></li><li><a href="#练习">练习</a></li><li><a href="#答案提示">答案提示</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 07 章</div><h1>产物模型：一页简报与故事、需求、ADR 三张网</h1><div class="chapter-meta">CCGS v1.3.0 快照 2026-11-09 · 约 20 分钟</div></header><div class="prose"><h2 id="场景-为什么模型改着改着就和设计打架了">场景：为什么模型改着改着就和设计打架了<a class="anchor" href="#场景-为什么模型改着改着就和设计打架了" aria-label="链接到本节">#</a></h2>
+<p>你用 <code>/dev-story</code> 做完“近战格挡”，程序员自信满满地交差；接着 <code>/story-done</code> 接手验收，逐条对账时一把揪住第三条：“格挡成功时播放火花特效”——既没有截图，也没有运行观察记录，直接打回 <code>NOT ASSESSED</code>。</p>
+<p>两个完全独立的技能，为什么能对着同一件事精准对账、不各说各话？靠的就是<strong>落盘的结构化产物</strong>。在 v1.3.0 里，CCGS 把产物体系很清醒地劈成了轻重两档：<strong>轻量档靠一张一页简报打天下，Studio Mode 才铺开“故事 + 注册表 + ADR + 控制清单”的整套网</strong>，而且两者中间留了平滑衔接的接口。</p>
+<h2 id="轻轨底座-一页-design-game-brief-md">轻轨底座：一页 <code>design/game-brief.md</code><a class="anchor" href="#轻轨底座-一页-design-game-brief-md" aria-label="链接到本节">#</a></h2>
+<p>在 <code>minimal</code> 档和 <code>/prototype</code> 主干道上，整套游戏的所有设计全压缩在 <code>.claude/docs/templates/game-brief.md</code> 这一页纸里。它不是随便写的备忘录，每个段落都有下游脚本和技能在盯着读：</p>
+<ul>
+<li><strong><code>## In your words</code></strong>：你最初怎么描述这个游戏、回答了什么、玩完后提了什么反馈（<code>After play:</code>），一字不改原样留档，绝不准模型替你改写或总结。</li>
+<li><strong>6 个核心必填项</strong>：<code>Pitch</code>（一句话卖点）、<code>Core loop</code>（核心循环）、<code>Goal &amp; fail state</code>（怎么赢怎么输——后面故事的验收标准全挂在这上面）、<code>Features</code>（MVP 清单，<code>[ ]</code> 待做、<code>[x]</code> 已做、<code>[-]</code> 被 <code>/cut</code> 砍掉）、<code>Out of scope</code>（明确不做什么）、<code>Build order</code>（先做最危险、最决定好不好玩的那一步）。</li>
+<li><strong>v1.3.0 新增的三块实战字段</strong>：<code>Look and references</code>（画面、视角、配色与参考图）、<code>First minute</code>（前 60 秒一步步怎么玩）、<code>Challenge</code>（麻烦什么时候来、输了亏什么，专门治原型太简单）；外加 <code>Your systems</code>（把你提过的每个系统标上 <code>in the slice</code> / <code>thin stand-in</code> / <code>later</code>，直接决定原型里做到多深、之后 <code>/create-stories</code> 怎么排构建顺序）、<code>Keep</code>（玩完觉得爽、死活不能改坏的东西，甚至可以用 <code>pins: dash_speed 14</code> 把 <code>config.js</code> 里的数值钉死）和 <code>Avoid</code>（明确不要的东西）。</li>
+</ul>
+<p>所有标题和状态标记都强制用英文保留（正文你可以随便写中文），这样 <code>/cut</code>、<code>/create-stories</code>、<code>/story-done</code> 和 <code>/next-step</code> 的脚本才能稳定解析。每个不是你亲口说的字段都会老老实实打上 <code>*(guessed)*</code> 或 <code>*(provisional)*</code> 标签，分清哪句是你的旨意、哪句是 AI 补的空。</p>
+<h2 id="重轨骨架-故事-注册表-adr-与控制清单">重轨骨架：故事、注册表、ADR 与控制清单<a class="anchor" href="#重轨骨架-故事-注册表-adr-与控制清单" aria-label="链接到本节">#</a></h2>
+<p>当项目从一页简报长成多系统工程，或者一上来就开了 <code>standard</code> / <code>full</code>（Studio Mode），四类产物就会彼此咬合起来。</p>
+<h3 id="1-故事-story-最小可执行单元">1. 故事（Story）：最小可执行单元<a class="anchor" href="#1-故事-story-最小可执行单元" aria-label="链接到本节">#</a></h3>
+<p><code>.claude/docs/templates/story.md</code> 定义了一张故事卡片的完整结构。顶部元数据直接回答“派给谁干、拿什么验收”：</p>
+<pre><code class="language-markdown">&gt; **Epic**: [epic name]
+&gt; **Status**: [Ready | Blocked — BLOCKED: &lt;reason&gt;]
+&gt; **Layer**: [Foundation / Core / Feature / Presentation]
+&gt; **Type**: [Logic | Integration | Visual/Feel | UI | Config/Data]
+&gt; **Estimate**: [S | M | L]
+&gt; **Manifest Version**: [date from control-manifest.md header]
+&gt; **Last Updated**: [set by /dev-story]
+</code></pre>
+<ul>
+<li><strong><code>Layer</code></strong> 决定找哪个程序员（Foundation 找引擎程序，Core/Feature 按领域找玩法/AI/网络程序，Presentation 找 UI 或玩法程序）。</li>
+<li><strong><code>Type</code></strong> 决定验收需要哪种硬证据（Logic 要单测、Integration 要集成测试或试玩报告、Visual/Feel 要截图加签字、UI 要截图、Config/Data 要冒烟报告）。</li>
+</ul>
+<p>正文按固定顺序分成八块：<code>Context</code>（关联 GDD、TR-ID、ADR、引擎风险和控制清单规则）、<code>Acceptance Criteria</code>（验收标准）、<code>Implementation Notes</code>（从 ADR 提炼出来的实施指引）、<code>Out of Scope</code>（明确划给隔壁故事别越界）、<code>Files</code>（创建时写计划改动文件，<code>/dev-story</code> 干完后直接替换成<strong>实际改过的文件清单</strong>，供 <code>/story-done</code> 核对有没有乱改范围外文件）、<code>QA Test Cases</code>、<code>Test Evidence</code>、<code>Dependencies</code>。关闭故事时，<code>/story-done</code> 还会往末尾追加 <code>## Completion Notes</code> 和 v1.3.0 新增的 <code>## Calls beyond the design</code>（记录人类决定保留的 AI 自主拍板项）。</p>
+<h3 id="2-两份注册表-不让事实在复制粘贴中腐烂">2. 两份注册表：不让事实在复制粘贴中腐烂<a class="anchor" href="#2-两份注册表-不让事实在复制粘贴中腐烂" aria-label="链接到本节">#</a></h3>
+<p>很多项目最大的噩梦是：创建故事时把设计文档里的需求抄了一份过来，三周后策划改了数值，故事里抄的那段文字成了过时化石。</p>
+<p>CCGS 用两张中央底账挡住这个坑：</p>
+<ul>
+<li><strong><code>docs/architecture/tr-registry.yaml</code>（需求注册表）</strong>：每条需求有一个永久编号 <code>TR-&lt;system&gt;-NNN</code>。故事里只引用编号，模板注释写得清清楚楚：<strong>“评审时回表读最新文本（review time read fresh）。”</strong></li>
+<li><strong><code>design/registry/entities.yaml</code>（实体注册表）</strong>：专管跨多个 GDD 的共享事实——怪物血量、掉落公式、全局常量。单份文档内部自己用的公式不必登记；一旦登记就<strong>永不删除</strong>（弃用只标 <code>status: deprecated</code>），改数值时注明修改日期和原因，<code>source</code> 标清唯一权威文档，所有引用方挂在 <code>referenced_by</code> 里。改一处设计时，<code>/propagate-design-change</code> 直接顺着 <code>referenced_by</code> 查出受影响的全部文档。</li>
+</ul>
+<h3 id="3-adr-架构决策记录-带版本号的摘要缓存">3. ADR（架构决策记录）：带版本号的摘要缓存<a class="anchor" href="#3-adr-架构决策记录-带版本号的摘要缓存" aria-label="链接到本节">#</a></h3>
+<p>架构决策放在 <code>docs/architecture/adr-NNNN-*.md</code>。故事里会带三个字段：受哪份 ADR 约束（<code>ADR Governing Implementation</code>）、一两句摘要（<code>ADR Decision Summary</code>）、以及抄摘要时 ADR 的版本号（<code>ADR Version</code>，取 <code>Last Verified</code> 或 <code>Date</code>）。</p>
+<p>这里有个很精明的省 token 玩法：<strong><code>/dev-story</code> 默认不让程序员去读整份长篇 ADR，而是直接把故事里的摘要内联进简报</strong>。万一这期间 ADR 改版了怎么办？靠 <code>ADR Version</code> 比对抓包——版本号一致（或老故事没写版本号）就直接信摘要；一旦版本号对不上，立刻切去读 <code>references/version-mismatch.md</code> 处理漂移。</p>
+<p>同时 ADR 的状态也直接卡住开工门禁：<code>Proposed</code>（还没批准）的 ADR 绝不能直接拿来写代码，必须先跑 <code>/architecture-decision accept ADR-NNNN</code>；<code>Deprecated</code> 或 <code>Superseded</code> 必须把故事改指到新 ADR 才能开工。</p>
+<h3 id="4-控制清单-control-manifest-按层划红线">4. 控制清单（Control Manifest）：按层划红线<a class="anchor" href="#4-控制清单-control-manifest-按层划红线" aria-label="链接到本节">#</a></h3>
+<p><code>docs/architecture/control-manifest.md</code> 按架构层（Foundation / Core / Feature / Presentation）列出“必须用什么模式、禁止用什么模式、性能红线是什么”。比如规定表现层不准直接调核心状态修改函数，必须走事件总线。单看一个孤零零的故事看不出违规，必须对照这份按层整理的清单才能抓出来。故事头部同样记着创建时的 <code>Manifest Version</code>，过期了验收时就会给你打上 <code>ADVISORY</code> 提示。</p>
+<h2 id="轻重两套产物怎么拼在一起">轻重两套产物怎么拼在一起<a class="anchor" href="#轻重两套产物怎么拼在一起" aria-label="链接到本节">#</a></h2>
+<p>把整张关系网画出来，上下游一目了然：</p>
+<pre><code class="language-text">轻量线：design/game-brief.md（一页简报）
+          ├─ /prototype → prototypes/&lt;name&gt;/ → Grow 成 Web 工程
+          ├─ /cut → 砍掉的 Features 标 [-] 移入 Out of scope
+          └─ /create-stories → 拆成 Story（关闭时反勾 brief 的 [x]）
+
+重轨线（Studio Mode）：
+GDD（系统设计）
+  ├─ design/registry/entities.yaml（跨文档共享实体/公式）
+  ├─ docs/architecture/tr-registry.yaml（权威 TR-ID 需求）
+  ├─ ADR（带状态与版本的架构决策）
+  │    └─ docs/architecture/control-manifest.md（按层架构红线）
+  └─ Story（最小执行单元：验收标准 + 证据要求 + 实际改动文件）
+        ├─ EPIC.md（史诗汇总表，关闭时同步更新状态列）
+        └─ production/sprint-status.yaml（冲刺进度账本）
+</code></pre>
+<p>哪怕从最轻的 <code>/prototype</code> 起步，只要后来 Grow 成了 Web 工程，或者喊 <code>/create-stories</code> 开始拆故事，<code>/story-done</code> 在关闭一个故事时会顺手帮你把 <code>design/game-brief.md</code> 对应的那条 Feature 勾成 <code>[x]</code>，同步把 <code>EPIC.md</code> 里的状态列改成 <code>Complete</code>。轻重两套体系并没有割裂。</p>
+<h2 id="故事状态机-靠流程管-不靠数据库锁">故事状态机：靠流程管，不靠数据库锁<a class="anchor" href="#故事状态机-靠流程管-不靠数据库锁" aria-label="链接到本节">#</a></h2>
+<p>故事的生命周期流转看起来像状态机：</p>
+<ul>
+<li>初始状态：<code>Ready</code> 或 <code>Blocked</code>；</li>
+<li><code>/dev-story</code> 征得你同意后改成 <code>In Progress</code>，同步改 <code>Last Updated</code> 和 <code>production/sprint-status.yaml</code>；</li>
+<li><code>/story-done</code> 只有在你明确选了关闭后才改成 <code>Complete</code>，追加完成记录并同步状态账本。</li>
+</ul>
+<p>但必须说句大实话：<strong>仓库里没有任何脚本强制锁死这个状态转移</strong>。你用编辑器直接把一个 <code>Ready</code> 故事手改成 <code>Complete</code>，不会有任何 Hook 拦你。它的状态机完全靠技能流程的纪律维系，而不是硬代码状态引擎。</p>
+<h2 id="常见误解">常见误解<a class="anchor" href="#常见误解" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>误解一：故事文件就是全部需求说明，程序员只看它就够了。</strong> 在 <code>minimal</code> 档下确实如此；但在 <code>standard</code> / <code>full</code> 下，故事只是索引和验收清单，TR-ID 里的权威需求文本在注册表里，随时可能更新。</li>
+<li><strong>误解二：每做一个故事都得把相关 ADR 从头到尾读一遍。</strong> 不会，默认信故事里的摘要，靠 <code>ADR Version</code> 版本戳防过期，不一致才翻原文。</li>
+<li><strong>误解三：注册表里废弃的条目可以删掉省地方。</strong> 绝对不行。历史故事、提交记录和评审报告都挂着旧 ID，删了就会变成悬空引用，只能标 <code>status: deprecated</code>。</li>
+</ul>
+<h2 id="练习">练习<a class="anchor" href="#练习" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>打开 <code>.claude/docs/templates/game-brief.md</code>，解释为什么 <code>Keep</code> 里允许写 <code>pins: dash_speed 14</code>，这行注释是给谁读的？</li>
+<li>如果某个需求 <code>TR-combat-001</code> 在故事建好两周后改了伤害公式，但没人去改故事文件里的描述，在 <code>full</code> 档下跑 <code>/story-done</code> 会按哪个版本验收？为什么？</li>
+<li>给一个“游戏暂停与音量设置菜单”写一个最小的故事头部，标出 <code>Layer</code>、<code>Type</code>，并说出它在 <code>minimal</code> 档和 <code>standard</code> 档下分别需要什么验收证据。</li>
+</ol>
+<h2 id="答案提示">答案提示<a class="anchor" href="#答案提示" aria-label="链接到本节">#</a></h2>
+<ol>
+<li><code>pins:</code> 是给 <code>/prototype</code> 迭代后的轻量自检脚本读的——用来比对 <code>config.js</code> 里你明确表示“特别喜欢、不许动”的手感参数有没有在后续修改中被意外改漂。</li>
+<li>按 <code>docs/architecture/tr-registry.yaml</code> 里的最新文本验收。因为 <code>/story-done</code> Phase 2 明确禁止信任故事里摘抄的旧文本，强制按 <code>id: &lt;TR-ID&gt;\s*$</code> 回注册表抓原文。</li>
+<li><code>Layer: Presentation</code>，<code>Type: UI</code>。UI 类型无论在 <code>minimal</code> 还是 <code>standard</code> 档，都必须在 <code>production/qa/evidence/&lt;story-slug&gt;/</code> 留存实际运行后的页面截图（UI 故事不需要单元测试，也不需要额外的视觉签字文档）。</li>
+</ol>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="06-skill-protocol.html"><small>上一章</small><strong>Skill 协议：一条斜杠命令怎么从解析走到交接</strong></a><a class="next" href="08-dev-story.html"><small>下一章</small><strong>实施链路：/dev-story 怎么把故事变成代码</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：先看清这东西到底是怎么跑起来的</a><a href="../chapters/01-requirements.html"><span>01</span>需求：一个人写游戏，为什么还要套规矩</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：一个会话，四种约束</a><a href="../chapters/03-onboarding.html"><span>03</span>入门：先玩一把（<code>/prototype</code>）与 Studio Mode（<code>/start</code>）双轨入口</a><a href="../chapters/04-config.html"><span>04</span>配置求值：一个 <code>rigor</code> 如何长出六个设置</a><a href="../chapters/05-agents.html"><span>05</span>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</a><a href="../chapters/06-skill-protocol.html"><span>06</span>Skill 协议：一条斜杠命令怎么从解析走到交接</a><a href="../chapters/07-artifacts.html"><span>07</span>产物模型：一页简报与故事、需求、ADR 三张网</a><a href="../chapters/08-dev-story.html"><span>08</span>实施链路：<code>/dev-story</code> 怎么把故事变成代码</a><a href="../chapters/09-story-done.html"><span>09</span>验收：<code>/story-done</code> 如何堵死“基本完成”</a><a href="../chapters/10-hooks.html"><span>10</span>Hook：十五个检查点里，到底谁真的能拦住</a><a href="../chapters/11-registries.html"><span>11</span>注册表：跨文档事实怎么管才不漂移</a><a href="../chapters/12-teams.html"><span>12</span>协作：团队流水线、默认塌缩与“透镜折叠”</a><a href="../chapters/13-engine.html"><span>13</span>引擎与品类适配：统一引擎表、Web 一等公民与品类库</a><a href="../chapters/14-context.html"><span>14</span>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</a><a href="../chapters/15-security.html"><span>15</span>安全边界：能聊天、有 Hook，不等于有沙箱</a><a href="../chapters/16-verification.html"><span>16</span>验证与演进：Markdown 写的框架，怎么证明自己没改坏</a><a href="../chapters/17-mini-studio.html"><span>17</span>最小实验：用两百行 Python 亲手跑通四条核心约束</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.3.0 源码索引、实测数据、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · CCGS v1.3.0 · 快照 abc0de79d6ce · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="源码拆解 PrimeIntellect-ai/prime-agent v0.10.5：Rust 多进程宿主、Protocol v3 Python REPL、持久信箱、递归子 Agent 与 Continual Harness"><meta name="author" content="独立源码研究">
+<title>源码索引、关键常量表、术语与核验命令 · Prime Agent 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">PA</span><span>Prime Agent 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Appendix</div><div class="rail-title">源码索引、关键常量表、术语与核验命令</div><ol><li><a href="#上游快照元数据">上游快照元数据</a></li><li><a href="#核心源码路径索引">核心源码路径索引</a></li><li><a href="#关键源码常量速查">关键源码常量速查</a></li><li><a href="#核心术语表">核心术语表</a></li><li><a href="#本地核验与复现命令">本地核验与复现命令</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">附录 A</div><h1>源码索引、关键常量表、术语与核验命令</h1><div class="chapter-meta">Prime Agent v0.10.5 快照 2026-11-21 · 约 22 分钟</div></header><div class="prose"><p>本附录集中收录本书所依据的固定快照元数据、源码目录映射、关键源码常量表、中英文术语对照以及本地核验命令，方便直接对照上游代码逐条查证。</p>
+<h2 id="上游快照元数据">上游快照元数据<a class="anchor" href="#上游快照元数据" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>字段</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>仓库地址</td>
+<td><code>https://github.com/PrimeIntellect-ai/prime-agent</code></td>
+</tr>
+<tr>
+<td>固定提交 SHA</td>
+<td><code>783acb5d72a9b23f97fa4a793a67d421b3ec402d</code></td>
+</tr>
+<tr>
+<td>提交说明</td>
+<td><code>feat(inbox): show what rlm.inbox.read returned in the python_repl card (#4123)</code></td>
+</tr>
+<tr>
+<td>工作区版本</td>
+<td><code>0.10.5</code>（<code>Cargo.toml</code> <code>[workspace.package]</code>，MIT License，Rust 2021）</td>
+</tr>
+<tr>
+<td>最近正式版本</td>
+<td><code>v0.10.5</code>（<code>2026-11-18T19:15:02Z</code>）</td>
+</tr>
+<tr>
+<td>快照采集日期</td>
+<td><code>2026-11-21</code></td>
+</tr>
+<tr>
+<td>Rust 源码规模</td>
+<td>10 个 crate，<code>crates/*/src</code> 下 1,053 个 <code>.rs</code> 文件、524,791 行</td>
+</tr>
+<tr>
+<td>Python 运行时规模</td>
+<td><code>prime-agent-runtime/</code> 下 22 个 <code>.py</code> 文件（含测试）、33,135 行；其中 <code>src/rlm/</code> 核心源码 13,749 行</td>
+</tr>
+<tr>
+<td>内置技能包数量</td>
+<td><code>skills/</code> 下 14 个目录（10 个可执行 Python 技能 + 4 个 Markdown 技能）</td>
+</tr>
+</tbody></table></div>
+<h2 id="核心源码路径索引">核心源码路径索引<a class="anchor" href="#核心源码路径索引" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>架构模块</th>
+<th>关键文件与目录</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>工作区配置与 Lint 门禁</td>
+<td><code>Cargo.toml</code>、<code>AGENTS.md</code>、<code>vendor/crossterm/PRIME_AGENT_PATCH.md</code></td>
+</tr>
+<tr>
+<td>Agent Turn 循环与 Claim-First</td>
+<td><code>crates/pa-agent/src/agent.rs</code>、<code>crates/pa-agent/src/agent_loop/run.rs</code></td>
+</tr>
+<tr>
+<td>共享线协议与领域词表</td>
+<td><code>crates/pa-types/src/daemon/</code>、<code>crates/pa-types/src/inbox_notice.rs</code>、<code>crates/pa-types/src/session.rs</code></td>
+</tr>
+<tr>
+<td><code>python_repl</code> 工具定义与截断</td>
+<td><code>crates/pa-core/src/tools/ipython.rs</code>、<code>crates/pa-core/src/kernel/manager/requests.rs</code>、<code>crates/pa-core/src/kernel/manager/execution.rs</code>、<code>crates/pa-core/src/kernel/shared.rs</code></td>
+</tr>
+<tr>
+<td>Protocol v3 CPython 内核</td>
+<td><code>prime-agent-runtime/src/rlm/repl.py</code>、<code>prime-agent-runtime/src/rlm/repl.md</code>、<code>prime-agent-runtime/src/rlm/__init__.py</code></td>
+</tr>
+<tr>
+<td>异步 <code>bash()</code> 与持久进程</td>
+<td><code>prime-agent-runtime/src/rlm/bash.py</code>、<code>prime-agent-runtime/src/rlm/_winjob.py</code></td>
+</tr>
+<tr>
+<td>技能加载与安全边界</td>
+<td><code>crates/pa-core/src/skills/mod.rs</code>、<code>skills/*/SKILL.md</code></td>
+</tr>
+<tr>
+<td>递归子 Agent 与 Spawn 账本</td>
+<td><code>crates/pa-core/src/session_engine/rlm_host.rs</code>、<code>crates/pa-daemon/src/rlm_children/</code>、<code>crates/pa-daemon/src/rlm_ledger.rs</code>、<code>crates/pa-daemon/src/supervisor_parent_death.rs</code></td>
+</tr>
+<tr>
+<td>声明式状态机工厂</td>
+<td><code>prime-agent-runtime/src/rlm/factory.py</code>、<code>prime-agent-runtime/src/rlm/machines/</code></td>
+</tr>
+<tr>
+<td>持久信箱与跨进程通信</td>
+<td><code>crates/pa-core/src/session_engine/inbox.rs</code>、<code>crates/pa-daemon/src/agent_inbox.rs</code>、<code>crates/pa-daemon/src/agent_messaging.rs</code>、<code>crates/pa-daemon/src/peer_client.rs</code></td>
+</tr>
+<tr>
+<td>会话搜索、热更新与 ACP</td>
+<td><code>crates/pa-daemon/src/session_content_search.rs</code>、<code>crates/pa-daemon/src/update_prepare.rs</code>、<code>crates/pa-daemon/src/update_restore.rs</code>、<code>crates/pa-daemon/src/acp/</code></td>
+</tr>
+<tr>
+<td>分层提示词与 Continual Harness</td>
+<td><code>crates/pa-core/src/prompts/system_prompt.rs</code>、<code>crates/pa-core/src/prompts/layers/</code>、<code>crates/pa-core/src/refinement/</code>、<code>crates/pa-core/src/session_engine/harness_digest.rs</code>、<code>prime-agent-runtime/src/rlm/harness.py</code></td>
+</tr>
+<tr>
+<td>自动压缩、目标、心跳与自主门禁</td>
+<td><code>crates/pa-core/src/session_engine/compaction.rs</code>、<code>crates/pa-core/src/session_engine/goal_boundary.rs</code>、<code>crates/pa-core/src/cron/</code>、<code>crates/pa-core/src/autonomous/gates.rs</code></td>
+</tr>
+<tr>
+<td>MCP 宿主认证与内核客户端</td>
+<td><code>crates/pa-core/src/mcp/</code>、<code>crates/pa-daemon/src/mcp_connections.rs</code>、<code>prime-agent-runtime/src/rlm/mcp.py</code></td>
+</tr>
+<tr>
+<td>TUI 工具卡片与可观测性</td>
+<td><code>crates/pa-tui/src/tool_card/ipython.rs</code>、<code>crates/pa-daemon/src/streaming.rs</code>、<code>crates/pa-core/src/agent_traces/</code>、<code>crates/pa-core/src/session_engine/semantic_edges/</code></td>
+</tr>
+</tbody></table></div>
+<h2 id="关键源码常量速查">关键源码常量速查<a class="anchor" href="#关键源码常量速查" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>常量名</th>
+<th>核验值</th>
+<th>所在位置</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>PROTOCOL_VERSION</code></td>
+<td><code>3</code></td>
+<td><code>rlm/repl.py</code></td>
+<td>Python REPL 线协议版本号</td>
+</tr>
+<tr>
+<td><code>DEFAULT_MAX_OUTPUT_CHARS</code></td>
+<td><code>65,536</code></td>
+<td><code>pa-core/src/kernel/shared.rs</code></td>
+<td>单单元格 stdout/stderr 3:1 头尾截断上限</td>
+</tr>
+<tr>
+<td><code>MAX_BACKGROUND_OUTPUT_CHARS</code></td>
+<td><code>65,536</code></td>
+<td><code>pa-core/src/kernel/shared.rs</code></td>
+<td>未归属后台原始 fd 输出缓冲上限</td>
+</tr>
+<tr>
+<td><code>_STREAM_FRAME_TEXT_CAP</code></td>
+<td><code>65,536</code></td>
+<td><code>rlm/repl.py</code></td>
+<td>单条 Python 流事件帧最大字符数</td>
+</tr>
+<tr>
+<td><code>_RESULT_TEXT_CAP</code></td>
+<td><code>1,048,576</code></td>
+<td><code>rlm/repl.py</code></td>
+<td>单次表达式 <code>repr</code> 或异常文本传输上限</td>
+</tr>
+<tr>
+<td><code>_PAYLOAD_CAP</code></td>
+<td><code>16 MiB</code></td>
+<td><code>rlm/repl.py</code></td>
+<td><code>emit()</code> 与 <code>host_request()</code> 单帧 JSON 上限</td>
+</tr>
+<tr>
+<td><code>DEFAULT_PYTHON_CELL_TIMEOUT_MS</code></td>
+<td><code>60,000</code> 毫秒</td>
+<td><code>pa-core/src/settings/types.rs</code></td>
+<td>单元格默认超时时间</td>
+</tr>
+<tr>
+<td><code>PYTHON_REPL_TIMEOUT_MAX_S</code></td>
+<td><code>180</code> 秒</td>
+<td><code>pa-core/src/tools/ipython.rs</code></td>
+<td>模型单次调用允许申请的最大超时</td>
+</tr>
+<tr>
+<td><code>KERNEL_SHUTDOWN_TIMEOUT_MS</code></td>
+<td><code>5,000</code> 毫秒</td>
+<td><code>pa-core/src/kernel/shared.rs</code></td>
+<td>宿主等待内核退出的强杀时限</td>
+</tr>
+<tr>
+<td><code>_SHUTDOWN_TIMEOUT</code>（MCP）</td>
+<td><code>2.5</code> 秒</td>
+<td><code>rlm/mcp.py</code></td>
+<td>MCP 客户端关闭时限（严格低于宿主 5 秒线）</td>
+</tr>
+<tr>
+<td><code>_YIELD_AFTER_SECONDS</code></td>
+<td><code>1.0</code> 秒</td>
+<td><code>rlm/bash.py</code></td>
+<td>接入完成通知时 <code>await bash()</code> 自动降级等待窗口</td>
+</tr>
+<tr>
+<td><code>DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES</code></td>
+<td><code>16 MiB</code></td>
+<td><code>rlm/repl.py</code></td>
+<td>快照单变量上限与压缩裁剪阈值</td>
+</tr>
+<tr>
+<td><code>DEFAULT_SNAPSHOT_MAX_BYTES</code></td>
+<td><code>256 MiB</code></td>
+<td><code>rlm/repl.py</code></td>
+<td>快照总字节数上限</td>
+</tr>
+<tr>
+<td><code>DEFAULT_RLM_MAX_DEPTH</code></td>
+<td><code>2</code></td>
+<td><code>pa-core/src/session_engine/rlm_host.rs</code></td>
+<td>默认递归子 Agent 最大深度</td>
+</tr>
+<tr>
+<td><code>RLM_PROGRESS_NOTE_MAX_LENGTH</code></td>
+<td><code>512</code>（UTF-16 码元）</td>
+<td><code>pa-core/src/session_engine/rlm_host.rs</code></td>
+<td>子 Agent 进度条单条最大长度</td>
+</tr>
+<tr>
+<td><code>RLM_PROGRESS_NOTE_MIN_INTERVAL_MS</code></td>
+<td><code>10,000</code> 毫秒</td>
+<td><code>pa-core/src/session_engine/rlm_host.rs</code></td>
+<td>进度条最小发送间隔</td>
+</tr>
+<tr>
+<td><code>RLM_LEDGER_MAX_BYTES</code> / <code>MAX_RECORDS</code></td>
+<td><code>32 MiB</code> / <code>100,000</code></td>
+<td><code>pa-daemon/src/rlm_ledger.rs</code></td>
+<td>Spawn 账本失败闭合读取上限</td>
+</tr>
+<tr>
+<td><code>DEFAULT_RESERVE_TOKENS</code></td>
+<td><code>16,384</code></td>
+<td><code>pa-core/src/session_engine/compaction.rs</code></td>
+<td>自动压缩默认预留 Token</td>
+</tr>
+<tr>
+<td><code>DEFAULT_KEEP_RECENT_TOKENS</code></td>
+<td><code>20,000</code></td>
+<td><code>pa-core/src/session_engine/compaction.rs</code></td>
+<td>压缩后默认保留的近期历史 Token</td>
+</tr>
+<tr>
+<td><code>COMPACT_THRESHOLD_RATIO</code></td>
+<td><code>0.95</code></td>
+<td><code>pa-core/src/session_engine/compaction.rs</code></td>
+<td>压缩默认窗口比例上限</td>
+</tr>
+<tr>
+<td><code>COMBINED_LIMIT_HEADROOM_FLOOR</code></td>
+<td><code>4,096</code></td>
+<td><code>pa-core/src/session_engine/compaction.rs</code></td>
+<td>联合输入输出上限最小安全余量</td>
+</tr>
+<tr>
+<td><code>MAX_GATE_OUTPUT_CHARS</code></td>
+<td><code>6,000</code></td>
+<td><code>pa-core/src/autonomous/gates.rs</code></td>
+<td>写入续跑提示的门禁失败输出上限</td>
+</tr>
+<tr>
+<td><code>_MAX_TOOL_PAGES</code></td>
+<td><code>25</code> 页</td>
+<td><code>rlm/mcp.py</code></td>
+<td>MCP <code>tools/list</code> 分页最大页数</td>
+</tr>
+</tbody></table></div>
+<h2 id="核心术语表">核心术语表<a class="anchor" href="#核心术语表" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>RLM（Recursive Language Model，递归语言模型）</strong>：将上下文与大块数据视为持久 REPL 里的变量，并通过程序化函数调用按需派生递归子 Agent 的运行时范式。</li>
+<li><strong>PTC（Programmatic Tool Calling，程序化工具调用）</strong>：模型不直接输出几十种零散 JSON 工具调用，而是通过唯一的 <code>python_repl</code> 工具编写 Python 代码调用异步函数、循环和过滤数据。</li>
+<li><strong>Continual Harness（持续脚手架）</strong>：独立于不可变静态系统提示词之外的持久化状态层（含 <code>prompt</code>、<code>memory</code>、<code>skill</code>、<code>subagent</code>、<code>factory</code> 五类条目），支持通过 <code>/refine</code> 做小步、有证据的增量更新与回滚。</li>
+<li><strong>Claim-First</strong>：在消费任何待办队列前必须先原子获取 <code>RunClaim</code> 所有权槽位，避免并发启动时丢失排队消息。</li>
+<li><strong>核家族（Nuclear Family）</strong>：单个 Agent 允许直接观测和发信的范围，严格限定为其唯一父节点、同级兄弟节点（所有根会话互为兄弟）与直接子节点。</li>
+<li><strong>持久信箱（Agent Inbox）</strong>：由守护进程维护的每会话 <code>inbox.jsonl</code> 日志存储，把 6 类机器通知与唤醒提示分离，由模型通过 <code>rlm.inbox.read()</code> 按条件消费。</li>
+<li><strong>ACP（Agent Client Protocol）</strong>：基于 stdio JSON-RPC 的标准化外部客户端接入协议，Prime Agent 在此基础上扩展了 <code>_session/steering</code> 运行中转向能力。</li>
+</ul>
+<h2 id="本地核验与复现命令">本地核验与复现命令<a class="anchor" href="#本地核验与复现命令" aria-label="链接到本节">#</a></h2>
+<p>在上游仓库快照目录中核对提交、统计和配置边界：</p>
+<pre><code class="language-bash">git rev-parse HEAD
+rg -n &quot;DEFAULT_MAX_OUTPUT_CHARS|DEFAULT_RLM_MAX_DEPTH|DEFAULT_RESERVE_TOKENS&quot; crates/
+rg -n &quot;SourceScope::Project&quot; crates/pa-core/src/skills/
+</code></pre>
+<p>在本书仓库目录中运行教学模型单元测试、重新生成图表、构建站点与检验链接：</p>
+<pre><code class="language-bash">python3 -m unittest discover -s examples -v
+python3 scripts/make_diagrams.py
+node wiki/build.mjs
+python3 scripts/make_epub.py
+python3 scripts/check_links.py
+</code></pre>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="13-security-cost-mini-model.html"><small>上一章</small><strong>安全边界、成本账本与可运行教学模型</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：把长程自主编程收进一个持久 Python REPL</a><a href="../chapters/01-why-rlm.html"><span>01</span>为什么传统工具调用在长程任务上会失速</a><a href="../chapters/02-workspace-topology.html"><span>02</span>十个 Rust Crate 与一层 Python 运行时的双层拓扑</a><a href="../chapters/03-agent-loop.html"><span>03</span>Turn 循环、Claim-First 抢占与三层消息队列</a><a href="../chapters/04-python-repl.html"><span>04</span>Protocol v3 内核：<code>python_repl</code> 如何把状态、输出和中断管稳</a><a href="../chapters/05-bash-edit-skills.html"><span>05</span>单工具收口下的程序化工具链：<code>bash</code>、<code>edit</code> 与可执行技能</a><a href="../chapters/06-subagents-delegation.html"><span>06</span>递归子 Agent 树、Spawn 账本与状态机工厂</a><a href="../chapters/07-agent-inbox.html"><span>07</span>持久信箱 <code>rlm.inbox</code> 与跨进程消息投递</a><a href="../chapters/08-session-search-acp.html"><span>08</span>会话生命周期、流式全文搜索与 ACP 外部协议</a><a href="../chapters/09-prompt-continual-harness.html"><span>09</span>分层系统提示词与 Continual Harness 自我改进</a><a href="../chapters/10-context-compaction-autonomy.html"><span>10</span>自动压缩、目标驱动与有界自主运行</a><a href="../chapters/11-mcp-bridge.html"><span>11</span>宿主管认证、内核跑协议的 MCP 桥接层</a><a href="../chapters/12-tui-observability.html"><span>12</span>把渲染留在关键路径上：TUI 卡片、延迟护栏与可观测性</a><a href="../chapters/13-security-cost-mini-model.html"><span>13</span>安全边界、成本账本与可运行教学模型</a><a href="../chapters/appendix-sources.html"><span>A</span>源码索引、关键常量表、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Prime Agent v0.10.5 · 快照 783acb5d72a9 · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从需求、配置、角色到 Hook 与验收，解剖 Claude Code Game Studios 的工作流"><meta name="author" content="独立源码研究">
+<title>Skill 协议：一条斜杠命令怎么从解析走到交接 · Claude Code 游戏工作室</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">G</span><span>Claude Code 游戏工作室</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 06</div><div class="rail-title">Skill 协议：一条斜杠命令怎么从解析走到交接</div><ol><li><a href="#场景-敲下一行命令-后台到底发生了什么">场景：敲下一行命令，后台到底发生了什么</a></li><li><a href="#78-个-skill-md-的真相-75-个正式技能-3-个旧名转发层">78 个 SKILL.md 的真相：75 个正式技能 + 3 个旧名转发层</a></li><li><a href="#前置元数据-每一行都在管什么">前置元数据：每一行都在管什么</a></li><li><a href="#正文第一行的-把确定性计算从模型手里抢过来">正文第一行的 !：把确定性计算从模型手里抢过来</a></li><li><a href="#长技能为什么要拆-references-防压缩丢步">长技能为什么要拆 references/（防压缩丢步）</a></li><li><a href="#提问协议-跳过绝不等于同意">提问协议：跳过绝不等于同意</a></li><li><a href="#收尾契约-堵死-差不多做好了">收尾契约：堵死“差不多做好了”</a></li><li><a href="#常见误解">常见误解</a></li><li><a href="#练习">练习</a></li><li><a href="#答案提示">答案提示</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 06 章</div><h1>Skill 协议：一条斜杠命令怎么从解析走到交接</h1><div class="chapter-meta">CCGS v1.3.0 快照 2026-11-09 · 约 18 分钟</div></header><div class="prose"><h2 id="场景-敲下一行命令-后台到底发生了什么">场景：敲下一行命令，后台到底发生了什么<a class="anchor" href="#场景-敲下一行命令-后台到底发生了什么" aria-label="链接到本节">#</a></h2>
+<p>你在终端里敲下一行：</p>
+<pre><code class="language-text">/dev-story production/epics/stealth/story-003.md
+</code></pre>
+<p>回车之后，你还没来得及看清，屏幕最前面就自动冒出了一段算得清清楚楚的配置块，接着 Claude 列出 7 个复选框阶段，从找故事、查前置条件、问你能不能标成 In Progress，一路推到派程序员写代码、查磁盘产物、跑解析检查、看截图，最后吐出三行格式工整的收尾块。</p>
+<p>如果把一个技能目录拆开，它既不是二进制程序，也不是随便写的一段“请帮我写代码”的提示词，而是一套<strong>带元数据、带确定性注入、带防压缩拆页、带收尾契约的轻量协议</strong>。</p>
+<h2 id="78-个-skill-md-的真相-75-个正式技能-3-个旧名转发层">78 个 <code>SKILL.md</code> 的真相：75 个正式技能 + 3 个旧名转发层<a class="anchor" href="#78-个-skill-md-的真相-75-个正式技能-3-个旧名转发层" aria-label="链接到本节">#</a></h2>
+<p>在 v1.3.0 里数 <code>.claude/skills/*/SKILL.md</code>，硬盘上实测是 <strong>78 个</strong>，但 README 写的是 <strong>75 个技能</strong>。这并不是统计出错，而是 v1.3.0 把三个容易和其他 AI 工具撞车的常用命令改了名：</p>
+<ul>
+<li><code>/help</code> → <strong><code>/next-step</code></strong></li>
+<li><code>/settings</code> → <strong><code>/project-settings</code></strong></li>
+<li><code>/changelog</code> → <strong><code>/write-changelog</code></strong></li>
+</ul>
+<p>旧的 <code>help/</code>、<code>settings/</code>、<code>changelog/</code> 目录没删，而是改成了只有 20 来行的兼容转发层（shim）：你敲旧名时，它先老老实实打印一行 <code>/help is now /next-step. Running /next-step.</code>，然后调 <code>Skill</code> 工具把参数原样甩给新技能，自己什么活都不干。另外 v1.3.0 新增了收尾砍需求用的 <code>/cut</code>，凑齐了 75 个正式技能。</p>
+<h2 id="前置元数据-每一行都在管什么">前置元数据：每一行都在管什么<a class="anchor" href="#前置元数据-每一行都在管什么" aria-label="链接到本节">#</a></h2>
+<p>拿 <code>.claude/skills/dev-story/SKILL.md</code> 的开头举个例子：</p>
+<pre><code class="language-yaml">---
+name: dev-story
+description: &quot;Implements one story in code with tests, following its ADRs. ...&quot;
+argument-hint: &quot;[story-path]&quot;
+user-invocable: true
+disable-model-invocation: true
+allowed-tools: Read, Glob, Grep, Write, Edit, Agent, AskUserQuestion,
+  Bash(bash &quot;*/.claude/skills/dev-story/../../hooks/yaml-helper.sh&quot; resolve_config *),
+  Bash(bash .claude/scripts/story-facts.sh *), ...
+model: sonnet
+---
+</code></pre>
+<p>拆开看几个关键开关：</p>
+<ul>
+<li><strong><code>description</code></strong>：Claude 靠这段话判断“用户随口说的话该不该触发这个技能”。写得越具体、把“什么时候不该用”也写明白，误触发就越少。</li>
+<li><strong><code>disable-model-invocation: true</code></strong>：这行非常关键。像 <code>/dev-story</code>、<code>/story-done</code>、<code>/launch-checklist</code> 这类直接改文件或推进状态的技能，都加了这把锁——<strong>模型自己绝不能擅自调用，必须由人亲手敲命令触发</strong>。所以 v1.3.0 里 <code>/create-stories</code> 和 <code>/story-done</code> 专门修了一个旧毛病：不再把“现在开始 <code>/dev-story</code>”做成弹窗选项，而是直接把命令打印出来让你自己敲。</li>
+<li><strong><code>allowed-tools</code>（精确到子命令）</strong>：早年 34 个技能图省事，在 <code>allowed-tools</code> 里直接写了个光秃秃的 <code>Bash</code>，等于一进技能就预批准了所有 shell 命令。v1.2.0 之后全部收窄到了具体脚本和子命令，比如 <code>Bash(bash .claude/scripts/story-facts.sh *)</code> 只免弹窗放行这一个脚本。</li>
+<li><strong>v1.3.0 踩出的一个权限坑</strong>：Claude Code 对技能自带的 <code>allowed-tools</code> <strong>只在技能启动的那一轮生效</strong>。只要技能中途停下来问你一个问题，等你回答完进入下一轮，它再调自己的只读脚本时又要弹窗求批准。为了治这个烦人的连环弹窗，v1.3.0 直接在 <code>.claude/settings.json</code> 的全局 <code>permissions.allow</code> 里一口气加了 28 条只读框架脚本和 <code>yaml-helper.sh</code> 7 个只读子命令的白名单；写文件和跑你项目代码的命令，依然留在技能自己手里或每次问你。另外 v1.3.0 还顺手修了 5 个原地改文件的技能（<code>/team-qa</code>、<code>/review-all-gdds</code>、<code>/write-changelog</code>、<code>/localize</code>、<code>/skill-test</code>）漏写 <code>Edit</code> 工具导致每次都被迫整文件重写或卡弹窗的 bug。</li>
+</ul>
+<h2 id="正文第一行的-把确定性计算从模型手里抢过来">正文第一行的 <code>!</code>：把确定性计算从模型手里抢过来<a class="anchor" href="#正文第一行的-把确定性计算从模型手里抢过来" aria-label="链接到本节">#</a></h2>
+<p>几乎所有核心技能的正文一上来，不等废话，先顶一行反引号包住的感叹号命令：</p>
+<pre><code class="language-bash">!`bash &quot;${CLAUDE_SKILL_DIR}/../../hooks/yaml-helper.sh&quot; resolve_config --keys automation,workflow,qa.level,gate_level,engine_values,specialists,perf_budgets,system_overrides`
+</code></pre>
+<p>Claude Code 在把技能正文喂给模型<strong>之前</strong>，先执行这行 shell，把标准输出原样插进提示词里。下一行紧跟着交代：“上面已经算好了，直接照着用；要是没出现这个块，说明 shell 预处理没开，去读默认配置。”</p>
+<p>这招彻底省掉了模型“自己找 <code>project.yaml</code> → 自己算 5 级优先级 → 自己展开 <code>rigor</code> → 算错还一脸自信”的整条翻车链。<code>/next-step</code> 甚至把 <code>.claude/scripts/story-status.sh</code> 也用 <code>!</code> 注入进正文，让模型一睁眼就看到按优先级排好序的未完成故事清单，不准它自己重新扫文件乱排序。</p>
+<h2 id="长技能为什么要拆-references-防压缩丢步">长技能为什么要拆 <code>references/</code>（防压缩丢步）<a class="anchor" href="#长技能为什么要拆-references-防压缩丢步" aria-label="链接到本节">#</a></h2>
+<p>写复杂技能很容易踩一个隐蔽的坑：把七八百行步骤全塞进一个 <code>SKILL.md</code> 里。会话跑久了一旦触发上下文压缩（Compaction），Claude Code 重挂技能时<strong>只会保留开头一部分</strong>，后半截的验收、截图、收尾规则直接凭空蒸发。</p>
+<p>所以 CCGS 把 14 个最长的技能（像 <code>/prototype</code>、<code>/dev-story</code>、<code>/story-done</code>、<code>/setup-engine</code>、<code>/gate-check</code>、<code>/design-system</code> 等）全部拆瘦了：<strong>主 <code>SKILL.md</code> 只留配置注入、核心铁律、一张简短的阶段总览清单，每个具体阶段或冷门分支扔进同目录下的 <code>references/*.md</code></strong>，每个阶段标题下写死一句：“现在先读 <code>references/xxx.md</code> 再照着干；如果中途发生了上下文压缩，重新读一遍。”</p>
+<p>以 <code>/dev-story</code> 的 7 段清单为例，它既是模型的执行路线图，也是给用户看的实时进度条：</p>
+<pre><code class="language-text">- [ ] Phase 1: story found, tier resolved
+- [ ] Phase 2: prerequisites checked (ADR, manifest, dependencies)
+- [ ] Phase 3: story marked In Progress (one ask)
+- [ ] Phase 4: programmer and engine specialist chosen
+- [ ] Phase 5: work handed out with a full brief
+- [ ] Phase 6: finished? parse check, run and look, one Run result line; a grown game&#39;s same-seed run
+- [ ] Phase 7: summary, ## Files, checkpoint, closing block
+</code></pre>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 398" width="420" height="398" role="img" aria-label="dev-story 的七个阶段">
+<title>dev-story 的七个阶段</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<circle cx="18" cy="30" r="12" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="0.9"/><text x="18" y="33.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="600" fill="var(--forest)" text-anchor="middle" opacity="1">1</text><rect x="38" y="10" width="374" height="38" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="47" y="27" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">故事与档位</text><text x="47" y="42" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">story-facts.sh；按 GDD 解析 system_overrides</text><line x1="18" y1="42" x2="18" y2="60" stroke="var(--line)" stroke-width="1.1" marker-end="url(#arrow)"/><circle cx="18" cy="80" r="12" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="0.9"/><text x="18" y="83.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="600" fill="var(--forest)" text-anchor="middle" opacity="1">2</text><rect x="38" y="60" width="374" height="38" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.4"/><text x="47" y="77" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">前置检查</text><text x="47" y="92" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">需求表、ADR、控制清单、依赖故事</text><line x1="18" y1="92" x2="18" y2="110" stroke="var(--line)" stroke-width="1.1" marker-end="url(#arrow)"/><circle cx="18" cy="130" r="12" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="0.9"/><text x="18" y="133.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="600" fill="var(--forest)" text-anchor="middle" opacity="1">3</text><rect x="38" y="110" width="374" height="38" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="47" y="127" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">标记进行中</text><text x="47" y="142" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">只问一次；拒绝则不改状态继续</text><line x1="18" y1="142" x2="18" y2="160" stroke="var(--line)" stroke-width="1.1" marker-end="url(#arrow)"/><circle cx="18" cy="180" r="12" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="0.9"/><text x="18" y="183.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="600" fill="var(--forest)" text-anchor="middle" opacity="1">4</text><rect x="38" y="160" width="374" height="38" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="47" y="177" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">选择执行者</text><text x="47" y="192" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">按 Layer 与 Type 选程序员，再选引擎专家</text><line x1="18" y1="192" x2="18" y2="210" stroke="var(--line)" stroke-width="1.1" marker-end="url(#arrow)"/><circle cx="18" cy="230" r="12" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="0.9"/><text x="18" y="233.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="600" fill="var(--forest)" text-anchor="middle" opacity="1">5</text><rect x="38" y="210" width="374" height="38" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="47" y="227" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">简报派活</text><text x="47" y="242" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">给路径和要点，不粘贴整份文档</text><line x1="18" y1="242" x2="18" y2="260" stroke="var(--line)" stroke-width="1.1" marker-end="url(#arrow)"/><circle cx="18" cy="280" r="12" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="0.9"/><text x="18" y="283.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="600" fill="var(--forest)" text-anchor="middle" opacity="1">6</text><rect x="38" y="260" width="374" height="38" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.4"/><text x="47" y="277" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">产物与运行</text><text x="47" y="292" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">文件存在 → 测试存在 → 解析 → 截图观察</text><line x1="18" y1="292" x2="18" y2="310" stroke="var(--line)" stroke-width="1.1" marker-end="url(#arrow)"/><circle cx="18" cy="330" r="12" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="0.9"/><text x="18" y="333.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="600" fill="var(--forest)" text-anchor="middle" opacity="1">7</text><rect x="38" y="310" width="374" height="38" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="47" y="327" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">总结与检查点</text><text x="47" y="342" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">实际文件写入 ## Files，收尾三行</text><text x="8" y="370" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--amber)" text-anchor="start" opacity="1">琥珀框 = 门禁或检查点。P2 不通过：写 BLOCKED 检查点，不派代理。</text><text x="8" y="386" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.6" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">P6：报告不算完成，磁盘上的文件才算。</text>
+</svg><figcaption>dev-story 的七个阶段：两道门禁与一个产物检查点</figcaption></figure>
+<p>顺手一提，如果技能里需要派生总监子代理做评审（<code>director-gates.md</code>），规则还特意反着来了一手：<strong>父技能自己不准读评审定义文档，只把文件路径塞进子代理的简报里让子代理自己读</strong>。省了父会话的上下文，也保证评审者拿到完整原件。</p>
+<h2 id="提问协议-跳过绝不等于同意">提问协议：跳过绝不等于同意<a class="anchor" href="#提问协议-跳过绝不等于同意" aria-label="链接到本节">#</a></h2>
+<p>翻遍所有交互型技能，你都会反复撞见同一段几乎一字不差的话：</p>
+<blockquote>
+<p>用提问工具询问；没有提问工具就把选项编号列在消息最末尾，停下来等回复，问题后面别再追加建议。<strong>被跳过、关闭或返回空答案的问题，绝对不算回答</strong>：什么都不写、什么都不改，换纯文本重新问一遍。</p>
+</blockquote>
+<p>这是针对真实翻车场景打的补丁。在无交互界面或者用户不小心按 Esc 关掉弹窗时，提问工具可能返回“跳过/空值”。如果模型自作聪明把“没反对”当成“默认同意”，就会在你没点头的情况下改掉故事状态甚至重写文件。</p>
+<p>这条铁律在 <code>.claude/docs/automation-modes.md</code> 的三种自动化模式里全线生效：</p>
+<ul>
+<li><code>collaborative</code>：关键步骤次次问；</li>
+<li><code>guided</code>：小事自己定、大事（改范围、删文件、改配置结构）必须问；</li>
+<li><code>autonomous</code>：一路自动跑并把每个决策写进 <code>decision-log.md</code>，但撞上 <code>automation_always_ask</code> 清单里的类别，照样停下来问人——而且被跳过依然不算数。</li>
+</ul>
+<h2 id="收尾契约-堵死-差不多做好了">收尾契约：堵死“差不多做好了”<a class="anchor" href="#收尾契约-堵死-差不多做好了" aria-label="链接到本节">#</a></h2>
+<p>一个靠谱的技能必须规定死<strong>最后几行怎么收尾</strong>。比如 <code>/dev-story</code> 要求整次回复最后必须落在这几行固定格式上：</p>
+<pre><code class="language-text">Story: [path] — [Implemented | INCOMPLETE — &lt;breakage&gt; | BLOCKED — &lt;reason&gt;]
+Run result: [OBSERVED — … | NOT VERIFIED — … | N/A — …]
+Same-seed run: [仅从原型长出来的 Web 工程输出]
+Next step: [...]
+</code></pre>
+<p>状态词被钉死在 <code>Implemented</code>、<code>INCOMPLETE</code>、<code>BLOCKED</code> 三选一里，每种状态精准绑定对应的下一步：没写完就继续 <code>/dev-story</code>，被依赖或未批准的 ADR 卡住就报解锁动作，干完了才指去 <code>/code-review</code> 或 <code>/story-done</code>。没有“基本完成、还差一点小优化”这种和稀泥的余地。</p>
+<h2 id="常见误解">常见误解<a class="anchor" href="#常见误解" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>误解一：<code>allowed-tools</code> 是沙箱，没列进去的工具技能绝对调不了。</strong> 错。它只是免弹窗的<strong>预批准列表</strong>，不是权限边界；真要封死一个命令，得进 <code>settings.json</code> 的 <code>permissions.deny</code>。</li>
+<li><strong>误解二：把步骤写进 <code>SKILL.md</code> 就变成确定性程序了。</strong> 不是。它依然是喂给大模型的自然语言剧本，模型还是有可能合并步骤或看漏条件；真正确定性的逻辑全部在 <code>!</code> 注入和 <code>.claude/scripts/</code> 的脚本里。</li>
+<li><strong>误解三：技能写得越长、把所有规则都抄进来越保险。</strong> 恰恰相反。又长又啰嗦的 <code>SKILL.md</code> 一来烧上下文、二来压缩时容易被截断后半截，这正是 v1.2.0 之后把 14 个长技能拆成“精简主文件 + <code>references/</code>”的直接原因。</li>
+</ul>
+<h2 id="练习">练习<a class="anchor" href="#练习" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>对比 <code>.claude/skills/dev-story/SKILL.md</code> 和 <code>.claude/skills/next-step/SKILL.md</code> 的 <code>allowed-tools</code> 与 <code>disable-model-invocation</code>，说说为什么前者严防模型自己启动、后者可以由模型随时调。</li>
+<li>如果你要给自己的项目写一个 <code>/release-notes</code> 技能，从 git 提交里整理更新日志，它的 <code>!</code> 注入命令、防呆边界（比如仓库压根没有 tag 或提交记录时怎么报）和收尾契约该怎么设计？</li>
+<li>为什么 v1.3.0 要把 28 条只读脚本白名单从各个技能的 <code>allowed-tools</code> 额外抄一份放进全局 <code>.claude/settings.json</code> 的 <code>permissions.allow</code>？</li>
+</ol>
+<h2 id="答案提示">答案提示<a class="anchor" href="#答案提示" aria-label="链接到本节">#</a></h2>
+<ol>
+<li><code>/dev-story</code> 会派代理改代码、改故事状态、改冲刺 YAML，产生真实副作用，必须由人显式触发；<code>/next-step</code> 是纯只读导航（不含 Write/Edit/Agent），模型在用户问“我下一步干嘛”时主动调它完全安全。</li>
+<li>可以用 <code>!</code> 注入 <code>git log</code> 或范围检查脚本的输出；若无提交或无新变更，收尾契约明确规定输出 <code>NO_CHANGES</code> / <code>NOT ASSESSED — no git history</code>，严禁模型凭空编造更新条目；写文件前必须走显式确认。</li>
+<li>因为 Claude Code 只在触发技能的第一轮生效 <code>SKILL.md</code> 的 <code>allowed-tools</code>；只要技能中途提问进入第二轮，技能再跑自己的只读脚本就会重新弹权限审批框。把纯只读脚本放进全局 <code>allow</code> 能彻底消除这类无意义弹窗，同时把写文件/跑业务代码的命令留在严格管控下。</li>
+</ol>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="05-agents.html"><small>上一章</small><strong>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</strong></a><a class="next" href="07-artifacts.html"><small>下一章</small><strong>产物模型：一页简报与故事、需求、ADR 三张网</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：先看清这东西到底是怎么跑起来的</a><a href="../chapters/01-requirements.html"><span>01</span>需求：一个人写游戏，为什么还要套规矩</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：一个会话，四种约束</a><a href="../chapters/03-onboarding.html"><span>03</span>入门：先玩一把（<code>/prototype</code>）与 Studio Mode（<code>/start</code>）双轨入口</a><a href="../chapters/04-config.html"><span>04</span>配置求值：一个 <code>rigor</code> 如何长出六个设置</a><a href="../chapters/05-agents.html"><span>05</span>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</a><a href="../chapters/06-skill-protocol.html"><span>06</span>Skill 协议：一条斜杠命令怎么从解析走到交接</a><a href="../chapters/07-artifacts.html"><span>07</span>产物模型：一页简报与故事、需求、ADR 三张网</a><a href="../chapters/08-dev-story.html"><span>08</span>实施链路：<code>/dev-story</code> 怎么把故事变成代码</a><a href="../chapters/09-story-done.html"><span>09</span>验收：<code>/story-done</code> 如何堵死“基本完成”</a><a href="../chapters/10-hooks.html"><span>10</span>Hook：十五个检查点里，到底谁真的能拦住</a><a href="../chapters/11-registries.html"><span>11</span>注册表：跨文档事实怎么管才不漂移</a><a href="../chapters/12-teams.html"><span>12</span>协作：团队流水线、默认塌缩与“透镜折叠”</a><a href="../chapters/13-engine.html"><span>13</span>引擎与品类适配：统一引擎表、Web 一等公民与品类库</a><a href="../chapters/14-context.html"><span>14</span>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</a><a href="../chapters/15-security.html"><span>15</span>安全边界：能聊天、有 Hook，不等于有沙箱</a><a href="../chapters/16-verification.html"><span>16</span>验证与演进：Markdown 写的框架，怎么证明自己没改坏</a><a href="../chapters/17-mini-studio.html"><span>17</span>最小实验：用两百行 Python 亲手跑通四条核心约束</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.3.0 源码索引、实测数据、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · CCGS v1.3.0 · 快照 abc0de79d6ce · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

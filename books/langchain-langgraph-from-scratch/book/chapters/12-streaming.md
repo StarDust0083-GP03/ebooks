@@ -1,0 +1,125 @@
+# 流式输出不是一种流
+
+资料检索没有模型 token，却仍有进度；草稿开始逐字生成，也不代表预算计算或审批已完成。若页面只订阅一种模糊的“流”，很容易把展示进展和业务终态混在一起。
+
+LangGraph 可输出消息增量、状态更新、完整值或自定义进度。客户端需要选择数据合同，并在公开前做适配。流出得早只影响可见时机，不提升数据的可信度或执行资格。
+
+## 四类常见需求
+
+### 模型消息流
+
+草稿节点调用支持流式的模型时，可以让用户逐步看到文字。消息 chunk 可能含工具参数片段和元数据，不能假定每项都可以当字符串追加。
+
+页面可只显示允许的文本块，工具准备状态单独呈现。最终仍需把合并结果与节点写入的草稿核对，避免增量遗漏或重复。
+
+### 状态更新流
+
+`updates` 表示节点产出的局部变化，适合展示资料已找到、预算已算出等事件。比如 `total_s` 从未设置变为 1500，是一项状态变化，不是模型说出“1500”这个 token。
+
+这类事件也可能包含内部字段，应提取允许部分。不要因为增量比全量小，就假定它天然不敏感。
+
+### 状态快照流
+
+`values` 提供步骤后的状态视图，适合受控调试和状态面板。累计资料和内部计划都可能出现，传输量也随状态增长。
+
+快照应替换客户端当前视图，不应被当成新增文字。若每次把全量草稿追加到聊天框，最终会看到多份重复草稿。
+
+### 自定义进度流
+
+资料扫描可以报告“核验了 2/5 个来源”。这种瞬时进度不必全部保存到 state，也不应伪装成模型结论。
+
+进度可以合并或限频，最终确认结果则应从状态或持久记录读取。收到 100% 只说明工具完成某项扫描，不表示审批或外部提交完成。
+
+### 同一轮运行，可以有两种不同的时间线
+
+| 时间点 | 用户展示通道 | 业务状态通道 |
+| --- | --- | --- |
+| 查询开始 | 正在检查两条教学规则 | 尚无新资料更新 |
+| 查询完成 | 显示来源编号 | notes 写入两条记录 |
+| 生成中 | 可选的草稿文字增量 | 当前 draft 未必已完整写入 |
+| 审批暂停 | 展示 v1 预览和动作 | 待恢复任务为 review |
+| 本地发布 | 展示模拟回执 | 状态为 `published_locally` |
+
+这张表拆开体验与确认时点。具体事件先后仍受实现和配置影响，不是对数据库提交顺序的统一保证。客户端应按事件类型处理，不能从任意文字推断完成。
+
+<figure class="concept-diagram" tabindex="0" data-review-figure="lg-stream-modes">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 476" role="img" aria-labelledby="lg-stream-modes-title lg-stream-modes-desc" style="display:block;width:100%;min-width:620px;height:auto">
+<title id="lg-stream-modes-title">四种流事件，四种客户端动作</title>
+<desc id="lg-stream-modes-desc">messages：显示允许的文本增量，工具片段另处理；updates：合并节点局部变化，例如 total_s=1500；values：替换当前快照，不向草稿末尾追加；custom：展示瞬时进度，不据此认定审批完成。这里按事件类型分类，不表示四种事件的统一发送顺序。</desc>
+<rect width="960" height="476" fill="var(--paper,#faf8f1)"/>
+<g font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif"><text x="40" y="48" font-size="28" fill="var(--ink,#243b48)" text-anchor="start">四种流事件，四种客户端动作</text><rect x="40" y="88" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">messages</text><text x="344" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">显示允许的文本增量，工具片段另处理</text><rect x="40" y="168" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">updates</text><text x="344" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">合并节点局部变化，例如 total_s=1500</text><rect x="40" y="248" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">values</text><text x="344" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">替换当前快照，不向草稿末尾追加</text><rect x="40" y="328" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#e5ede9))" stroke="var(--forest,var(--accent,#29564c))"/><text x="56" y="363" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">custom</text><text x="344" y="363" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">展示瞬时进度，不据此认定审批完成</text><path d="M40 412H920" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="40" y="448" font-size="18" fill="var(--muted,#536772)" text-anchor="start">这里按事件类型分类，不表示四种事件的统一发送顺序。</text></g>
+</svg>
+<figcaption>图：这里按事件类型分类，不表示四种事件的统一发送顺序。</figcaption>
+</figure>
+
+## stream mode 是数据合同
+
+下面为已构造 graph 后的调用片段：
+
+```python
+for update in graph.stream(
+    {"question": "研究 Halpha 申请", "notes": []},
+    config,
+    stream_mode="updates",
+):
+    print(update)
+```
+
+它适合本地观察节点增量。异步服务使用异步消费，避免在事件循环里同步等待。另一些较新的官方文档提供 `stream_events(..., version="v3")` 统一事件表面，需先确认已安装版本的签名，不把它和其他版本的事件对象混用。
+
+对外可以定义自己的协议，比如 `{"type":"proposal.progress","run_id":"r17","sequence":4,"data":{"completed":2}}`。run 身份隔离执行，递增序号辅助去重，data 只包含允许字段。框架升级改变内部事件时，适配层继续维持客户端合同。
+
+## 工具调用参数不能边到边执行
+
+预算参数 `{"frames":6,"exposure_s":180}` 可能分几次抵达。工具名出现时只能显示准备调用，参数完整后还要进行范围和权限校验，才可以执行。
+
+即使某个前缀暂时是合法 JSON，也不能认为它代表最终请求。完成信号、调用 ID、完整参数和授权共同决定可执行性。自定义 provider 转发器如果绕过框架合并逻辑，需要自行维护这一合同并补测试。
+
+## 背压与取消
+
+生产者产生事件比浏览器读取更快时，服务端队列会积累。应为队列设上限，对可替代进度合并，对不可丢失文字定义断开与重放策略，避免无限内存增长。
+
+取消也分阶段。客户端关闭页面，后台 run 可以继续保存结果；如果希望停止，需要向模型与工具传播取消信号。已经发生的真实资源预留不能靠取消本地迭代器自动撤销，必须查询外部状态或走业务取消流程。
+
+### 消费慢与停止运行是两个问题
+
+慢消费者只是来不及接收，不代表用户放弃申请。可减少进度频率，但不能随意丢中间文字后继续追加，否则草稿残缺。必要时让客户端重新读取最新完整草稿，再从新的事件位置继续。
+
+停止运行则应明确：哪些节点可立即中止，哪些写操作必须确认结果，暂停审批是否保持。记录 `cancel_requested` 和最终业务状态比仅记录连接断开更有用，断线本身没有事务含义。
+
+## 私有状态也可能被流出
+
+输入和输出 schema 限定常规接口，不必然筛选所有流模式。`values` 可能包含内部 channel，调试事件还可能携带工具参数、system prompt 和资料内容。
+
+用户出口应采用白名单映射，而非仅删除几个已知秘密字段。新增内部字段默认不公开，测试中放入醒目的敏感哨兵值，断言所有用户事件都不包含它。日志、trace 和错误响应也要单独检查，因为它们是不同出口。
+
+## observability 与用户流分开
+
+| 消费者 | 应得到的信息 | 通常不应直接得到的信息 |
+| --- | --- | --- |
+| 申请页面 | 安全进度、草稿、待审版本、本地回执 | 内部计划与堆栈 |
+| 运行诊断 | 节点时间、工具身份、失败类型、尝试数 | 无关原始敏感资料 |
+| 审计记录 | 批准主体、版本、业务键和状态 | 不必要的全部模型上下文 |
+
+可以从同一次运行派生多个适配出口，但分别做脱敏和授权。诊断追求细节，页面追求稳定，审计追求可解释的业务事实，三者不需要共享一个未经筛选的 payload。
+
+## 测试流式行为
+
+除最终草稿外，应断言增量合并等于终态、序号递增、工具未在调用完成前执行、暂停能结束本轮消费、私有哨兵值未泄漏。再模拟慢读取和中途断开，确认队列有界且最终状态可查询。
+
+这些测试不全需要真实模型。可用固定 chunk 序列覆盖适配逻辑，再用少量目标 provider 合同测试核对原生事件形状。不能把确定性 LangGraph 示例的成功当成网络 streaming 链路已经验证。
+
+### 重连时如何避免把同一段文字显示两次
+
+客户端按 `run_id` 和 sequence 识别重复事件，服务端定义可重放窗口；窗口失效时返回完整快照与新的游标。快照替换已有草稿，增量才追加，二者在协议中必须有不同类型。
+
+还需避免把旧 run 的尾部增量拼到新一轮草稿。重连后先确认执行身份和草稿 revision，再决定续接或重载。只有内存广播而没有重放记录时，应明确只能查询最终状态，不能假称支持断点续流。
+
+## 源码入口
+
+- `langgraph/stream/`：查看当前快照的事件类型和转换路径。
+- `langgraph/pregel/main.py`：核对流式方法、mode 和版本参数。
+- `langchain_core/language_models/chat_model_stream.py`：追模型 chunk 的标准化。
+- `langchain_core/runnables/schema.py`：对照事件结构，避免与公网协议耦合。
+
+排查时把“产生了什么”“适配后剩什么”“客户端如何消费”分别记录，才能定位缓冲、重复或泄露发生在哪一段。

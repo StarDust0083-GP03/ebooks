@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从无阻塞执行切片、RAP 响应式工具协议到堆叠沙箱与跨主机热迁移，解剖 hydro-project/infinity 的 Rust Agent 运行时架构"><meta name="author" content="独立源码研究">
+<title>线程树、上下文继承与位置索引压缩 · Infinity 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">∞</span><span>Infinity 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 05</div><div class="rail-title">线程树、上下文继承与位置索引压缩</div><ol><li><a href="#同步派生与-child-of-线程栈校验">同步派生与 child_of 线程栈校验</a></li><li><a href="#继承边界-fresh-子代理与自身副本播种">继承边界、Fresh 子代理与自身副本播种</a></li><li><a href="#合成工具调用与双向通信">合成工具调用与双向通信</a></li><li><a href="#订阅事件分流-隔离事件子线程-vs-associative-内联">订阅事件分流：隔离事件子线程 vs associative 内联</a></li><li><a href="#位置索引压缩-不删旧行-按游标折叠">位置索引压缩：不删旧行，按游标折叠</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 05 章</div><h1>线程树、上下文继承与位置索引压缩</h1><div class="chapter-meta">hydro-project/infinity 快照 e1a3e4b36e5f · 约 22 分钟</div></header><div class="prose"><p>让一个主 Agent 拆出三个子 Agent 并行审查三份代码文件，看起来只是多开几个异步循环。真跑到生产环境，立刻会冒出四类头疼的上下文事故：第一，子线程继承了父线程准备派生三个子线程的思考过程，刚启动就误以为自己是父线程，接着把同样的三个子线程又派生了一遍，引发指数级套娃；第二，父线程派完子线程后继续聊了几十轮、触发了上下文压缩，把当初那条 <code>spawn_thread</code> 调用折进了摘要里，等子线程干完活回来交差，父线程翻遍当前上下文却找不到当初派活的调用 ID，结果直接把子线程的成果丢弃；第三，某个 GitHub 订阅每分钟推十条无关 PR 事件进来，如果全塞进主线程上下文，半小时就能把主线程窗口填满；第四，压缩历史时如果直接删旧行，压缩前就已经派出去、还没读完父历史的子线程，继承到的索引瞬间全部错位。</p>
+<p><code>infinity-agent-core</code> 用一套紧凑的线程树模型和位置索引压缩机制，把这四个坑逐一填平了。</p>
+<h2 id="同步派生与-child-of-线程栈校验">同步派生与 child_of 线程栈校验<a class="anchor" href="#同步派生与-child-of-线程栈校验" aria-label="链接到本节">#</a></h2>
+<p>内置的线程控制由四个工具组成，全部定义在 <code>crates/infinity-agent-core/src/tools/thread.rs</code>：<code>spawn_thread</code>、<code>report_to_parent</code>、<code>close_thread</code> 和 <code>send_message_to_child</code>。</p>
+<p>其中 <code>spawn_thread</code> 专门实现了 <code>supports_sync() == true</code> 和 <code>execute_synchronous</code>。前文提到过，把派生做成切片内同步执行有两个好处：一是省掉一次存储重载，二是彻底避免刚派发出去就被并发事件误判中断的竞态。</p>
+<p>为了挡住上面说的子线程身份错乱重复派生事故，<code>spawn_thread</code> 强制要求模型传入 <code>child_of</code> 参数，内容必须是从根线程到当前线程的完整路径栈（例如根线程传 <code>[&quot;R&quot;]</code>，一级子线程传 <code>[&quot;R&quot;, &quot;A&quot;]</code>）。<code>execute_synchronous</code> 第一步就把模型传进来的 <code>child_of</code> 和运行时掌握的真实 <code>context.thread_stack</code> 做精确比对：</p>
+<pre><code class="language-rust">// crates/infinity-agent-core/src/tools/thread.rs
+if child_of != context.thread_stack {
+    return Some(ToolResult {
+        id: id.as_str().to_owned(),
+        call_id: call_id.map(|c| c.as_str().to_owned()),
+        content: vec![ToolResultContent::Text(Text {
+            text: format!(
+                &quot;Error: child_of {:?} does not match the actual thread stack {:?}. \
+                 You may be confused and think you are in the parent thread, \
+                 but you are not. You are in thread {}. Do NOT spawn threads — \
+                 focus on your assigned task.&quot;,
+                child_of, context.thread_stack, context.group_id
+            ),
+        })],
+    });
+}
+</code></pre>
+<p>这条校验非常管用。如果一个子线程读了继承下来的父线程计划，顺手照抄了父线程的 <code>child_of: [&quot;R&quot;]</code>，运行时会当场把这次调用打回，并把真实的线程栈提醒给它，把它拉回自己的子任务轨道上。</p>
+<h2 id="继承边界-fresh-子代理与自身副本播种">继承边界、Fresh 子代理与自身副本播种<a class="anchor" href="#继承边界-fresh-子代理与自身副本播种" aria-label="链接到本节">#</a></h2>
+<p>派生新线程时，调用方可以在两种继承语义里二选一（<code>crates/infinity-agent-core/src/traits.rs</code> 的 <code>SpawnContext</code>）：</p>
+<ul>
+<li><strong><code>SpawnContext::InheritUpTo(safe_point)</code></strong>（默认），子线程继承父线程（及所有更早祖先）直到 <code>safe_point</code> 为止的对话历史，但看不到父线程在派生之后新增的任何消息。<code>safe_point</code> 由 <code>HistoryManager::safe_spawn_point()</code> 计算，它会刻意截断在两类内容之前：一是尾部所有尚未收到结果的 <code>ToolCall</code>（防止子线程继承到悬空调用），二是所有还在内存里、尚未持久化到 <code>ConversationStore</code> 的 <code>unvalidated_items</code>（因为子线程是从持久化存储加载祖先历史的）。</li>
+<li><strong><code>SpawnContext::Fresh</code></strong>（通过参数 <code>fresh_context: true</code> 开启），子线程以完全空白的历史启动，只看到本次派发给它的自包含指令。源码里把新鲜边界做成可传递的线程属性：<code>ConversationStore::load_history_with_ancestors</code> 从叶节点向根回溯祖先链时，一旦遇到某个标记为 <code>is_fresh_context_thread</code> 的节点，就会把该节点之上所有更早祖先的切片全部裁掉，确保新鲜子代理再派生孙线程时也不会意外泄漏更早的背景噪声。</li>
+</ul>
+<p>这里藏着一个极其讲究的实现细节：哪怕在默认继承模式下，<code>spawn_thread</code> 也会把继承截断点落在<strong>本次 <code>spawn_thread</code> 调用之前</strong>，然后把本次 <code>spawn_thread</code> 调用（保留原始 <code>id</code>、<code>call_id</code> 和参数）<strong>单独复制一份写进子线程自己的存储行里</strong>，再把子线程任务说明作为对应的 <code>ToolResult</code> 投进子线程队列。</p>
+<p>为什么要多此一举自己种一份副本？原因就在父线程压缩。因为父线程随后可能触发上下文压缩，把父线程里的那条 <code>spawn_thread</code> 折进摘要；如果子线程只能通过继承切片看到它，那么当父线程发来 <code>send_message_to_child</code> 消息时，子线程将无法在自身历史里解析原始调用。如今子线程在自己的存储里拥有一份独立副本，配合下面提到的穿透查找，父线程怎么压缩都不影响子线程后续通信。</p>
+<h2 id="合成工具调用与双向通信">合成工具调用与双向通信<a class="anchor" href="#合成工具调用与双向通信" aria-label="链接到本节">#</a></h2>
+<p>大模型 API 通常只认识用户消息、助手消息以及成对出现的工具调用与工具结果，并不理解后台子线程突然发来异步报告这种概念。如果硬把报告伪装成一条普通用户消息塞进去，模型很容易把子代理的汇报错当成人类用户的最新指令。</p>
+<p>Infinity 的统一包装手法是<strong>合成工具调用（synthetic tool call）</strong>。无论是子线程调 <code>report_to_parent</code> 发送中间进度、调 <code>close_thread</code> 汇报最终结论并永久关闭自己，还是父线程调 <code>send_message_to_child</code> 向运行中的子线程追加指示，底层的 <code>prepare_input</code> 都会根据 <code>SyntheticKind</code>（<code>ThreadReport</code>、<code>ParentMessage</code> 或 <code>SubscriptionEvent</code>）先反查出最初的那条调用记录，再往目标线程历史里注入一对结构合法的 <code>receive_event__injected</code> 工具调用与结果：</p>
+<ul>
+<li>合成调用参数包含 <code>original_tool_name</code>、<code>original_tool_call_id</code> 和 <code>original_args</code>，模型一眼就能对齐这是哪次 <code>spawn_thread</code> 或哪次订阅带来的异步消息。</li>
+<li>在持久化结构 <code>InfinityMessage::SubscriptionEvent</code> 中，这对合成调用与结果作为一个变体保存（payload 用 <code>Box</code> 包裹，避免拉大整个 <code>InfinityMessage</code> 枚举体积）。发给模型时 <code>into_messages()</code> 把它展开成两条标准消息；前端重放历史时则直接渲染成干净的订阅或子线程汇报卡片，不会把内部的 <code>receive_event__injected</code> 脏细节暴露给用户。</li>
+</ul>
+<p>那么如果当初父线程的那条 <code>spawn_thread</code> 已经被压缩进了摘要，怎么反查？<code>HistoryManager::find_tool_call</code>（<code>event_processor.rs</code> 第 779 行）先在内存中的当前视图逆向查找；一旦未命中，立刻回退调用 <code>conversation_store.load_history_up_to(&amp;self.thread_id, None, None)</code>，穿透压缩视图直接翻查本线程在持久化存储里的全部原始行。因为压缩只折叠加载出来的视图、从不删除底层原始记录，所以即使父线程休眠并压缩了好几轮，子线程迟到半天的关闭报告依然能精准挂接回原始 <code>spawn_thread</code> 调用。</p>
+<h2 id="订阅事件分流-隔离事件子线程-vs-associative-内联">订阅事件分流：隔离事件子线程 vs associative 内联<a class="anchor" href="#订阅事件分流-隔离事件子线程-vs-associative-内联" aria-label="链接到本节">#</a></h2>
+<p>同样的线程树原语，顺手解决了外部事件流的上下文污染问题。</p>
+<p>当一条来自 RAP 服务的 <code>subscription_event</code> 到达父线程时，<code>prepare_input</code> 会查看事件上的 <code>associative</code> 标志：</p>
+<ul>
+<li><strong>默认模式（<code>associative == false</code>）</strong>：父线程自己不消费原始事件，也不把它写入父历史。<code>prepare_input</code> 直接计算父线程当前的 <code>safe_spawn_point()</code>，自动派生一个临时的事件处理子线程（标记 <code>is_subscription_event = true</code>），往子线程存储里种好合成的 <code>spawn_thread</code> 和 <code>receive_event__injected</code> 引导上下文，再把原始事件正文投进子线程的输入队列。子线程独立分析事件（例如拉取 PR diff 检查改动），觉得重要就调 <code>report_to_parent</code> 或带报告调用 <code>close_thread</code>；如果事件毫无价值，子线程直接空报告关闭，父线程上下文里连一丝痕迹都不会留下。短时间内涌入十条事件，就会派生十个子线程并行消化。</li>
+<li><strong>内联模式（<code>associative == true</code>）</strong>：适用于每一条输出都必须按序进入当前线程自身历史的流式场景（例如 <code>sandbox-core</code> 跑长命令时实时推送的构建日志行）。这类事件跳过派生子线程，直接以 <code>receive_event__injected</code> 注入订阅线程自身历史。</li>
+</ul>
+<p>无论走哪条路，只要事件携带了 <code>final: true</code>，<code>prepare_input</code> 就会同步调用 <code>current_history.remove_subscription</code>，把该订阅从 <code>StateStore</code> 的活跃集合里摘除。</p>
+<h2 id="位置索引压缩-不删旧行-按游标折叠">位置索引压缩：不删旧行，按游标折叠<a class="anchor" href="#位置索引压缩-不删旧行-按游标折叠" aria-label="链接到本节">#</a></h2>
+<p>长对话总有一天会撞上模型上下文窗口。本地驱动 <code>drive_thread</code> 在 <code>handle_step_result</code>（<code>crates/infinity-agent-core/src/system/local/driver.rs</code> 第 384 行）里监控每次补全返回的 <code>usage.total_tokens</code>（刻意用 <code>total_tokens</code> 而不是 <code>input_tokens</code>，避免启用 Prompt Caching 时少算缓存命中部分）。一旦满足：</p>
+<pre><code class="language-rust">total_tokens as usize &gt; context_window * 3 / 4
+</code></pre>
+<p>本地驱动就自动向自己塞入一条 <code>TaggedSyntheticKind::Compaction</code> 合成消息（同时置位 <code>compaction_triggered = true</code> 防止重复触发，直到收到 <code>CompactionComplete</code> 后复位）。</p>
+<p>有趣的是，<strong>上下文压缩本身也是用子线程机制实现的</strong>。<code>prepare_input</code> 收到压缩触发消息后，取当前 <code>safe_spawn_point()</code> 派生一个标记为 <code>is_compaction = true</code> 的子线程，种入名为 <code>__harness_begin_compaction__</code> 的引导调用，要求该子线程把继承到的全部历史总结成摘要，再以摘要作为 <code>report_to_parent</code> 调用 <code>close_thread</code>。</p>
+<p>压缩子线程调用 <code>close_thread</code> 时，<code>CloseThreadTool</code> 识别出 <code>is_compaction == true</code>，不走普通父子汇报流程，而是读取子线程派生时记录的 <code>spawn_order</code>（记作 <code>up_to_order</code>），调用 <code>conversation_store.save_compaction_summary(&amp;parent_id, report_text, up_to_order)</code> 单独存入摘要表，随后向父线程投递一条 <code>TaggedSyntheticKind::CompactionComplete</code> 消息。</p>
+<p>父线程收到通知后调用 <code>HistoryManager::apply_compaction()</code>，核心只是一段精准的相对坐标换算：</p>
+<pre><code class="language-rust">// crates/infinity-agent-core/src/event_processor.rs
+let offset = self
+    .compacted_up_to
+    .borrow()
+    .map_or(0, |prev| prev as usize - 1);
+let up_to =
+    (up_to_order as usize).saturating_sub(offset) + self.ancestor_prefix_len.get();
+</code></pre>
+<p>这段算式把两个边界条件交代得清清楚楚：如果当前线程之前已经压缩过一次，那么旧摘要本身占住了内存历史的槽位 <code>0</code>，所以偏移量要减 1；如果当前线程是个子线程且之前还没压缩过，内存历史最前面还拼着 <code>ancestor_prefix_len</code> 条不属于自己存储表的祖先消息，切分位置必须加上这部分前缀，并在压缩完成后把 <code>ancestor_prefix_len</code> 归零（因为祖先内容已经被吞进新摘要里了）。</p>
+<p>把摘要按 <code>up_to_order</code> 单独建表而不删改原始消息行，带来的直接收益就是历史视图的时序一致性。一个在索引 10 处被派生出来的子线程，哪怕父线程后来在索引 40 处做了压缩，<code>load_history_with_ancestors</code> 为该子线程查父摘要时传入的是 <code>up_to_order &lt;= 10</code>，自然会跳过索引 40 的摘要，照旧精确还原出 0 到 10 的原始父历史；而在索引 50 处派生的新子线程，则会直接拿到索引 40 的摘要加上 40 到 50 的增量行，省下全部重复 token。</p>
+<p>线程树和压缩机制把状态结构理顺了，但在本地单机跑几十个并发线程时，消息什么时候该批处理、什么时候该延迟、什么时候该立刻抢占打断？下一章拆解本地单线程路由器与延迟队列。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="04-rap-protocol.html"><small>上一章</small><strong>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</strong></a><a class="next" href="06-local-actor-deferral.html"><small>下一章</small><strong>单线程本地调度器、延迟队列与抢占打断</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：为什么一台树莓派能装下七万五千个 Agent</a><a href="../chapters/01-blocking-trap.html"><span>01</span>阻塞式 Agent 的死结与无阻塞切片不变量</a><a href="../chapters/02-workspace-topology.html"><span>02</span>21 个 Crate 的分层版图与类型化 ID 体系</a><a href="../chapters/03-slice-and-history.html"><span>03</span>切片执行循环与三阶段 HistoryManager</a><a href="../chapters/04-rap-protocol.html"><span>04</span>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</a><a href="../chapters/05-threading-compaction.html"><span>05</span>线程树、上下文继承与位置索引压缩</a><a href="../chapters/06-local-actor-deferral.html"><span>06</span>单线程本地调度器、延迟队列与抢占打断</a><a href="../chapters/07-provider-error-boundary.html"><span>07</span>模型供应协议、跨进程隔离与错误分类契约</a><a href="../chapters/08-stacked-sandboxes.html"><span>08</span>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</a><a href="../chapters/09-daemon-remote-migration.html"><span>09</span>本地守护进程、SSH 远程代理与跨主机热迁移</a><a href="../chapters/10-serverless-aws.html"><span>10</span>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</a><a href="../chapters/11-clients-and-hydro-dataflow.html"><span>11</span>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</a><a href="../chapters/12-tradeoffs-and-limits.html"><span>12</span>失败模式、安全边界与架构取舍</a><a href="../chapters/13-mini-infinity.html"><span>13</span>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：源码索引、实测统计与核心术语对照</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · hydro-project/infinity · 快照 e1a3e4b36e5f · 2026-11-05</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

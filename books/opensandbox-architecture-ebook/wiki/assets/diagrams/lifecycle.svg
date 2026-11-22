@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1060" height="980" viewBox="0 0 1060 980" role="img" aria-labelledby="lifecycle-title lifecycle-desc">
+<title id="lifecycle-title">BatchSandbox：运行、Completed 终态与暂停循环</title>
+<desc id="lifecycle-desc">BatchSandbox 正常退出进入粘滞 Completed 终态并映射为 Terminated；暂停或恢复失败保留可重试状态。</desc>
+<style>text{font-family:"Noto Sans CJK SC",system-ui,sans-serif;fill:#252820}.name{font-size:20px;font-weight:650}.label{font-size:16px;fill:#29564c;font-weight:500}.sub{font-size:15px;fill:#586354}.warn{font-size:15px;fill:#8c4a1c;font-weight:550}.node{fill:#faf7ef;stroke:#a5ad9e;stroke-width:1.4}.active{fill:#edf2e9;stroke:#29564c;stroke-width:2}.amber{fill:#f9f1e4;stroke:#b86b2a;stroke-width:1.6}.edge{fill:none;stroke:#29564c;stroke-width:1.6}.return{fill:none;stroke:#72846b;stroke-width:1.5;stroke-dasharray:6 5}.warnwire{fill:none;stroke:#b86b2a;stroke-width:1.6;stroke-dasharray:5 4}</style>
+<defs>
+<marker id="lifecycle-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 1 L9 5 L0 9" fill="#29564c"/></marker>
+<marker id="lifecycle-warn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 1 L9 5 L0 9" fill="#b86b2a"/></marker>
+</defs>
+<rect width="1060" height="980" fill="#faf7ef"/>
+<text x="40" y="36" class="sub">Kubernetes BatchSandbox（v1.3.0-rc.2）· 粘滞 Completed 终态与可重试暂停循环</text>
+
+<path class="edge" d="M230 130 H320" marker-end="url(#lifecycle-arrow)"/>
+<text x="275" y="114" class="label" text-anchor="middle">就绪</text>
+
+<path class="edge" d="M550 118 H680" marker-end="url(#lifecycle-arrow)"/>
+<text x="615" y="102" class="label" text-anchor="middle">exit 0 正常退出</text>
+
+<path class="edge" d="M550 152 H592 Q600 152 600 160 V332 Q600 340 608 340 H680" marker-end="url(#lifecycle-arrow)"/>
+<text x="614" y="282" class="label">异常退出</text>
+
+<path class="edge" d="M435 170 V306" marker-end="url(#lifecycle-arrow)"/>
+<text x="450" y="246" class="label">请求暂停</text>
+
+<path class="return" d="M320 348 H278 Q270 348 270 340 V222 a8 8 0 0 1 0 -16 V148 Q270 140 278 140 H320" marker-end="url(#lifecycle-arrow)"/>
+<text x="82" y="286" class="sub">PauseFailed 但仍可用</text>
+
+<path class="edge" d="M435 390 V526" marker-end="url(#lifecycle-arrow)"/>
+<text x="450" y="446" class="label">镜像推送成功</text>
+<text x="450" y="472" class="sub">释放 Pod 与池槽位</text>
+
+<path class="edge" d="M550 568 H660" marker-end="url(#lifecycle-arrow)"/>
+<text x="605" y="550" class="label" text-anchor="middle">恢复</text>
+
+<path class="return" d="M790 610 V668 Q790 676 782 676 H443 Q435 676 435 668 V610" marker-end="url(#lifecycle-arrow)"/>
+<text x="612" y="656" class="sub" text-anchor="middle">ResumeFailed：仍可重试（RV 校验防覆盖）</text>
+
+<path class="edge" d="M880 610 V738 Q880 746 872 746 H88 Q80 746 80 738 V218 Q80 210 88 210 H352 Q360 210 360 202 V170" marker-end="url(#lifecycle-arrow)"/>
+<text x="96" y="726" class="sub">恢复就绪：sandboxId 不变；必须重新解析 endpoint</text>
+
+<g data-box="1" id="s-pending"><rect class="node" x="40" y="88" width="190" height="84" rx="6"/>
+<text x="135" y="122" class="name" text-anchor="middle">Pending</text>
+<text x="135" y="150" class="sub" text-anchor="middle">创建与分配中</text></g>
+
+<g data-box="1" id="s-running"><rect class="active" x="320" y="88" width="230" height="84" rx="6"/>
+<text x="435" y="122" class="name" text-anchor="middle">Running</text>
+<text x="435" y="150" class="sub" text-anchor="middle">CRD phase = Succeed</text></g>
+
+<g data-box="1" id="s-completed"><rect class="amber" x="680" y="88" width="330" height="100" rx="6"/>
+<text x="845" y="120" class="name" text-anchor="middle">Terminated（Completed）</text>
+<text x="845" y="146" class="sub" text-anchor="middle">粘滞终态 · SANDBOX_COMPLETED</text>
+<text x="845" y="172" class="warn" text-anchor="middle">拒绝 pause / resume，跳过 Pod 替换</text></g>
+
+<g data-box="1" id="s-failed"><rect class="node" x="680" y="300" width="330" height="88" rx="6"/>
+<text x="845" y="334" class="name" text-anchor="middle">Failed</text>
+<text x="845" y="362" class="sub" text-anchor="middle">不可恢复运行时失败</text></g>
+
+<g data-box="1" id="s-pausing"><rect class="node" x="320" y="306" width="230" height="84" rx="6"/>
+<text x="435" y="340" class="name" text-anchor="middle">Pausing</text>
+<text x="435" y="368" class="sub" text-anchor="middle">正在提交 rootfs（full-only）</text></g>
+
+<g data-box="1" id="s-paused"><rect class="active" x="320" y="526" width="230" height="84" rx="6"/>
+<text x="435" y="560" class="name" text-anchor="middle">Paused</text>
+<text x="435" y="588" class="sub" text-anchor="middle">暂停完成，已释放算力</text></g>
+
+<g data-box="1" id="s-resuming"><rect class="node" x="660" y="526" width="320" height="84" rx="6"/>
+<text x="820" y="560" class="name" text-anchor="middle">Resuming</text>
+<text x="820" y="588" class="sub" text-anchor="middle">按最新快照镜像重建 Pod</text></g>
+
+<line x1="40" y1="812" x2="1020" y2="812" stroke="#d9d2c3"/>
+<text x="40" y="846" class="sub">1. v1.3.0-rc.2 新增粘滞 Completed 相位，修复主容器 exit 0 后从 Succeed 回落到 Pending 的状态悬空。</text>
+<text x="40" y="878" class="sub">2. PauseFailed / ResumeFailed 属于 Condition 而非终态；状态写入带 resourceVersion 前置条件防止陈旧视图覆盖。</text>
+<text x="40" y="910" class="sub">3. DELETE 204 只表示接受删除，清理后 GET 404 不等于确认进程终止；到期删除带 UID 与 resourceVersion 校验。</text>
+</svg>

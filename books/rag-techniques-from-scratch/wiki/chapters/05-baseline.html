@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从文档解析、切分、混合检索到纠错、图谱、评估与上线边界的 RAG 工程实战指南"><meta name="author" content="独立源码研究">
+<title>基础检索：先交付一条能复现的离线链路 · RAG 工程实战</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">RAG</span><span>RAG 工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 05</div><div class="rail-title">基础检索：先交付一条能复现的离线链路</div><ol><li><a href="#中文检索为什么不能直接用空格分词">中文检索为什么不能直接用空格分词</a></li><li><a href="#bm25-与词频余弦各算什么账">BM25 与词频余弦各算什么账</a></li><li><a href="#跑一遍离线基线看真实输出">跑一遍离线基线看真实输出</a></li><li><a href="#直接照搬上游-simple-rag-会踩的框架坑">直接照搬上游 Simple RAG 会踩的框架坑</a></li><li><a href="#本章对应代码与资料">本章对应代码与资料</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 05 章</div><h1>基础检索：先交付一条能复现的离线链路</h1><div class="chapter-meta">RAG_Techniques 快照 2026-11-02 · 约 10 分钟</div></header><div class="prose"><p>数据模型和切分边界敲定后，第一步是把一条全过程透明的基线跑通。先不接远程 LLM，也不急着下几百兆的向量模型。只有当权限过滤、分词、打分、来源标签和预算打包全部能单步核对，后续引入稠密向量和生成器时，你才分得清效果变化究竟是谁带来的。</p>
+<h2 id="中文检索为什么不能直接用空格分词">中文检索为什么不能直接用空格分词<a class="anchor" href="#中文检索为什么不能直接用空格分词" aria-label="链接到本节">#</a></h2>
+<p>英文教程里常见一句 <code>doc.page_content.split()</code> 就建好了 BM25 索引，放到中文规范里会直接失效：连续汉字之间没有空格，整句话会被当成一个超长词项，几乎永远匹配不上。</p>
+<p>配套 <code>examples/mini_rag.py</code> 的 <code>tokenize()</code> 用了一个零依赖的折中办法：英文和数字（含下划线，比如 <code>callback_v2</code>）按词保留，连续中文切成重叠双字组（bigram），单字单独保留。</p>
+<pre><code class="language-text">支付回调验签
+→ 支付 / 付回 / 回调 / 调验 / 验签
+</code></pre>
+<p>切出来的“付回”“调验”本身没有词义，但“支付”“回调”“验签”都能稳定参与命中，而且无需额外词典文件。它当然比不上带领域词库的专业分词器，更代替不了语义编码模型；遇到标点切断的词组、单字查询或特定行业缩写时，必须放进单元测试单独校验。无论线上选哪套分词方案，记住一条硬规矩：修改分词规则后，倒排索引必须全量重建。</p>
+<h2 id="bm25-与词频余弦各算什么账">BM25 与词频余弦各算什么账<a class="anchor" href="#bm25-与词频余弦各算什么账" aria-label="链接到本节">#</a></h2>
+<p>BM25 综合三件事给片段打分：查询词在当前片段里出现的次数、这个词在可见语料里的稀有程度（IDF），以及片段长度相对于平均长度的归一化惩罚。词频收益会很快饱和，避免某段反复堆砌“支付”几十次就霸榜。配套代码采用常见的教学参数 <code>k1=1.5</code>、<code>b=0.75</code> 和正值 IDF，并且严格只在当前用户的 <code>visible(user)</code> 子集里统计文档频率，不让 Bob 的私人笔记影响 Alice 的 IDF 分数。</p>
+<p>词频余弦则把查询和片段各表示为词频向量，算点积再除以各自模长。它和 BM25 一样依赖字面重合：用户问“同一事件多次投递”，原文写“重复通知”，两者没有共享双字组时，词频余弦同样给零分。</p>
+<p>真正的语义召回靠训练好的稠密编码模型（dense embedding）把文本映射到连续向量空间。把这类模型接进线上时，模型名称、向量维度、是否做 L2 归一化以及距离度量（余弦、点积还是欧氏距离）四项元数据必须绑在索引版本上。换了 embedding 模型却继续去查旧向量库，返回的就是毫无意义的随机近邻。</p>
+<h2 id="跑一遍离线基线看真实输出">跑一遍离线基线看真实输出<a class="anchor" href="#跑一遍离线基线看真实输出" aria-label="链接到本节">#</a></h2>
+<p>在项目根目录执行：</p>
+<pre><code class="language-bash">python3 examples/mini_rag.py --query &quot;支付回调验签和幂等如何处理&quot;
+</code></pre>
+<p>在 10 条教学片段的固定快照上，默认 <code>fusion</code> 模式返回两条候选 <code>callback-v2:0</code> 与 <code>callback-v2:1</code>，并原样装入最终证据包，连同编号和来源标签共占 168 个字符。验收这条输出时先检查三件事：命中的是不是 v2 现行版，有没有混入 Bob 的私人笔记，验签和幂等是不是两条都在。</p>
+<p>再试一个语料里根本不存在的词：</p>
+<pre><code class="language-bash">python3 examples/mini_rag.py --query xyzunfindable
+</code></pre>
+<p>程序返回空列表，并打印“没有可交付证据。此示例不生成答案。”它不会为了凑足 <code>k=2</code> 而强行把零分文档塞进上下文。在检索层守住“没命中就返回空”，下游才有机会触发改写或拒答。</p>
+<h2 id="直接照搬上游-simple-rag-会踩的框架坑">直接照搬上游 Simple RAG 会踩的框架坑<a class="anchor" href="#直接照搬上游-simple-rag-会踩的框架坑" aria-label="链接到本节">#</a></h2>
+<p>上游 <code>simple_rag.ipynb</code> 和 <code>simple_rag_with_llamaindex.ipynb</code> 演示了基于 OpenAI embedding 和 FAISS 的经典接线方式。把这类教学 Notebook 改造成长期维护的服务时，框架大版本迁移往往比检索算法本身更耗时。</p>
+<p>对照上游提交 <code>2fd7bd0f</code>（2026-10-31 完成的 PR #212 与 #211），可以看到两条非常真实的迁移教训：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>框架与组件</th>
+<th>旧写法（常见于早期教程）</th>
+<th>2026-11 新版写法（上游实测）</th>
+<th>踩坑后果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>LangChain 1.x 旧链与压缩器</td>
+<td><code>from langchain.chains import RetrievalQA</code></td>
+<td><code>from langchain_classic.chains import RetrievalQA</code></td>
+<td>升级后直接 <code>ImportError</code></td>
+</tr>
+<tr>
+<td>LangChain 1.x 文档与模型校验</td>
+<td><code>langchain.docstore.document</code>、<code>langchain_core.pydantic_v1</code></td>
+<td><code>langchain_core.documents.Document</code>、原生 <code>pydantic</code></td>
+<td>废弃模块移除导致启动失败</td>
+</tr>
+<tr>
+<td>LangChain 1.x 检索器调用</td>
+<td>实现并调用 <code>get_relevant_documents(q)</code></td>
+<td>实现 <code>_get_relevant_documents(q, *, run_manager=None)</code>，调用 <code>.invoke(q)</code></td>
+<td>自定义检索器或 <code>helper_functions.py</code> 报错</td>
+</tr>
+<tr>
+<td>LlamaIndex 0.14 节点与 BM25</td>
+<td>修改 <code>node.text = ...</code>、<code>llama_index.legacy.retrievers.bm25_retriever</code></td>
+<td>调用 <code>node.set_content(...)</code>、<code>llama_index.retrievers.bm25</code></td>
+<td>新版 <code>.text</code> 变为只读属性，赋值直接抛异常</td>
+</tr>
+<tr>
+<td>LlamaIndex 默认对话模型</td>
+<td>依赖框架默认 <code>Settings.llm</code></td>
+<td>显式指定 <code>Settings.llm = OpenAI(model=LLM_MODEL)</code></td>
+<td>默认 <code>gpt-3.5-turbo</code> 于 2026-10-23 停服，未显式配置即全线失败</td>
+</tr>
+</tbody></table></div>
+<p>把业务核心抽象成自己的 <code>Chunk</code>、<code>Retriever</code> 和结果协议，框架只留在最外层的薄适配层里，升级 LangChain 或 LlamaIndex 时才不至于牵一发而动全身。</p>
+<h2 id="本章对应代码与资料">本章对应代码与资料<a class="anchor" href="#本章对应代码与资料" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="appendix-code.html">分词、BM25 与词频余弦实现</a></li>
+<li><a href="appendix-code.html">基础检索与空命中测试</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/simple_rag.ipynb">上游 Simple RAG（LangChain 1.x）</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/simple_rag_with_llamaindex.ipynb">上游 Simple RAG（LlamaIndex 0.14）</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/local_rag_huggingface_faiss.ipynb">上游本地 Hugging Face + FAISS</a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="04-chunking.html"><small>上一章</small><strong>文档切分：验签和幂等，为什么总只召回一半</strong></a><a class="next" href="06-fusion-reranking.html"><small>下一章</small><strong>混合检索与重排：把不同候选放进同一张账</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-opening.html"><span>00</span>开篇：文档都在库里，助手为什么还会答错</a><a href="../chapters/01-requirements.html"><span>01</span>需求篇：先框住哪些问题必须答对</a><a href="../chapters/02-architecture.html"><span>02</span>技术方案：从需求推导一条可追踪的链路</a><a href="../chapters/03-ingestion.html"><span>03</span>资料入库：先把文档读对，再谈检索</a><a href="../chapters/04-chunking.html"><span>04</span>文档切分：验签和幂等，为什么总只召回一半</a><a href="../chapters/05-baseline.html"><span>05</span>基础检索：先交付一条能复现的离线链路</a><a href="../chapters/06-fusion-reranking.html"><span>06</span>混合检索与重排：把不同候选放进同一张账</a><a href="../chapters/07-query-enhancement.html"><span>07</span>查询增强：用户不一定会说出幂等这个词</a><a href="../chapters/08-context.html"><span>08</span>证据组装：检索到了，还要让模型完整读到</a><a href="../chapters/09-evaluation.html"><span>09</span>评估：两条高分结果，未必够答完一个问题</a><a href="../chapters/10-corrective.html"><span>10</span>纠错检索：找不到以后，系统走哪一条路</a><a href="../chapters/11-hierarchy-memory.html"><span>11</span>层次索引与记忆：问题开始面向整份资料</a><a href="../chapters/12-graph.html"><span>12</span>图谱检索：从模块一路查到技术负责人</a><a href="../chapters/13-multimodal-agent.html"><span>13</span>多模态与 Agent：处理图表文档与多步任务</a><a href="../chapters/14-production.html"><span>14</span>上线边界：权限、快照、停服与故障不能靠提示词兜底</a><a href="../chapters/15-wrap-up.html"><span>15</span>完结篇：用一次请求串起整套设计</a><a href="../chapters/appendix-map.html"><span>A</span>附录 A：上游 47 份 Notebook 与 21 份脚本阅读地图</a><a href="../chapters/appendix-sources.html"><span>B</span>附录 B：源码快照、论文范围、术语与研究边界</a><a href="../chapters/appendix-code.html"><span>C</span>附录 C：配套教学实现与样例数据</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · RAG_Techniques 2fd7bd0ffe5b（2026-11-02）· 核对 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

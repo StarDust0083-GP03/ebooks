@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从无阻塞执行切片、RAP 响应式工具协议到堆叠沙箱与跨主机热迁移，解剖 hydro-project/infinity 的 Rust Agent 运行时架构"><meta name="author" content="独立源码研究">
+<title>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接 · Infinity 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">∞</span><span>Infinity 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 04</div><div class="rail-title">响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</div><ol><li><a href="#清单发现与即发即忘调用">清单发现与即发即忘调用</a></li><li><a href="#五类回调与统一转换入口">五类回调与统一转换入口</a></li><li><a href="#生命周期通知-关闭-取消与迁移">生命周期通知：关闭、取消与迁移</a></li><li><a href="#仓库内置的两个真实-rap-服务">仓库内置的两个真实 RAP 服务</a></li><li><a href="#兼容现有-mcp-工具-infinity-mcp-bridge-如何桥接">兼容现有 MCP 工具：infinity-mcp-bridge 如何桥接</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 04 章</div><h1>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</h1><div class="chapter-meta">hydro-project/infinity 快照 e1a3e4b36e5f · 约 20 分钟</div></header><div class="prose"><p>用过 MCP（Model Context Protocol）写长耗时工具的工程师都遇到过同样的别扭事：MCP 天生是面向持久会话的请求响应协议，无论是本地 stdio 子进程管道，还是远程 Streamable HTTP 会话，Agent 运行时都得一直挂着连接等回包。查个天气、读个文件自然够用；一旦要触发二十分钟的编译测试、订阅某个 GitHub 仓库持续一周的 PR 事件，或者中途弹出人工审批等待两小时，连接一旦断开或容器被回收，上下文就全散了。于是每个团队只能各自在业务代码里拼凑轮询循环、Webhook 胶水和状态表。</p>
+<p>Infinity 给出的解法是把工具协议本身翻转过来，定义了 <strong>RAP（Reactive Agent Protocol）</strong>。核心代码分散在 <code>rap-protocol</code>、<code>rap-client</code>、<code>infinity-rap-bridge</code> 和 <code>infinity-mcp-bridge</code> 四个 crate 中。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 296" width="640" height="296" role="img" aria-label="RAP 响应式工具协议全链路与五类回调分流">
+<title>RAP 响应式工具协议全链路与五类回调分流</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker><marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--amber)"/></marker><marker id="arrow-forest" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--forest)"/></marker></defs>
+<text x="10" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">RAP 响应式工具协议全链路：断连回调、订阅分流与 MCP 兼容</text><rect x="10" y="34" width="196" height="116" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="20" y="53" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--forest)" text-anchor="start">Agent Runtime</text><text x="20" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">1. GET /.well-known/rap-toolset</text><text x="20" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">2. POST /invoke (带 callback_url)</text><text x="20" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">3. 收到 2xx 即让出并休眠</text><text x="20" y="118" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">4. RapNotifier 生命周期通知:</text><text x="20" y="134" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">   /close_thread /cancel /migrate</text><rect x="242" y="34" width="188" height="116" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="252" y="53" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--amber)" text-anchor="start">独立 RAP 工具服务</text><text x="252" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">立即返回 HTTP 200 ACK</text><text x="252" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">后台执行长任务或维护订阅</text><text x="252" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">如 sandbox-local / github-poller</text><text x="252" y="118" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">完成后主动 POST callback_url</text><text x="252" y="134" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">不绑定 Agent 进程存活周期</text><rect x="462" y="34" width="168" height="116" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="472" y="53" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">MCP 兼容桥接</text><text x="472" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">infinity-mcp-bridge</text><text x="472" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">懒初始化 Stdio / HTTP</text><text x="472" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">JSON-RPC 2.0 + SSE</text><text x="472" y="118" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">维护 mcp-session-id</text><text x="472" y="134" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">对核心暴露统一 Tool</text><line x1="206" y1="68" x2="242" y2="68" stroke="var(--forest)" stroke-width="1.2" marker-end="url(#arrow-forest)"/><text x="224" y="60" font-family="'IBM Plex Mono','SFMono-Regular',Consolas,monospace" font-size="8.5" font-weight="600" fill="var(--forest)" text-anchor="middle">POST</text><line x1="242" y1="102" x2="206" y2="102" stroke="var(--amber)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow-amber)"/><text x="224" y="116" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.5" font-weight="600" fill="var(--amber)" text-anchor="middle">回调</text><line x1="430" y1="88" x2="462" y2="88" stroke="var(--muted)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow)"/><line x1="336" y1="150" x2="336" y2="178" stroke="var(--amber)" stroke-width="1.2" marker-end="url(#arrow-amber)"/><text x="346" y="168" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="600" fill="var(--amber)" text-anchor="start">prepare_callback (Daemon 与 Lambda 共用)</text><rect x="10" y="180" width="620" height="102" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="20" y="199" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start">五类 RapCallback 回调的统一分流</text><text x="20" y="216" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">tool_result        -&gt; InputMessage (支持多模态 content + display_as + subscription 标记)</text><text x="20" y="232" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">subscription_event -&gt; 默认自动派生隔离事件子线程；associative: true 内联注入；final: true 清理订阅</text><text x="20" y="248" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">user_choice / oauth -&gt; 经 PrepareResult 透传给 TUI/Web/Slack，不污染模型对话历史</text><text x="20" y="264" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">view_update        -&gt; 旁路显示通道 (如 diff 面板)，Daemon 转发前端，Lambda 接收后直接丢弃</text>
+</svg>
+<figcaption>RAP 响应式工具协议全链路与五类回调分流</figcaption></figure>
+<h2 id="清单发现与即发即忘调用">清单发现与即发即忘调用<a class="anchor" href="#清单发现与即发即忘调用" aria-label="链接到本节">#</a></h2>
+<p>一个标准 RAP 服务本质上就是一个普通的无状态 HTTP 服务，它完全不知道调用方背后跑的是什么大模型，也不保存对话历史。</p>
+<p>接入从工具清单发现开始。运行时向工具服务的 <code>GET /.well-known/rap-toolset</code> 发请求，拿到 <code>ToolsetManifest</code>（<code>crates/rap-protocol/src/lib.rs</code> 第 212 行）：</p>
+<pre><code class="language-rust">pub struct ToolsetManifest {
+    pub name: String,
+    pub description: Option&lt;String&gt;,
+    pub endpoint: String,
+    pub tools: Vec&lt;ToolDef&gt;,
+    #[serde(default, rename = &quot;needsMigration&quot;)]
+    pub needs_migration: bool,
+}
+</code></pre>
+<p>清单里有两个很有工程味的字段。一个是 <code>needsMigration</code>，布尔值，向守护进程声明这个工具服务在本地持有不可丢弃的外部状态（比如 <code>sandbox-local</code> 里的 Jujutsu 书签和工作区），跨主机热迁移会话时必须先通知它搬家。另一个在每条 <code>ToolDef</code> 上，叫 <code>displayScript</code>，允许工具作者附带一段简短的 Rhai 脚本。核心运行时里的 <code>eval_display_script</code>（<code>crates/infinity-agent-core/src/tools/mod.rs</code> 第 117 行）会把模型传入的参数灌进 <code>args</code> 变量里求值，生成人类易读的工具调用摘要（例如 <code>sleep</code> 工具自带脚本把秒数和原因拼成 <code>&quot;Sleeping 30s: wait for CI&quot;</code>），而不用在前端硬编码每种工具的渲染逻辑。</p>
+<p>模型决定调用工具时，核心层经由 <code>invoke_rap_tool</code>（<code>crates/infinity-agent-core/src/tools/rap_tool.rs</code> 第 72 行）向清单里的 <code>endpoint</code>（通常是 <code>/invoke</code>）发一次 HTTP POST，正文是 <code>RapInvocation</code>：</p>
+<ul>
+<li><code>operation</code> 与 <code>arguments</code>，工具名与 JSON 参数。</li>
+<li><code>id: ToolCallId</code> 与 <code>call_id: Option&lt;ProviderCallId&gt;</code>，工具回包时原样带回。</li>
+<li><code>group_id: ThreadId</code> 与 <code>thread_ancestors: Option&lt;Vec&lt;ThreadId&gt;&gt;</code>，标明当前线程以及从根到父线程的完整祖先链（沙箱服务正是靠 <code>thread_ancestors</code> 继承父线程的写权限授权）。</li>
+<li><code>callback_url</code>，异步结果该往哪里投递。</li>
+<li><code>user_id</code>，可选用户身份。</li>
+</ul>
+<p>错误处理策略在本地和云端完全一致：如果 HTTP POST 遇到网络层传输失败，<code>invoke_rap_tool</code> 返回 <code>Err</code>，由运行时兜底回注一条通用失败结果；如果服务端可达但返回了非 <code>2xx</code> 状态码，说明服务端拒绝了调用、绝不会有后续回调，函数直接合成一条包含操作名、URL 和状态码的错误 <code>ToolResult</code> 投回输入队列并返回 <code>Ok(())</code>，让模型马上知情并调整策略，绝不会把线程挂死在永久等待上。只要收到 <code>2xx</code>，调用立刻返回，切片结束，运行时可以安心休眠。</p>
+<h2 id="五类回调与统一转换入口">五类回调与统一转换入口<a class="anchor" href="#五类回调与统一转换入口" aria-label="链接到本节">#</a></h2>
+<p>几百毫秒或几天之后，工具干完活，把一个带 <code>type</code> 标签的 JSON 对象 <code>RapCallback</code> POST 到 <code>callback_url</code>。<code>rap-protocol</code> 定义了五种回调变体：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>变体 (<code>type</code>)</th>
+<th>携带核心字段</th>
+<th>运行时处理去向</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>tool_result</code></td>
+<td><code>id</code>, <code>call_id</code>, <code>text</code> 或多模态 <code>content</code>, <code>display_as</code>, <code>subscription</code></td>
+<td>转为 <code>InputMessage</code> 入队；若 <code>subscription: true</code> 则在 <code>StateStore</code> 登记活跃订阅</td>
+</tr>
+<tr>
+<td><code>subscription_event</code></td>
+<td><code>tool_call_id</code>, <code>text</code>, <code>associative</code>, <code>final</code></td>
+<td>默认派生隔离事件子线程；<code>associative: true</code> 时内联注入；<code>final: true</code> 清理订阅追踪</td>
+</tr>
+<tr>
+<td><code>oauth</code></td>
+<td><code>id</code>, <code>call_id</code>, <code>auth_url</code></td>
+<td>经 <code>PrepareResult::OAuthRequired</code> 透传给前端引导授权，不进模型历史</td>
+</tr>
+<tr>
+<td><code>user_choice</code></td>
+<td><code>id: ChoiceId</code>, <code>prompt</code>, <code>choices</code>, <code>default</code>, <code>response_url</code></td>
+<td>写入 <code>StateStore</code> 挂起列表并透传前端弹窗，用户选完后由客户端 POST 回 <code>response_url</code></td>
+</tr>
+<tr>
+<td><code>view_update</code></td>
+<td><code>group_id</code>, <code>view_type</code>, <code>content</code></td>
+<td>旁路展示通道（如沙箱实时 Diff 视图），守护进程透传给 UI，Lambda 接收后直接返回 200 丢弃</td>
+</tr>
+</tbody></table></div>
+<p>注意 <code>tool_result</code> 里模型视角与人类视角的分离设计：模型看到的是 <code>content</code>（支持文本与 Base64 图像块 <code>RapToolResultContent::Image</code>；如果当前模型不支持图像输入，<code>HistoryManager::get_history</code> 会在发出请求前自动替换成 <code>IMAGE_OMITTED_PLACEHOLDER</code>）或纯 <code>text</code>；而人类在 TUI/Web 上看到的是 <code>display_as</code> 里的结构化 <code>DisplaySegment</code>（支持 <code>Text</code>、<code>Diff</code>、<code>Image</code>），<code>build_display_segments</code> 会把工具提供的美化片段排在前面、原始文本兜底挂在末尾。</p>
+<p>为了防止本地守护进程和云端 AWS Lambda 在回调转换上出现行为漂移，所有平台都强制共用 <code>crates/infinity-rap-bridge/src/callback.rs</code> 里的 <code>prepare_callback</code>（底层调用 <code>convert_callback</code>）。守护进程的本地回调监听器和 <code>infinity-agent-lambda</code> 的 <code>rap-receiver</code> 二进制都只做网络收发，消息语义转换全收口在这一处。</p>
+<h2 id="生命周期通知-关闭-取消与迁移">生命周期通知：关闭、取消与迁移<a class="anchor" href="#生命周期通知-关闭-取消与迁移" aria-label="链接到本节">#</a></h2>
+<p>异步协议一旦放手让工具独立运行，就必须处理三件善后事：线程关了怎么回收外部资源，用户按 Ctrl+S 打断时怎么停掉正在跑的构建，会话搬家到另一台机器时怎么把外部状态一起搬走。</p>
+<p><code>crates/rap-client/src/notifier.rs</code> 的 <code>RapNotifier</code> 封装了这三条尽力而为（best-effort）的 HTTP POST 端点：</p>
+<ul>
+<li><code>POST /close_thread</code>，携带 <code>{ &quot;thread_id&quot;: ... }</code>，在 <code>CloseThreadTool</code> 关闭子线程后广播，比如通知 <code>sandbox-local</code> 执行 <code>jj workspace forget</code> 并删掉缓存目录。</li>
+<li><code>POST /cancel_tool_call</code>，携带 <code>{ &quot;thread_id&quot;: ..., &quot;tool_call_id&quot;: ... }</code>，当用户文本打断挂起工具调用后触发，比如通知 <code>sandbox-core</code> 给正在运行的子进程组发 <code>SIGTERM</code>。</li>
+<li><code>POST /migrate</code>，携带 <code>{ &quot;session_id&quot;: ..., &quot;destination_url&quot;: ... }</code>，由热迁移编排器定向发给声明了 <code>needsMigration: true</code> 的服务，触发状态打包传输。</li>
+</ul>
+<p>前两条通知故意设计成 best-effort，即便某个外部工具服务已经离线或没实现该路由，也只记警告日志，不阻断线程关闭或用户打断。</p>
+<h2 id="仓库内置的两个真实-rap-服务">仓库内置的两个真实 RAP 服务<a class="anchor" href="#仓库内置的两个真实-rap-服务" aria-label="链接到本节">#</a></h2>
+<p>光看协议定义容易抽象，仓库里自带了两个很紧凑的参考实现：</p>
+<ol>
+<li><strong><code>rap-steering-server</code></strong>（348 行），暴露两个操作：扫描项目根目录和家目录里的规则约定文件（<code>INFINITY.md</code>、<code>CLAUDE.md</code>、<code>AGENTS.md</code>、<code>.cursorrules</code>、<code>.claude/skills</code> 等目录）并按规范路径去重符号链接，以及带路径穿越校验的安全读取。</li>
+<li><strong><code>rap-github-event-poller</code></strong>（715 行），展示了标准 RAP 订阅服务的写法。收到订阅调用后，它先登记 <code>(owner/repo, tool_call_id, filters, callback_url)</code> 并立即回传带 <code>subscription: true</code> 的 <code>tool_result</code>；后台轮询任务按仓库共享一个 ETag 和 GitHub 响应头里的 <code>X-Poll-Interval</code>（默认 60 秒），首次轮询只记录 <code>last_seen_id</code> 跳过历史旧事件，此后每出现匹配过滤条件的新事件就通过 <code>send_subscription_event</code> 推送回 Agent 的 <code>callback_url</code>。没有活跃订阅时后台轮询任务靠 <code>tokio::sync::Notify</code> 挂起零开销，线程关闭或取消订阅时移除条目。</li>
+</ol>
+<h2 id="兼容现有-mcp-工具-infinity-mcp-bridge-如何桥接">兼容现有 MCP 工具：infinity-mcp-bridge 如何桥接<a class="anchor" href="#兼容现有-mcp-工具-infinity-mcp-bridge-如何桥接" aria-label="链接到本节">#</a></h2>
+<p>协议再先进，如果不能直接复用现有的 MCP 服务器，落地成本也会太高。<code>crates/infinity-mcp-bridge/src/lib.rs</code>（797 行）在客户端侧做了一层干净的适配。</p>
+<p>它定义了 <code>McpTransport</code> trait，并内置了两种传输实现：<code>StdioMcpTransport</code> 启动本地子进程（带 <code>kill_on_drop(true)</code> 防止孤儿进程），按换行分隔的 JSON-RPC 2.0 读写；<code>HttpMcpTransport</code> 对接 Streamable HTTP MCP 服务，自动处理 <code>initialize</code> + <code>notifications/initialized</code> 握手、维护 <code>mcp-session-id</code> 请求头，并能同时解析普通 JSON 响应与 <code>text/event-stream</code> SSE 响应。</p>
+<p>顶层的 <code>McpToolSet</code> 通过 <code>McpTransportFactory</code> 延迟建立连接，把 MCP 服务器暴露出的每个工具包装成核心运行时认识的标准 <code>Tool</code> 实现。调用发生时，桥接层在后台任务里等待 JSON-RPC 返回，再把结果转换成 <code>InputMessage</code> 投回运行时输入队列。对于本地常驻模式，这意味着任何现有 MCP 工具零改动就能并入 Infinity 的并发线程与统一展示链路；而在无服务器 Lambda 模式下，仓库的 <code>agent/</code> 目录则允许把 MCP 服务包在独立的远程代理层之后，对外呈现为标准无状态 RAP 端点。</p>
+<p>协议层的收发机制清楚了，但还有一个关键问题悬着：当订阅事件不断涌入、或者父 Agent 一口气派生五个子 Agent 并行干活时，上下文不会乱套吗？下一章进入线程树与位置索引压缩。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="03-slice-and-history.html"><small>上一章</small><strong>切片执行循环与三阶段 HistoryManager</strong></a><a class="next" href="05-threading-compaction.html"><small>下一章</small><strong>线程树、上下文继承与位置索引压缩</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：为什么一台树莓派能装下七万五千个 Agent</a><a href="../chapters/01-blocking-trap.html"><span>01</span>阻塞式 Agent 的死结与无阻塞切片不变量</a><a href="../chapters/02-workspace-topology.html"><span>02</span>21 个 Crate 的分层版图与类型化 ID 体系</a><a href="../chapters/03-slice-and-history.html"><span>03</span>切片执行循环与三阶段 HistoryManager</a><a href="../chapters/04-rap-protocol.html"><span>04</span>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</a><a href="../chapters/05-threading-compaction.html"><span>05</span>线程树、上下文继承与位置索引压缩</a><a href="../chapters/06-local-actor-deferral.html"><span>06</span>单线程本地调度器、延迟队列与抢占打断</a><a href="../chapters/07-provider-error-boundary.html"><span>07</span>模型供应协议、跨进程隔离与错误分类契约</a><a href="../chapters/08-stacked-sandboxes.html"><span>08</span>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</a><a href="../chapters/09-daemon-remote-migration.html"><span>09</span>本地守护进程、SSH 远程代理与跨主机热迁移</a><a href="../chapters/10-serverless-aws.html"><span>10</span>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</a><a href="../chapters/11-clients-and-hydro-dataflow.html"><span>11</span>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</a><a href="../chapters/12-tradeoffs-and-limits.html"><span>12</span>失败模式、安全边界与架构取舍</a><a href="../chapters/13-mini-infinity.html"><span>13</span>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：源码索引、实测统计与核心术语对照</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · hydro-project/infinity · 快照 e1a3e4b36e5f · 2026-11-05</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

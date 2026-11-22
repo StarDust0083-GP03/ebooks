@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从需求、配置、角色到 Hook 与验收，解剖 Claude Code Game Studios 的工作流"><meta name="author" content="独立源码研究">
+<title>总体架构：一个会话，四种约束 · Claude Code 游戏工作室</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">G</span><span>Claude Code 游戏工作室</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 02</div><div class="rail-title">总体架构：一个会话，四种约束</div><ol><li><a href="#先拆穿外壳-它到底怎么跑起来的">先拆穿外壳：它到底怎么跑起来的</a></li><li><a href="#按约束力从软到硬排排坐">按约束力从软到硬排排坐</a></li><li><a href="#仓库里三类文件-千万别混着管">仓库里三类文件，千万别混着管</a></li><li><a href="#四大引擎的代码根-为什么不再硬写-src">四大引擎的代码根：为什么不再硬写 src/</a></li><li><a href="#一次典型会话的时间线">一次典型会话的时间线</a></li><li><a href="#40-kb-读保护-一个很贼的省钱设计">40 KB 读保护：一个很贼的省钱设计</a></li><li><a href="#常见误解">常见误解</a></li><li><a href="#练习">练习</a></li><li><a href="#答案提示">答案提示</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 02 章</div><h1>总体架构：一个会话，四种约束</h1><div class="chapter-meta">CCGS v1.3.0 快照 2026-11-09 · 约 24 分钟</div></header><div class="prose"><h2 id="先拆穿外壳-它到底怎么跑起来的">先拆穿外壳：它到底怎么跑起来的<a class="anchor" href="#先拆穿外壳-它到底怎么跑起来的" aria-label="链接到本节">#</a></h2>
+<p>第一次克隆 CCGS，打开目录树往往会愣一下：<code>.claude/</code> 里塞着 <code>agents/</code>、<code>skills/</code>、<code>hooks/</code>、<code>rules/</code>、<code>docs/</code>、<code>scripts/</code>、<code>genres/</code>、<code>engines/</code> 八个子目录，根目录放着 <code>CLAUDE.md</code>、<code>project.yaml</code>，旁边还有 <code>design/</code>、<code>docs/</code>、<code>production/</code>、<code>prototypes/</code>、<code>studio-tests/</code>。既没有后台守护进程，也没有 <code>docker-compose.yml</code>。</p>
+<p>它到底怎么运行？</p>
+<p>全靠宿主 <strong>Claude Code</strong>。当你在项目根目录敲下 <code>claude</code> 的那一刻，Claude Code 自动读入当前目录的 <code>CLAUDE.md</code> 和 <code>.claude/settings.json</code>：把该常驻的规矩塞进模型上下文，把权限表和 15 条 Hook 挂到工具调用的生命周期里。等你敲下 <code>/prototype</code> 或 <code>/dev-story</code>，宿主去找到对应的 <code>SKILL.md</code>，先执行正文开头带 <code>!</code> 的命令把配置算清楚贴进去，再把剧本交给模型一步步调工具。</p>
+<p>所以，<strong>必须从项目根目录启动 Claude Code</strong>。如果你在 <code>src/</code> 子目录里启动它，宿主根本加载不到根目录的 <code>settings.json</code>，所有的 Hook、高危命令拦截和默认确认模式都会直接失效（<code>CLAUDE.md</code> 里专门写了条兜底提醒，一旦发现启动目录不对就先警告）。</p>
+<h2 id="按约束力从软到硬排排坐">按约束力从软到硬排排坐<a class="anchor" href="#按约束力从软到硬排排坐" aria-label="链接到本节">#</a></h2>
+<p>搞懂整仓架构最省脑子的办法，是别按目录背清单，而是按**“到底能不能卡住大模型”**排成四层：</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 286" width="420" height="286" role="img" aria-label="四种约束：从建议到强制">
+<title>四种约束：从建议到强制</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="10" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">强制力递增 ↓</text><rect x="8" y="20" width="214" height="54" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="17" y="37" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">常驻上下文</text><text x="17" y="52" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">CLAUDE.md 与 @ 导入的规则</text><text x="232" y="44" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">模型看得见，可以忽略</text><rect x="350" y="39" width="58" height="16" rx="8" fill="none" stroke="var(--muted)" stroke-width="0.9"/><text x="379.0" y="50.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="600" fill="var(--muted)" text-anchor="middle" opacity="1">建议</text><rect x="8" y="84" width="214" height="54" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="17" y="101" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">按需加载</text><text x="17" y="116" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">SKILL.md、参考文档、Agent 提示词</text><text x="232" y="108" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">范围更窄，仍是文字</text><rect x="350" y="103" width="58" height="16" rx="8" fill="none" stroke="var(--muted)" stroke-width="0.9"/><text x="379.0" y="114.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="600" fill="var(--muted)" text-anchor="middle" opacity="1">较软</text><rect x="8" y="148" width="214" height="54" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="17" y="165" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Hook 回调</text><text x="17" y="180" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">settings.json 注册 15 条命令</text><text x="232" y="172" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">部分事件 exit 2 才阻断</text><rect x="350" y="167" width="58" height="16" rx="8" fill="none" stroke="var(--muted)" stroke-width="0.9"/><text x="379.0" y="178.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="600" fill="var(--muted)" text-anchor="middle" opacity="1">部分</text><rect x="8" y="212" width="214" height="54" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.4"/><text x="17" y="229" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">宿主权限</text><text x="17" y="244" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">permissions.deny 命令模式</text><text x="232" y="236" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">宿主执行，不靠模型配合</text><rect x="350" y="231" width="58" height="16" rx="8" fill="none" stroke="var(--forest)" stroke-width="0.9"/><text x="379.0" y="242.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="600" fill="var(--forest)" text-anchor="middle" opacity="1">强制</text>
+</svg><figcaption>四种约束：从常驻提示词到宿主权限，强制力逐级上升</figcaption></figure>
+<ul>
+<li><strong>第 1 层：常驻上下文（极软，贴墙标语）</strong>。<code>CLAUDE.md</code> 以及里面用 <code>@</code> 语法导入的 <code>directory-structure.md</code>、<code>coordination-rules.md</code>、<code>coding-standards.md</code>。只要开会话就一定带进去。注意 v1.3.0 做了个很聪明的减法：<strong>模板默认不再硬塞 Godot 的版本参考文档</strong>，直到你真的定了引擎（跑 <code>/setup-engine</code>、原型 Grow 落盘，或改 <code>engine.name</code>），脚本才把对应引擎的 <code>@docs/engine-reference/&lt;engine&gt;/VERSION.md</code> 插进去，免得白白浪费上下文，或者让做网页游戏的会话满脑子都是 Godot API。但归根结底，这一层全是文字，模型忙起来随时会忘。</li>
+<li><strong>第 2 层：按需加载的剧本与资料（软，但夹带了确定性注入）</strong>。包括 49 个角色文件、78 个 <code>SKILL.md</code>（75 个正式技能 + 3 个旧名转发）、14 条路径规则、73 份品类知识文件。它们平时不占地方，触发了才加载。这一层最靠谱的一手，是技能正文顶部的 <code>!</code> 命令注入——把配置解析、故事状态统计这类确定性计算先用 Bash 算死，直接把结果贴给模型看，不给它瞎猜的机会。</li>
+<li><strong>第 3 层：生命周期 Hook（半硬，15 条里只有 3 处真拦）</strong>。<code>.claude/settings.json</code> 在 8 类事件上挂了 15 条命令（<code>.claude/hooks/</code> 目录里共 18 个脚本，另外 3 个是库和未注册辅助脚本）。脚本能拿到工具调用的完整 JSON 参数，但真正用 <code>exit 2</code> 拍桌子的只有三处：<code>validate-read.sh</code> 拦超 40 KB 大文档整篇读取、<code>validate-commit.sh</code> 拦格式写坏的暂存数据 JSON、<code>validate-assets.sh</code> 在写坏 JSON 后把报错拍回模型脸上让它返工。其余大多数 Hook（包括名头很响的 <code>validate-write.sh</code>）全是 <code>exit 0</code> 发提醒，拦不住。</li>
+<li><strong>第 4 层：宿主权限表（真硬，不看模型脸色）</strong>。<code>.claude/settings.json</code> 的 <code>permissions</code> 段，由 Claude Code 宿主直接执行。<code>deny</code> 列表把 <code>rm -rf</code> 的二十来种写法、<code>git push --force</code>、<code>git reset --hard</code>、<code>sudo</code>、<code>chmod 777</code>、读写 <code>.env*</code>、编辑 <code>.uasset</code>/<code>.umap</code> 直接封死；v1.3.0 还把 <code>allow</code> 列表扩充到了 31 条（新增 28 条只读框架脚本和 <code>yaml-helper.sh</code> 7 个只读函数），因为 Claude Code 对技能自带的 <code>allowed-tools</code> 只在技能启动那一轮生效，不放进全局 <code>allow</code>，技能每问你一个问题后下一轮又要重新弹窗要授权。</li>
+</ul>
+<h2 id="仓库里三类文件-千万别混着管">仓库里三类文件，千万别混着管<a class="anchor" href="#仓库里三类文件-千万别混着管" aria-label="链接到本节">#</a></h2>
+<p>把文件按生命周期拆成三类，升级模板和清理垃圾时才不会误伤：</p>
+<ol>
+<li><strong>框架本体（跟着上游版本走）</strong>：<code>.claude/agents/</code>、<code>.claude/skills/</code>、<code>.claude/hooks/</code>、<code>.claude/scripts/</code>、<code>.claude/rules/</code>、<code>.claude/genres/</code>、<code>.claude/engines/</code>、<code>.claude/docs/templates/</code>、<code>studio-tests/</code>。升级 CCGS 时这些目录大都可以按 <code>UPGRADING.md</code> 整块覆盖（除了你自己改过的配置和 <code>.claude/docs/technical-preferences.md</code>）。</li>
+<li><strong>你的项目资产（跟着游戏进 Git）</strong>：<code>project.yaml</code>、<code>CLAUDE.md</code>、<code>design/</code>（含 <code>game-brief.md</code>、GDD、实体注册表）、<code>docs/</code>（架构、ADR、控制清单）、<code>prototypes/</code>（单文件可玩原型）、<code>references/</code>（你丢进去的美术/音效参考）、<code>src/</code> 或引擎代码根、<code>assets/</code>、<code>tests/</code>、<code>production/epics/</code>。</li>
+<li><strong>个人与会话临时态（被 <code>.gitignore</code> 拦在仓库外）</strong>：<code>project.local.yaml</code>（你的个人偏好覆盖）、<code>production/session-state/active.md</code>（断点续传检查点）、<code>production/session-logs/</code>（归档日志与决策日志）、<code>.claude/worktrees/</code>（隔离工作树）。</li>
+</ol>
+<p>顺带一提，v1.2.0 之后仓库根目录多了一个 <code>.worktreeinclude</code>，里面列着 <code>project.local.yaml</code>、<code>CLAUDE.local.md</code> 和 <code>.claude/settings.local.json</code>，配合 <code>settings.json</code> 里的 <code>&quot;worktree&quot;: { &quot;baseRef&quot;: &quot;head&quot; }</code>，保证隔离出来的原型分支或子代理工作树是从你当前本地提交切出来的，还能自动带上你的个人配置，同时绝不把 <code>.env</code> 这类密钥带进去。</p>
+<h2 id="四大引擎的代码根-为什么不再硬写-src">四大引擎的代码根：为什么不再硬写 <code>src/</code><a class="anchor" href="#四大引擎的代码根-为什么不再硬写-src" aria-label="链接到本节">#</a></h2>
+<p>以前很多脚本写死了扫 <code>src/</code>，一换引擎全军覆没。v1.3.0 把四个一等公民引擎的目录和默认命令统一收进了一张制表符分隔的总表 <code>.claude/engines/engines.tsv</code>：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>引擎</th>
+<th>默认代码根</th>
+<th>默认测试根</th>
+<th>默认资产根</th>
+<th>为什么不能随便写进 <code>src/</code></th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Web</strong></td>
+<td><code>src/</code></td>
+<td><code>tests/</code></td>
+<td><code>assets/</code></td>
+<td>Vite 从 <code>index.html</code> 入口打包；扁平网页项目还可用 <code>engine.code_root: .</code></td>
+</tr>
+<tr>
+<td><strong>Godot 4</strong></td>
+<td><code>src/</code></td>
+<td><code>tests/</code></td>
+<td><code>assets/</code></td>
+<td>Godot 的 <code>res://</code> 扫全仓，无强限制</td>
+</tr>
+<tr>
+<td><strong>Unity</strong></td>
+<td><code>Assets/</code></td>
+<td><code>Assets/Tests/</code></td>
+<td><code>Assets/</code></td>
+<td>Unity <strong>只编译 <code>Assets/</code> 和 <code>Packages/</code></strong>，写到 <code>src/</code> 压根不进构建</td>
+</tr>
+<tr>
+<td><strong>Unreal 5</strong></td>
+<td><code>Source/</code></td>
+<td><code>Source/&lt;Module&gt;/Private/Tests/</code></td>
+<td><code>Content/</code></td>
+<td>UnrealBuildTool 只认 <code>Source/</code> 下的模块</td>
+</tr>
+</tbody></table></div>
+<p>所有 Hook、脚本和技能都通过 <code>engine-row.awk</code> 和 <code>resolve_code_root()</code> 读同一张表，绝不各自维护一份引擎分支。如果项目目录非标准，还可以在 <code>project.yaml</code> 里填 <code>engine.code_root</code> 和 <code>engine.test_root</code>，具体解析坑点第 13 章细拆。</p>
+<h2 id="一次典型会话的时间线">一次典型会话的时间线<a class="anchor" href="#一次典型会话的时间线" aria-label="链接到本节">#</a></h2>
+<p>把从打开终端到跑完一条命令的顺序拉直，大概就这六步：</p>
+<ol>
+<li>在根目录执行 <code>claude</code>，宿主读 <code>CLAUDE.md</code>（展开 <code>@</code> 导入）和 <code>.claude/settings.json</code>（挂权限、状态栏和 15 条 Hook）。</li>
+<li>触发 <code>SessionStart</code>：<code>session-start.sh</code> 展示分支、最近提交和 <code>active.md</code> 里的检查点（还会顺手在后台每天最多查一次 GitHub 有没有新版，CI 环境下自动关闭）；<code>detect-gaps.sh</code> 扫描仓库状态，空白项目直接提醒你去跑 <code>/prototype</code> 或 <code>/start</code>。</li>
+<li>你敲下一条斜杠命令（比如 <code>/dev-story</code> 或 <code>/prototype</code>）。</li>
+<li>宿主找到对应 <code>SKILL.md</code>，先执行正文开头的 <code>!</code> 命令，把配置求值结果或故事列表直接贴进提示词。</li>
+<li>模型照着剧本推进，需要派活时按规则拉起子代理。</li>
+<li>期间每一次 <code>Read</code>、<code>Write</code>、<code>Edit</code>、<code>Bash</code> 工具调用，都要先过 <code>permissions.deny</code>，再过 <code>PreToolUse</code> Hook，落盘后再走 <code>PostToolUse</code> Hook。</li>
+</ol>
+<h2 id="40-kb-读保护-一个很贼的省钱设计">40 KB 读保护：一个很贼的省钱设计<a class="anchor" href="#40-kb-读保护-一个很贼的省钱设计" aria-label="链接到本节">#</a></h2>
+<p>在所有 Hook 里，有个极实用又容易被抄走的小机关：<code>validate-read.sh</code>。它专门蹲在 <code>design/</code>、<code>docs/architecture/</code>、<code>production/session-state/</code> 这三个大文档聚集地门口。</p>
+<p>只要模型犯懒，想一口气把超过 40 KB（可通过 <code>features.read_guard_kb</code> 调，也可以 <code>features.read_guard: off</code> 关掉）的文档整篇吞进上下文——也就是调用 <code>Read</code> 时既不传 <code>offset</code> 也不传 <code>limit</code>——脚本直接给它吃个闭门羹（<code>exit 2</code>），同时把这篇文档最多 40 个 Markdown 标题和对应行号甩在 <code>stderr</code> 里：“别整本硬背，自己挑要看的那一节，带行号范围重读。”</p>
+<p>多折腾这一来一回，成本只是一轮工具调用，换回来的是少烧几万 token，上下文还不至于瞬间塞爆。因为只要带了行号范围就一定放行，绝不会把任何任务永久卡死。连脚本里都写了快速逃生路径：平时读普通代码文件时，纯用 Bash 字符串匹配判断路径里不含那三个目录名，直接 <code>exit 0</code> 溜走，连 <code>jq</code> 和子进程都不起。</p>
+<h2 id="常见误解">常见误解<a class="anchor" href="#常见误解" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>误解一：<code>.claude/docs/</code> 里的几十份规范每次开会话都会自动读进去。</strong> 不会。只有 <code>CLAUDE.md</code> 里 <code>@</code> 点名的几份常驻，像 <code>effects-map.md</code> 这种巨型配置字典还被反复警告“禁止技能运行时整篇读取”。</li>
+<li><strong>误解二：有 <code>settings.json</code> 的 <code>deny</code> 列表就等于有了沙箱。</strong> <code>deny</code> 只认匹配到的命令字符串模式，管不到未列举的破坏性命令，也挡不住跨工具绕过；文件写入检查在 Hook 里，且多为告警。</li>
+<li><strong>误解三：写进 <code>SKILL.md</code> 的步骤像代码一样绝对按顺序执行。</strong> <code>SKILL.md</code> 本质还是给模型看的自然语言流程，模型依然可能偷懒跳步；真正百分百确定的，只有 <code>.claude/scripts/</code> 和 <code>.claude/hooks/</code> 里的脚本。</li>
+</ul>
+<h2 id="练习">练习<a class="anchor" href="#练习" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>打开 <code>.claude/settings.json</code>，数出注册了 Hook 的 8 个事件，并结合 Claude Code 机制区分哪些事件的 <code>exit 2</code> 真能拦住动作，哪些只是把错误喂回给模型。</li>
+<li>想想看：<code>validate-read.sh</code> 为什么只盯 <code>design/</code>、<code>docs/architecture/</code>、<code>production/session-state/</code> 三个目录，而不对全仓库所有超 40 KB 文件一刀切？</li>
+<li>在 v1.3.0 里，为什么模板自带的 <code>CLAUDE.md</code> 默认把引擎参考的 <code>@docs/engine-reference/.../VERSION.md</code> 导入行留空了？如果你手动改了 <code>project.yaml</code> 里的 <code>engine.name</code> 却忘了改 <code>CLAUDE.md</code>，会发生什么？</li>
+</ol>
+<h2 id="答案提示">答案提示<a class="anchor" href="#答案提示" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>8 个事件是 <code>SessionStart</code>、<code>PreToolUse</code>、<code>PostToolUse</code>、<code>Notification</code>、<code>PreCompact</code>、<code>Stop</code>、<code>SubagentStart</code>、<code>SubagentStop</code>。<code>PreToolUse</code> 的 <code>exit 2</code> 在动作发生前直接拦停；<code>PostToolUse</code> 已经落盘，只能把 stderr 反馈给模型让它修；<code>Stop</code> / <code>SubagentStop</code> 返回 <code>exit 2</code> 可阻止会话/子代理提前结束。</li>
+<li>这三个目录是长篇 GDD、架构方案和会话日志的重灾区；如果全仓一刀切，连读一个稍大的源文件或锁文件都被拦，反而添乱。</li>
+<li>留空是为了避免还没定引擎（或者做 Web 原型）的项目白白加载 Godot 4.7 的文档污染上下文。如果你手动填了 <code>engine.name</code> 却没插导入行，<code>session-start.sh</code> 会在开会话时发出警告，而用 <code>/setup-engine</code> 或 <code>/project-settings engine.name=&lt;引擎&gt;</code> 会自动帮你把那行写进去。</li>
+</ol>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="01-requirements.html"><small>上一章</small><strong>需求：一个人写游戏，为什么还要套规矩</strong></a><a class="next" href="03-onboarding.html"><small>下一章</small><strong>入门：先玩一把（/prototype）与 Studio Mode（/start）双轨入口</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：先看清这东西到底是怎么跑起来的</a><a href="../chapters/01-requirements.html"><span>01</span>需求：一个人写游戏，为什么还要套规矩</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：一个会话，四种约束</a><a href="../chapters/03-onboarding.html"><span>03</span>入门：先玩一把（<code>/prototype</code>）与 Studio Mode（<code>/start</code>）双轨入口</a><a href="../chapters/04-config.html"><span>04</span>配置求值：一个 <code>rigor</code> 如何长出六个设置</a><a href="../chapters/05-agents.html"><span>05</span>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</a><a href="../chapters/06-skill-protocol.html"><span>06</span>Skill 协议：一条斜杠命令怎么从解析走到交接</a><a href="../chapters/07-artifacts.html"><span>07</span>产物模型：一页简报与故事、需求、ADR 三张网</a><a href="../chapters/08-dev-story.html"><span>08</span>实施链路：<code>/dev-story</code> 怎么把故事变成代码</a><a href="../chapters/09-story-done.html"><span>09</span>验收：<code>/story-done</code> 如何堵死“基本完成”</a><a href="../chapters/10-hooks.html"><span>10</span>Hook：十五个检查点里，到底谁真的能拦住</a><a href="../chapters/11-registries.html"><span>11</span>注册表：跨文档事实怎么管才不漂移</a><a href="../chapters/12-teams.html"><span>12</span>协作：团队流水线、默认塌缩与“透镜折叠”</a><a href="../chapters/13-engine.html"><span>13</span>引擎与品类适配：统一引擎表、Web 一等公民与品类库</a><a href="../chapters/14-context.html"><span>14</span>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</a><a href="../chapters/15-security.html"><span>15</span>安全边界：能聊天、有 Hook，不等于有沙箱</a><a href="../chapters/16-verification.html"><span>16</span>验证与演进：Markdown 写的框架，怎么证明自己没改坏</a><a href="../chapters/17-mini-studio.html"><span>17</span>最小实验：用两百行 Python 亲手跑通四条核心约束</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.3.0 源码索引、实测数据、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · CCGS v1.3.0 · 快照 abc0de79d6ce · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

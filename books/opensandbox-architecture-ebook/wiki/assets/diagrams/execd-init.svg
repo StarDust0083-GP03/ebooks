@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="860" viewBox="0 0 1100 860" role="img" aria-labelledby="execd-init-title execd-init-desc">
+<title id="execd-init-title">OSEP-0018：execd-as-init 默认拓扑与进程降权链</title>
+<desc id="execd-init-desc">对比经典后台启动与 EXECD_INIT=1 默认模式，并展示 opensandbox-launcher 在 fork 到 execve 之间的顺序化降权步骤。</desc>
+<style>text{font-family:"Noto Sans CJK SC",system-ui,sans-serif;fill:#252820}.name{font-size:20px;font-weight:650}.label{font-size:16px;fill:#29564c;font-weight:500}.sub{font-size:15px;fill:#586354}.warn{font-size:15px;fill:#8c4a1c;font-weight:550}.node{fill:#faf7ef;stroke:#a5ad9e;stroke-width:1.4}.active{fill:#edf2e9;stroke:#29564c;stroke-width:2}.amber{fill:#f9f1e4;stroke:#b86b2a;stroke-width:1.6}.edge{fill:none;stroke:#29564c;stroke-width:1.6}.return{fill:none;stroke:#72846b;stroke-width:1.5;stroke-dasharray:6 5}.warnwire{fill:none;stroke:#b86b2a;stroke-width:1.6;stroke-dasharray:5 4}</style>
+<defs>
+<marker id="ei-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 1 L9 5 L0 9" fill="#29564c"/></marker>
+<marker id="ei-warn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 1 L9 5 L0 9" fill="#b86b2a"/></marker>
+</defs>
+<rect width="1100" height="860" fill="#faf7ef"/>
+<text x="40" y="36" class="sub">OSEP-0018（v1.3.0 默认开启）：runtime.execd_run_as_init = true → 注入 EXECD_INIT=1</text>
+
+<!-- Left panel: Legacy mode -->
+<rect x="40" y="64" width="460" height="430" rx="8" fill="#f5f1e6" stroke="#d9d2c3" stroke-width="1.2"/>
+<text x="64" y="98" class="name">经典拓扑（execd_run_as_init = false）</text>
+<text x="64" y="124" class="sub">v1.2.1 及更早版本的默认模式</text>
+
+<path class="edge" d="M270 220 V268" marker-end="url(#ei-arrow)"/>
+<text x="284" y="250" class="sub">后台拉起 &amp; wait</text>
+
+<path class="edge" d="M160 356 V396" marker-end="url(#ei-arrow)"/>
+<path class="edge" d="M380 356 V396" marker-end="url(#ei-arrow)"/>
+
+<g data-box="1" id="leg-boot"><rect class="node" x="90" y="148" width="360" height="72" rx="6"/>
+<text x="270" y="180" class="name" text-anchor="middle">bootstrap.sh（PID 1）</text>
+<text x="270" y="204" class="sub" text-anchor="middle">后台启动 execd，再运行 entrypoint</text></g>
+
+<g data-box="1" id="leg-execd"><rect class="node" x="64" y="272" width="192" height="84" rx="6"/>
+<text x="160" y="306" class="name" text-anchor="middle">execd 守护进程</text>
+<text x="160" y="334" class="sub" text-anchor="middle">仅管 /command 子树</text></g>
+
+<g data-box="1" id="leg-entry"><rect class="amber" x="284" y="272" width="192" height="84" rx="6"/>
+<text x="380" y="306" class="name" text-anchor="middle">用户 entrypoint</text>
+<text x="380" y="334" class="warn" text-anchor="middle">不受降权地板包裹</text></g>
+
+<g data-box="1" id="leg-cmd"><rect class="node" x="64" y="400" width="192" height="68" rx="6"/>
+<text x="160" y="438" class="sub" text-anchor="middle">API 命令与 PTY</text></g>
+
+<g data-box="1" id="leg-drift"><rect class="amber" x="284" y="400" width="192" height="68" rx="6"/>
+<text x="380" y="428" class="warn" text-anchor="middle">孤儿易变僵尸进程</text>
+<text x="380" y="452" class="sub" text-anchor="middle">能力上报 degraded</text></g>
+
+<!-- Right panel: New default init mode -->
+<rect x="530" y="64" width="530" height="430" rx="8" fill="#edf2e9" stroke="#29564c" stroke-width="1.6"/>
+<text x="554" y="98" class="name">默认拓扑（EXECD_INIT=1，execd --init）</text>
+<text x="554" y="124" class="sub">bootstrap.sh 末尾执行 exec execd --init -- &lt;entrypoint&gt;</text>
+
+<path class="edge" d="M795 256 V296" marker-end="url(#ei-arrow)"/>
+<text x="808" y="282" class="label">统一 waitid reaper</text>
+
+<path class="edge" d="M675 372 V408" marker-end="url(#ei-arrow)"/>
+<path class="edge" d="M915 372 V408" marker-end="url(#ei-arrow)"/>
+
+<g data-box="1" id="init-execd"><rect class="active" x="560" y="148" width="470" height="108" rx="6"/>
+<text x="795" y="180" class="name" text-anchor="middle">execd --init（容器 PID 1 / FSB subreaper）</text>
+<text x="795" y="208" class="sub" text-anchor="middle">单一 waitid 回收孤儿 · 转发 SIGTERM/HUP/USR1/USR2/WINCH</text>
+<text x="795" y="234" class="sub" text-anchor="middle">non-dumpable 保护 /proc/1/environ · 透传退出码</text></g>
+
+<g data-box="1" id="init-launcher"><rect class="node" x="560" y="300" width="470" height="72" rx="6"/>
+<text x="795" y="330" class="name" text-anchor="middle">opensandbox-launcher（可选加固地板）</text>
+<text x="795" y="356" class="sub" text-anchor="middle">由 EXECD_ISOLATION_CONFIG（TOML）控制，全量覆盖用户进程</text></g>
+
+<g data-box="1" id="init-entry"><rect class="node" x="560" y="412" width="225" height="60" rx="6"/>
+<text x="672" y="447" class="sub" text-anchor="middle">受控用户 entrypoint</text></g>
+
+<g data-box="1" id="init-cmd"><rect class="node" x="805" y="412" width="225" height="60" rx="6"/>
+<text x="917" y="447" class="sub" text-anchor="middle">/command、会话与 PTY</text></g>
+
+<!-- Bottom panel: Launcher hardening chain -->
+<rect x="40" y="524" width="1020" height="218" rx="8" fill="#faf7ef" stroke="#a5ad9e" stroke-width="1.4"/>
+<text x="64" y="558" class="name">opensandbox-launcher 顺序敏感降权链（fork 之后、execve 之前）</text>
+<text x="64" y="584" class="sub">每层按序收敛且 fail-open；缺内核特性（如 FSB guest 缺 Landlock）上报 unsupported 而不阻断启动</text>
+
+<path class="edge" d="M196 654 H222" marker-end="url(#ei-arrow)"/>
+<path class="edge" d="M362 654 H388" marker-end="url(#ei-arrow)"/>
+<path class="edge" d="M528 654 H554" marker-end="url(#ei-arrow)"/>
+<path class="edge" d="M694 654 H720" marker-end="url(#ei-arrow)"/>
+<path class="edge" d="M860 654 H886" marker-end="url(#ei-arrow)"/>
+
+<g data-box="1" id="st-1"><rect class="node" x="64" y="616" width="132" height="76" rx="6"/>
+<text x="130" y="646" class="label" text-anchor="middle">1. 剥离凭据</text>
+<text x="130" y="672" class="sub" text-anchor="middle">清 execd env</text></g>
+
+<g data-box="1" id="st-2"><rect class="node" x="226" y="616" width="136" height="76" rx="6"/>
+<text x="294" y="646" class="label" text-anchor="middle">2. 裁剪能力</text>
+<text x="294" y="672" class="sub" text-anchor="middle">bounding set</text></g>
+
+<g data-box="1" id="st-3"><rect class="node" x="392" y="616" width="136" height="76" rx="6"/>
+<text x="460" y="646" class="label" text-anchor="middle">3. 禁止提权</text>
+<text x="460" y="672" class="sub" text-anchor="middle">no_new_privs</text></g>
+
+<g data-box="1" id="st-4"><rect class="node" x="558" y="616" width="136" height="76" rx="6"/>
+<text x="626" y="646" class="label" text-anchor="middle">4. 设身份与能力</text>
+<text x="626" y="672" class="sub" text-anchor="middle">UID / ambient</text></g>
+
+<g data-box="1" id="st-5"><rect class="node" x="724" y="616" width="136" height="76" rx="6"/>
+<text x="792" y="646" class="label" text-anchor="middle">5. 文件系统边界</text>
+<text x="792" y="672" class="sub" text-anchor="middle">Landlock 规则</text></g>
+
+<g data-box="1" id="st-6"><rect class="active" x="890" y="616" width="146" height="76" rx="6"/>
+<text x="963" y="646" class="label" text-anchor="middle">6. seccomp 收口</text>
+<text x="963" y="672" class="sub" text-anchor="middle">execve 用户程序</text></g>
+
+<line x1="40" y1="772" x2="1060" y2="772" stroke="#d9d2c3"/>
+<text x="40" y="804" class="sub">注：PID 1 信号盾使沙箱内 kill -9 1 无效，但 SIGTERM 故意不屏蔽并转发给 entrypoint，供 K8s Restart 回收策略使用。</text>
+<text x="40" y="834" class="sub">源码入口：components/execd/pkg/runtime/initmode_linux.go、hardening_linux.go、docs/guides/privilege-reduction.md</text>
+</svg>

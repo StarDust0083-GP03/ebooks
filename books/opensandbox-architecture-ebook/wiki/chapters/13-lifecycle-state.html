@@ -1,0 +1,109 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>状态机：暂停、恢复、快照模式与绝对过期 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="13-lifecycle-state"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#绝对-ttl-与三个容易踩的语义坑">绝对 TTL 与三个容易踩的语义坑</a></li><li><a href="#暂停-恢复与-batchsandbox-粘滞-completed">暂停/恢复与 BatchSandbox 粘滞 `Completed`</a></li><li><a href="#公开快照-full-与-rootfsonly-的分道扬镳">公开快照：`full` 与 `rootfsOnly` 的分道扬镳</a></li><li><a href="#访问驱动的续期-空闲暂停与客户端池">访问驱动的续期、空闲暂停与客户端池</a></li><li><a href="#源码入口">源码入口</a></li></ol></details><article class="content"><h1 id="状态机-暂停-恢复-快照模式与绝对过期">状态机：暂停、恢复、快照模式与绝对过期</h1><p>沙箱平台的账单和事故常常在收尾和休眠阶段冒出来：一个沙箱跑完脚本正常退出，状态却掉回 <code>Pending</code> 一直占着坑位；用户想保存干净的文件系统起点，被迫连带导出几个 GB 的 guest 内存；或者客户端以为 <code>renew(300)</code> 是在原剩余寿命上加 5 分钟，结果把还剩半小时的沙箱活生生砍短成了 5 分钟。</p>
+<p>OpenSandbox 把中后半段生命周期拆成了四块独立机制：绝对 TTL 过期、暂停与恢复、<code>full</code> 与 <code>rootfsOnly</code> 公开快照，以及访问驱动的续期与空闲暂停。</p>
+<h2 id="绝对-ttl-与三个容易踩的语义坑">绝对 TTL 与三个容易踩的语义坑</h2><p>创建请求里的 <code>timeout</code> 是<strong>绝对 TTL</strong>，不是空闲超时。到期时间固定为创建时间加上 <code>timeout</code>，服务端重启或沙箱暂停都不会重置它。</p>
+<p>围绕过期时间有三条必须记牢的语义：</p>
+<ol>
+<li><strong>暂停不延寿</strong>。沙箱在 <code>Paused</code> 态照常走表，不会因为反复暂停就永生。</li>
+<li><strong>续期可以缩短寿命</strong>。<code>POST /v1/sandboxes/{id}/renew-expiration</code> 接收绝对时间戳 <code>expiresAt</code>，只要仍在未来，设得比当前值更早也会生效；而且 <code>server.max_sandbox_timeout_seconds</code> 只限制创建时的 <code>timeout</code>，不约束后续续期。SDK 的 <code>renew(duration)</code> 计算的是 <code>now + duration</code> 而非 <code>current expiresAt + duration</code>，只想延长不缩短的调用方必须先读当前到期时间再算。</li>
+<li><strong>竞态防线已补齐</strong>。<code>1.3.0-rc.2</code> 修复了两个静默丢工作区的并发竞态：Docker 后端把 <code>renew_expiration</code> 与过期清理串行在同一把每沙箱生命周期锁下，绝不再出现续期刚返 <code>200</code>、旧定时器却删掉活容器的局面；Kubernetes 后端的到期删除带上对象 UID 与 <code>resourceVersion</code> 前置条件，陈旧 informer 副本无法误删刚续期的沙箱。</li>
+</ol>
+<h2 id="暂停-恢复与-batchsandbox-粘滞-completed">暂停/恢复与 BatchSandbox 粘滞 <code>Completed</code></h2><p>三种后端上，暂停与恢复的底层动作和算力释放截然不同：</p>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Docker</th>
+<th>Kubernetes 容器</th>
+<th>Fast Sandbox</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>暂停动作</td>
+<td>容器级 pause（先主容器后 sidecar）</td>
+<td>commit rootfs 推 registry，释放 Pod 与池槽位</td>
+<td>写 <code>full</code> 检查点落 store，释放 Fastlet</td>
+</tr>
+<tr>
+<td>恢复动作</td>
+<td>容器级 unpause（先 sidecar 后主容器）</td>
+<td>模板改用快照镜像，重建 Pod</td>
+<td>任意合格 Fastlet 恢复检查点并校准墙钟</td>
+</tr>
+<tr>
+<td>保留现场</td>
+<td>内存与进程（冻结）</td>
+<td>仅 rootfs（QEMU 模式除外）</td>
+<td>rootfs + vmstate + guest 内存</td>
+</tr>
+<tr>
+<td>算力足迹</td>
+<td>仍占宿主机内存</td>
+<td>归零</td>
+<td>归零</td>
+</tr>
+<tr>
+<td>恢复后地址</td>
+<td>不变</td>
+<td>变化，需重查 endpoint</td>
+<td>变化（可能换节点），必须重查 endpoint</td>
+</tr>
+<tr>
+<td>限制</td>
+<td>无副本限制</td>
+<td>仅支持 <code>spec.replicas = 1</code></td>
+<td>pause/resume 检查点始终保持 <code>full</code></td>
+</tr>
+</tbody></table>
+<p>图 5 展示了 Kubernetes BatchSandbox 在 <code>release-1.3.0-rc.2</code> 的完整运行与暂停状态机：主容器以退出码 0 正常结束后，不再从 <code>Succeed</code> 退回 <code>Pending</code>，而是进入粘滞的 <code>Completed</code> 终态并映射为公开的 <code>Terminated</code>（<code>reason = SANDBOX_COMPLETED</code>），直接拒绝后续 pause/resume 意图；同时 <code>PauseFailed</code> 与 <code>ResumeFailed</code> 属于可重试条件而非终态，状态写入携带 <code>resourceVersion</code> 乐观锁防止被陈旧视图覆盖。</p>
+<figure class="diagram"><img src="../assets/diagrams/lifecycle.svg" alt="图 5：Kubernetes BatchSandbox（v1.3.0-rc.2）运行、粘滞 Completed 终态与可重试暂停循环。PauseFailed 与 ResumeFailed 是条件而非终态；DELETE 204 只表示接受删除，清理后 404 不等于确认进程终止。" width="1060" height="980"><figcaption>图 5：Kubernetes BatchSandbox（v1.3.0-rc.2）运行、粘滞 Completed 终态与可重试暂停循环。PauseFailed 与 ResumeFailed 是条件而非终态；DELETE 204 只表示接受删除，清理后 404 不等于确认进程终止。</figcaption></figure>
+
+<h2 id="公开快照-full-与-rootfsonly-的分道扬镳">公开快照：<code>full</code> 与 <code>rootfsOnly</code> 的分道扬镳</h2><p>暂停是平台内部为了释放算力、保留同一个 <code>sandboxId</code> 的连续性机制；公开快照（<code>POST /v1/sandboxes/{id}/snapshots</code>）则是产出可复用制品的公开能力，基于 <code>READY</code> 快照创建出来的永远是一个<strong>新的沙箱 ID</strong>。</p>
+<p>在 <code>release-1.3.0-rc.1</code> 与 <code>rc.2</code> 中，五大 SDK 全部暴露了 <code>create_snapshot(mode=&quot;full&quot; | &quot;rootfsOnly&quot;)</code>（默认 <code>full</code>），把过去绑死在一起的两种快照需求彻底分开：</p>
+<figure class="diagram"><img src="../assets/diagrams/snapshot-modes.svg" alt="图 6：公开快照模式在三种后端的落点对照。Docker 与 Kubernetes 预检拒绝 rootfsOnly（409）；Fast Sandbox 同时支持原生 S3 与 OCI/OverlayBD 的 rootfsOnly 捕获，并在不合格节点 fail-closed 失败。" width="1100" height="840"><figcaption>图 6：公开快照模式在三种后端的落点对照。Docker 与 Kubernetes 预检拒绝 rootfsOnly（409）；Fast Sandbox 同时支持原生 S3 与 OCI/OverlayBD 的 rootfsOnly 捕获，并在不合格节点 fail-closed 失败。</figcaption></figure>
+
+<p>两条模式的核心差异与约束如下：</p>
+<ul>
+<li><strong>Docker 与 Kubernetes 容器后端</strong>：只支持 <code>mode=&quot;full&quot;</code>（分别产出本地 OCI 镜像与推送到 registry 的 OCI 镜像，仅含文件系统）；收到 <code>mode=&quot;rootfsOnly&quot;</code> 在服务端预检阶段直接返回 <code>409 UNSUPPORTED_RUNTIME</code>。其中 Docker 自 <code>1.2.1</code> 起允许直接对 <code>Paused</code> 状态的沙箱创建 <code>full</code> 快照。</li>
+<li><strong>Fast Sandbox 的 <code>full</code> 模式</strong>：捕获 <code>rootfs</code>、<code>vmstate</code>、<code>memory</code>（经 <code>/dev/shm</code> 暂存）与 <code>SHA256SUMS</code> 清单，恢复时原地继续跑内存里的进程，要求宿主机安装与 manifest 精确匹配的 Firecracker 版本（1.16.1 / 1.17.0），恢复后自动校准 guest 墙钟。暂停与恢复内部检查点依然保持 <code>full</code>-only。</li>
+<li><strong>Fast Sandbox 的 <code>rootfsOnly</code> 模式</strong>：产出 KB 级、丢弃 RAM 与进程的纯可写文件系统制品，恢复走显式 <code>create(snapshotId=...)</code> 冷启动并重跑 <code>entrypoint</code>（恢复耗时从数十毫秒级变为秒级）。到 <code>1.3.0-rc.2</code> 为止，它已同时覆盖 <strong>OCI/OverlayBD 与原生 S3 模板</strong>：服务端移除了原有的 OCI 预检限制，把模式准入交由 FastPath 门禁（拒绝时不落库意图）和 Fastlet 节点 fail-closed 复核；节点捕获资质改为从托管 VMM 目录与 StateRoot 自动推导，不合格节点直接令快照失败，绝不静默产出 <code>full</code> 制品；但原生 S3 与 OCI 模板都必须经过新版构建器重建（强制注入 guest-control 并校验 freeze/thaw），老模板捕获会直接 fail-closed。</li>
+</ul>
+<p>持久性红线同样没有模糊空间：对 Kubernetes 容器后端，只有内部或公开快照达到 <code>Succeed</code> 且镜像真实推到 registry 后 rootfs 才算持久，进行中的 <code>Pending</code>/<code>Committing</code> 不构成任何承诺；进程退出、OOM、Pod 驱逐或节点故障都不会自动触发快照；挂载卷的数据也不包含在 OCI rootfs 快照里；删除快照记录同样<strong>不会删除</strong>已经推送到仓库或对象存储里的底层制品，存储回收留给外部运维策略。</p>
+<h2 id="访问驱动的续期-空闲暂停与客户端池">访问驱动的续期、空闲暂停与客户端池</h2><p>为了弥补绝对 TTL 对长交互会话不够友好，控制面配了一对反向机制，共用「访问即信号」：</p>
+<ul>
+<li><strong>访问续期（OSEP-0009）</strong>：通过创建时的 <code>lifecycle.renewalPolicy</code>（或兼容期内的 <code>extensions[&quot;access.renew.extend.seconds&quot;]</code>）开启，经 ingress 或服务器代理的请求会节流发布 <code>renew-intent</code> 延长绝对过期时间。</li>
+<li><strong>空闲暂停（OSEP-0024）</strong>：创建时在 <code>lifecycle.idlePolicy</code> 声明 <code>idleTimeoutSeconds</code>、<code>onIdle: &quot;pause&quot;</code> 与 <code>wakeOnAccess: true</code>。<code>server/opensandbox_server/integrations/idle_pause/</code> 通过 <code>activity</code>、<code>decision</code>、<code>locking</code>、<code>probe</code>、<code>sweeper</code> 和 <code>executor</code> 周期扫描并自动暂停空闲沙箱，下次访问到达网关时自动唤醒（同样要重新解析 endpoint）。探针携带 <code>OpenSandbox-Skip-Activity: skip</code> 避免重置自己测量的时钟。</li>
+</ul>
+<p>在客户端侧，Python、JS、Kotlin、Go SDK 还提供实验性的<strong>客户端沙箱池</strong>（C# 暂缺）。它池化的是一组预热好的 Ready 沙箱 ID：单 leader 后台按 <code>max_idle</code> 补齐暖缓冲，任意节点调用 <code>acquire()</code> 弹出一个 ID 并续期后独占使用，没有 <code>release()</code>，用完直接销毁。要格外清楚 <code>max_idle</code> 管的是空闲缓冲池大小，不是并发使用上限，空池行为由 <code>AcquirePolicy</code>（如 <code>DIRECT_CREATE</code> 或 <code>FAIL_FAST</code>）决定；<code>1.2.1</code> 也补齐了 Python 优雅停池清理与 Go 池销毁失败围栏重试。</p>
+<h2 id="源码入口">源码入口</h2><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>server/opensandbox_server/services/snapshot_service.py</code></td>
+<td>公开快照状态机、<code>mode</code> 持久化与双副本恢复扫描（999 行）</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/fast_sandbox/snapshot_runtime.py</code></td>
+<td>FastPath <code>rootfsOnly</code>/<code>full</code> 提交与 S3/OCI 放行逻辑（497 行）</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/integrations/renew_intent/consumer.py</code></td>
+<td>访问续期意图消费</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/integrations/idle_pause/decision.py</code></td>
+<td>空闲暂停判定逻辑</td>
+</tr>
+<tr>
+<td><code>docs/guides/pause-resume.md</code></td>
+<td>暂停/恢复持久性边界、中断语义与后端对照</td>
+</tr>
+<tr>
+<td><code>docs/guides/client-pool.md</code></td>
+<td>客户端沙箱池 leader 预热与 <code>AcquirePolicy</code></td>
+</tr>
+</tbody></table>
+</article><nav class="pager" aria-label="篇章导航"><a href="12-credential-vault.html"><small>上一篇</small>凭证保管：让 Agent 用得上密钥，却拿不到密钥</a><a href="14-identity-tenancy.html"><small>下一篇</small>身份与多租户：三种凭据，两层边界</a></nav></main><script src="../assets/wiki.js"></script></body></html>

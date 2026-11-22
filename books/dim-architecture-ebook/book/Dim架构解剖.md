@@ -1,0 +1,920 @@
+# Dim 架构解剖：时间总线、分支路由与全插件运行时
+
+快照 `88a3df3669405730cbee6bfd113a7f75cf520677` · `arcships/dim` `0.1.0-alpha.27` · 采集于 2026-11-22
+
+# 前言与全景导读
+
+给一个编码 Agent 加上工具审批、后台长命令、并行排查分支、跨语言插件和会话重启恢复之后，多数原型里那段几十行的 `while` 对话循环会迅速失控。两个客户端同时点下同意和拒绝，工具到底执行几次；子任务跑在后台时用户按了中断，进程要不要杀；插件热重载之后，已经在途的模型请求怎么收尾，才不会把同一个写文件操作跑两遍。
+
+`arcships/dim` 给出的解法，是把整个 Agent 运行时改写成一张围绕事件序号运转的状态机网络。在固定提交 `88a3df3669405730cbee6bfd113a7f75cf520677`（工作区版本 `0.1.0-alpha.27`，快照日期 2026-11-22）的源码里，Dim 用 Rust 2024 和 `rutis 0.23.0` 搭起了一套完全由插件组成的运行时（项目内称 Agent v4）：28 个 Cargo 工作区成员、111 个真实装配服务、20 个分支级 Capability、3 个内置运行时插件包以及 26 份架构决策记录（ADR 001 至 026）。
+
+这本书不复述产品宣传页，也不把设计文档当实现现状。整本书按源码实情拆解 Dim 的六根承重柱：三层作用域如何消灭胶水层，时间总线（Time Bus）怎样把并发竞争压成单调序号，分支时间线怎样同时支撑默认分支切换与受保护祖先链配额，`rutis` 如何通过跨语言数据面让 Rust、TypeScript 和 Python 共用同一套契约，上下文压缩为什么把不可变摘要与可丢弃快照拆开，以及权限系统在 ADR 003 到 ADR 018 之间经历过哪些真实取舍与回撤。
+
+## 阅读路线
+
+| 章节区间 | 核心问题 | 建议读者重点关注 |
+| --- | --- | --- |
+| 第 1 至 2 章 | 为什么放弃普通对话循环，28 个 Crate 怎么分层 | Process / Session / Branch 作用域划分与五种跨层关系 |
+| 第 3 至 4 章 | 事件怎么写、怎么落盘、怎么按序消费 | `committed` 与 `published` 双水位、`before` 钩子、副作用不重放 |
+| 第 5 章 | 一条会话怎么长出多条并行行为线 | 起点 `main` 与可移动默认分支、三键块、`DEFAULT_MAX_OPEN_LINES` |
+| 第 6 至 7 章 | 插件系统怎样跨语言并支持会话内自写 | `HostDispatch` 数据面、75/111 迁移现状、`plugin-authoring` |
+| 第 8 至 9 章 | 长会话如何控内存，危险动作谁拍板 | `RecoverySnapshot` SHA-256 校验、脱离工作持有、ADR 018 预设收敛 |
+| 第 10 至 11 章 | 脚本编排、模型接入与多端协议怎么对接 | `rquickjs` 边界、Aimux 缓存断点、App Server RPC v3 与 ACP 网关 |
+| 第 12 至 13 章 | 代价在哪里，怎么用最少代码验证核心不变量 | `xtask-check` 静态门禁、已知窗口期代价、18 个 Python 单元测试 |
+
+## 研究口径与边界
+
+本书属于独立源码分析，非 `arcships/dim` 官方文档。正文引用的文件路径、结构体名称、事件键、服务目录统计与配置上限均核对自上游仓库快照 `88a3df3669405730cbee6bfd113a7f75cf520677`（`v0.1.0-alpha.27`）。文中区分三类信息：静态源码与生成目录中的实装事实、上游设计文档或 ADR 中声明的契约与演进意图、以及第 13 章零依赖 Python 教学模型 `examples/mini_dim.py` 的离线验证结果。本书未执行生产集群压测或真实大模型基准评测，涉及吞吐与延迟的数据均明确标注上游文档原始测试口径。
+
+
+# 为什么不用普通对话循环
+
+写一个最小可用的编程 Agent 并不难：维护一个 `messages` 数组，循环调用模型接口，拿到 `tool_use` 就本地执行函数，把结果塞回数组再调下一轮。这套结构在单终端、同步工具、单次问答的场景里跑得顺手，但在真实工程里很快会撞上四堵墙。
+
+第一堵墙是并发竞态。客户端不只是终端一个窗口，用户可能同时开着本地 TUI 和 Web 工作区，甚至还有一个 ACP 协议网关连在同一个后台守护进程上。模型发出一个需要确认的写文件请求后，两个界面几乎同时回传审批结果，一个点同意、一个点拒绝，或者用户在审批刚发出的瞬间按下了中断键。如果审批状态只存在 `while` 循环的局部变量或内存哈希表里，谁先拿到锁、网络回调快慢一毫秒，就会让客户端看到的终态和实际执行的动作对不上。
+
+第二堵墙是崩溃与热重载后的重放灾难。Agent 正在执行第 12 轮，调用了一个外部脚本或创建了子分支，守护进程突然重启，或者用户在会话中途修改并重载了一个插件。普通循环要想恢复现场，通常只能把历史对话重新喂给逻辑层，一不小心就会触发重复写文件、重复拉起子任务，或者把未结算的审批请求永久卡死在界面上。
+
+第三堵墙是上下文膨胀与旁路污染。随着功能增多，压缩摘要、Hook 注入、技能指令、后台命令通知、多分支状态提示都想往模型输入里塞文字。如果每个功能都直接拼接 `messages` 数组，很快就没人说得清某段提示词是谁在什么时候加进去的，压缩之后哪些系统状态该保留、哪些临时通知该扔掉，历史导出和模型实际看到的输入也会彻底分家。
+
+第四堵墙是跨语言扩展的胶水爆炸。很多 Agent 框架允许外部用 TypeScript 或 Python 写工具，但一旦插件需要读取会话配置、订阅事件流、注册自定义 RPC 方法或管理跨会话的定时任务，宿主就得手写一大堆语言桥接器和注册表，结果核心模块和外围扩展纠缠成一团。
+
+## Dim 的反常识起点
+
+面对这四堵墙，`arcships/dim` 在 Agent v4 里做了一个看起来很重、实际极其克制的架构决定：把内存里的控制流全部降级为围绕日志运转的状态机。上游在 `docs/architecture/rust-agent/time-bus.md` 里把这条根基写得很直白：Timeline 是每条分支的时间总线，事件写上总线，总线分配序号，按序号依次驱动订阅它的状态机，持久化只是总线的性质，时间定序才是它的本质。
+
+这个起点带来三条直接推论，贯穿了整个 28 Crate 的代码库：
+
+**一切先后只看序号。** 网络响应快慢、协程调度顺序、插件订阅注册的先后，都不构成业务语义上的顺序。两次审批响应竞争同一个请求，谁分到的 `sequence` 在前谁就生效，另一条自动失效；中断信号 `stop/interrupt` 与迟到的工具请求谁先谁后，同样由序号一锤定音。
+
+**副作用留在总线外，总线上只记结果。** 调大模型、跑 Shell 命令、写磁盘文件都在总线之外异步发生，总线只记录开启事实和终态事实。无论是进程崩溃重启，还是插件热重载换代，新一代状态机从明确的序号截点接手历史，只折叠内存视图和结算未闭合的在途工作，绝不重放任何过去的副作用。
+
+**宿主内核不写业务逻辑，一切能力皆插件。** 连核心的对话主循环 `Loop`、输入队列 `InputQueue`、提示词管理 `Prompt`、权限裁决 `Permission`、审批门禁 `Approval`、分支树 `TimelineTree` 都是装配在 `rutis` 上的插件部件。在 `docs/architecture/rust-agent/generated/catalog.md` 记录的真实 App Server 产品装配里，共有 20 个分支级状态机（Capability）各自消费自己关心的事件键，互相不读对方内存，也不替对方改状态。
+
+## 两种架构的工程对照
+
+| 维度 | 传统对话循环（Chat Loop） | Dim Agent v4（时间总线 + 插件状态机） |
+| --- | --- | --- |
+| 并发裁决 | 依赖协程锁与回调到达时序 | 统一写入分支 Timeline，以单调 `sequence` 裁决 |
+| 崩溃与重载 | 易丢在途状态或重复执行副作用 | 副作用不重放，按截点重建视图并结算未决操作 |
+| 上下文组装 | 各模块直接修改 `messages` 列表 | 仅已采用输入与工具结果入上下文，渲染与存储分离 |
+| 后台长任务 | 往往引入独立全局任务调度层 | 归发起能力自持，以 `SessionLifecycle::take_hold` 保护空闲卸载 |
+| 并行探索 | 复制完整对话数组或另起无关联进程 | 同 Session 内按父历史截点分叉，共享事实不共享上下文 |
+| 扩展机制 | 宿主暴露特定语言的工具回调钩子 | 1 个进程行注册多作用域部件，经跨语言数据面互通 |
+
+这条路线显然有门槛：一个简单的功能也要先想清楚状态归谁、事实怎么记、重启后怎么从历史恢复。但正因为把规则压在了基础设施层，Dim 才能在同一个 Rust 二进制里同时撑起终端 TUI、Web 工作区、ACP 网关、rquickjs 代码执行、分支时间线和会话内热写 TypeScript 插件，而没有在模块之间堆出失控的特殊分支。后面几章会沿着真实的 Crate 边界、事件流与源码细节，把这套骨架一层层拆开。
+
+
+# 28 个 Crate 与三层作用域
+
+打开一个中大型 Rust 工作区，最怕看到所有业务代码都堆在 `server` 里，或者底层 `types` 偷偷反向引用了上层实现。Dim 根目录 `Cargo.toml` 里一共列了 28 个工作区成员（`crates/` 下 23 个业务与协议包、`xtask` 与 `xtask/check` 共 2 个工程门禁包、`tests/` 下 3 个集成与扩展测试包，另有 `vendor/grok-build` 处于 `exclude`）。这套拆法由 `xtask/check/src/boundaries.rs` 在编译之外强制校验单向依赖红线，不靠口头约定。
+
+## 28 个工作区成员的分层地图
+
+![工作区四层依赖与三层作用域树](../wiki/assets/diagrams/workspace-scopes.svg)
+
+上面这张图把代码仓库的静态依赖和运行时的作用域树摆在了一起。上半部分是编译期可见的包分层，`xtask-check` 用四条硬检查卡死反向依赖：`dim-agent-types` 不允许依赖运行时或能力层，`dim-agent-runtime` 不能碰 `dim-agent-capabilities` 和 `dim-app-server`，`dim-agent-capabilities` 不能反向依赖 `dim-app-server`，而 `xtask-check` 自身甚至不允许依赖任何 `dim-*` 包或 `rutis`，保证纯静态检查不用等整个业务工作区编译完就能秒跑。
+
+把 28 个成员按职责收拢，可以分成五组：
+
+| 分组 | 包含成员 | 核心职责 |
+| --- | --- | --- |
+| 契约与运行内核（2） | `dim-agent-types`、`dim-agent-runtime` | 定义 `AgentEvent`、13 个保留域、冻结的 v1 线格式，以及 `Timeline`、`Dispatcher`、`AgentBuilder` 和 `PartRegistry` |
+| 核心能力与模型宿主（6） | `dim-agent-capabilities`、`dim-agent-aimux`、`dim-agent-attachments`、`dim-agent-questions`、`dim-agent-scheduler`、`dim-event-hub` | 提供 20 个分支 Capability、Aimux 多协议模型宿主、附件、交互式提问、定时唤醒与 `/loop`、跨会话事件中心 |
+| 可选业务插件（9） | `dim-codemode`、`dim-goal`、`dim-session-title`、`dim-oauth`、`dim-report`、`dim-modality`、`dim-image-understanding`、`dim-ocr`、`dim-modality-aimux` | rquickjs 代码沙箱、Pursuit 目标推进、自动会话标题、账户 OAuth、本地诊断报告、多模态任务与本地 OCR |
+| 宿主、协议与客户端（6） | `dim-app-server`、`dim-client`、`dim-acp`、`dim-cli`、`dimcode`、`dim-migration` | SQLite 持久化与守护进程、共享 RPC 帧传输、ACP 协议网关、Ratatui 终端客户端、单二进制入口与旧版数据离线迁移 |
+| 门禁与测试（5） | `xtask`、`xtask/check`、`tests/extension-a`、`tests/extension-b`、`tests/integration` | 生成真实装配图与服务目录、执行静态 AST 检查、验证跨包扩展和端到端行为流程 |
+
+其中有一个很务实的细节：`dimcode` 单独作为一个二进制入口 crate，把 `dim-cli` 和 `dim-app-server` 打进同一个可执行文件里。终端启动守护进程时，并不是去装第二个独立安装包，而是通过 `<home>/rust/dimcode-server` 链接调起自身的 `app-server` 子命令，既方便用 `ps` 或 `pgrep dimcode-server` 区分客户端与守护进程，又避免了双二进制版本漂移。
+
+## 为什么按状态所有者划三层作用域
+
+把包拆清楚只解决了编译期问题，运行时部件该放哪儿更容易踩坑。`docs/adr/002-plugin-scope.md` 记了一段真实弯路：早期设计曾为了减少能力数量，把大部分新功能塞进 Process 进程级作用域。结果这些进程级插件既要给某个 Session 提供工具，又要监听某个 Session 的事件，还要往具体某条分支写输入，于是设计里被迫长出了一堆接线模块：扩展注册表、注册端口、Session 访问宿主、进程级订阅转发、聚合插件。每个接线模块存在的唯一理由，都是把放错位置的插件硬连回它原本该待的作用域。
+
+ADR 002 拍板撤回了所有接线模块，定下一条铁律：作用域不按模块大小划分，而是按状态属于谁、生命周期跟谁走来划分。
+
+**Process 根作用域**放跨会话共享或比单个会话活得更久的东西。真实装配目录里有 58 个进程级服务，包括 SQLite 存储 `sqliteStorage` 与 `store`、模型供应商目录 `providerService`、全局设置 `settings`、技能目录 `skillsCatalog`、MCP 配置管理 `mcpService`、宿主进程执行端口 `hostPlatform`、文件系统端口 `fsHost`，以及跨会话运行的定时调度器 `scheduleJobs` 和工作流引擎 `workflowRuns`。
+
+**Session 作用域**代表一个主体，也就是与用户交互的同一个“我”。它持有该主体全部行为线共用的身份、工作区路径、工具注册表 `toolRegistry`、提示词源 `promptRegistry`、工作区文件工具 `toolHost`、文件访问事实 `FileAccessFacts`、分支目录 `timelineTree` 与 `treeCommands`。共 31 个 Session 级服务。只要任务需要换一个独立身份、独立系统提示或独立工作目录，就必须新建 Session（例如协作子代理或分叉会话），不能硬塞成同一 Session 里的分支。
+
+**Branch 作用域**代表这个主体的一条并行行为线。它拥有自己的 `timeline` 与 `dispatcher`，以及围绕这条线折叠出的全部状态机：`Loop`、`InputQueue`、`Prompt`、`ContextPreparation`、`ContextUsage`、`ToolBinding`、`ToolExecutor`、`Permission`、`Approval`、`BranchLine`、`TreeTimeline`、`BackgroundExec`、`WaitBranch` 等，共 22 个分支级服务。
+
+## 五种合法跨层关系与 ADR 015 的轻量化重构
+
+在 `docs/architecture/rust-agent/principles.md` 第 2 节里，三层作用域之间的交互被收敛成五种明确关系，其余路径一律禁止：
+
+1. **分支使用能力**：分支部件向上注入 Session 或 Process 服务，例如 `Permission` 注入 `S:CommandRules` 与 `S:SessionConfig`。
+2. **能力在某条分支上被使用**：Session 级工具或方法入口在收到调用时，按调用方携带的 `branch_id` 路由到该分支的服务，比如 `BranchTool` 每次调用再查找调用线的 `BranchLine`。
+3. **能力影响分支**：能力按自身契约向一条或多条分支写输入或事件，例如 `Goal` 向目标分支写入评估结果。
+4. **分支影响分支**：严格限定在父子之间，通过向对方写入 `input/message` 或通过工具分页读取对方已提交历史完成，异步且不互相阻塞等待；兄弟分支之间不可见、不互调。
+5. **Session 管理自己的分支**：分支目录、身份预留、创建、就绪发布与关闭结算由 Session 级的 `TimelineTree` 独占，但分支内由时间线推出来的业务状态绝不泄漏回 Session 层。
+
+到了 `rutis 0.23.0`（ADR 015 与 ADR 025），这套作用域树又完成了一次关键瘦身。早期 Session 和 Branch 都是 `rutis-loader` 里的实例组（instanced loader group），每次打开会话或新建分支都要扫描全量 loader 条目表，连 MCP 连接代次和技能内容也成了嵌套 loader 实例。升级到 `rutis 0.23.0` 后，宿主可以用 `mark_scope` 把普通插件标记为作用域根，于是 Session 成为 Agent 挂载的普通子插件，Branch 成为 Session 挂载的普通子插件，Skills 内容与 MCP 连接代次则直接成为各自所属部件的子插件。`Loader::entries()` 里从此只剩进程行和 Agent 锚点行，创建与关闭会话直接走 `rutis` 原生的父子所有权树，不再需要扫描或维护第二套实例表。
+
+理解了 28 个 Crate 的单向边界和三层作用域树，就能看清 Dim 最底层那根脉络：每条分支里真正负责把状态机串起来的时间总线。
+
+
+# 时间总线与只认序号的事实流
+
+如果把一条分支上发生的所有事情摊平来看，并发 bug 的根源几乎都来自同一个错觉：代码以为先发起的操作会先完成，或者以为写进了内存就已经生效。在 `crates/dim-agent-runtime/src/core/timeline.rs` 和 `docs/architecture/rust-agent/timeline-storage.md` 中，Dim 把这条链路切成了两个清晰的水位和一个单调递增的序号，彻底剥离了执行耗时与业务先后。
+
+![时间总线写入、落盘与按序派发链路](../wiki/assets/diagrams/time-bus-dispatch.svg)
+
+## 信封结构与 13 个核心保留域
+
+写上时间总线的每一条事实都装在 `crates/dim-agent-types/src/events.rs` 定义的 `AgentEvent` 信封里。信封只包含六个顶层字段：`id`（事件唯一标识）、`sequence`（分支内单调无符号整数序号）、`create_at`（Unix 毫秒时间戳）、可选的 `tags`、可选的 `parent_call_id`（用于标记 Code Mode 等嵌套工具调用产生的子事件），以及展平后的 `kind: EventKind`。
+
+这里有一条很巧妙的上下文防火墙：`AgentEvent::context_flags()` 会先检查 `parent_call_id.is_some()`，只要事件带有父调用标识，直接返回 `(false, false)`。像 Code Mode 脚本内部触发的所有子工具调用事件，虽然照常记录在时间线上供审计和调试，但永远不会被当作主模型的上下文输入。
+
+为了防止外部插件冒充核心状态机的事实，`dim-agent-types` 明确划定了 13 个核心保留域 `RESERVED_DOMAINS`：
+
+`input`、`stop`、`approval`、`permission`、`exec`、`turn`、`prompt`、`context`、`model`、`step`、`branch`、`collaboration`、`session`。
+
+核心 `EventKind` 枚举覆盖了这 13 个域下的全部强类型事件（从 `input/message`、`input/consumed` 到 `branch/default`、`session/forked`）。外部扩展只能通过 `EventKind::Extension(ExtensionEvent)` 写入自己命名的域，且域和事件名都不能为空、不能包含 `/` 或 `*`。一旦扩展试图往 13 个保留域里塞不透明载荷，Timeline 在入口直接拒绝。
+
+## 已提交与已发布：为什么要分双水位
+
+沿着图里的写入链路往下走，能力调用 `Timeline::append`、`append_registered` 或 `append_batch_registered` 时，函数是同步返回的，并不等待磁盘 fsync。在提交锁内部，Timeline 依次做三件事：跑完进程内同步的 `before` 变形链、分配连续的 `sequence`、执行产生方的登记回调（登记失败则整批中止，什么也不落盘）。通过之后，事件进入内存热窗口并塞进 `TimelineStore` 的后台写入队列，此时分支的 `committed()` 水位推进。
+
+但 `committed()` 推进不代表事件已经对外生效。后台写入任务（SQLite 实现位于 `SessionStorePlugin`）按轮次把所有 Session 的待写批次打包进同一个 SQLite 事务，开启 WAL 模式与 `synchronous=FULL`（macOS 上额外开启 `fullfsync`），保证事务返回即真正落盘。只有事务提交成功后，写入任务才在释放写锁之后推进各分支的发布水位 `published()`，并唤醒该分支的 `Dispatcher`。
+
+这种双水位设计把进程崩溃和断电的后果缩减到了三种清晰状态：
+
+| 中断时刻 | 磁盘上的事实 | 恢复后的行为 |
+| --- | --- | --- |
+| 事务提交前崩溃 | 该轮事件不存在 | 这些事件从未发布，也没有被任何订阅者消费，系统回退到上一轮水位 |
+| 事务提交后、发布前崩溃 | 该轮事件已完整落盘 | 此前尚未分发，重启后各能力按统一恢复协议读取历史并接手 |
+| 发布后崩溃 | 事件存在且已进入分发 | 状态机从历史恢复等价状态，不重复执行外部副作用 |
+
+两类读者的可见边界也跟着双水位分开：分支内部的能力在重建或复核时，可以通过 `Timeline` 读到 `committed()`（包含热窗口里已受理但尚未落盘的尾部）；而 `Dispatcher`、分支外部的 `Branch` 与 `Session` 门面、以及所有 RPC 客户端，只能看到 `published()` 之前的事件。对外部世界来说，一条事件只有落盘发布了才算数。
+
+## 存储层的物理优化：去重、合行与 20ms 节流
+
+把模型流式输出的每一个 token 增量和每一轮完整的消息数组都原样写进 SQLite，很快就会把磁盘和 I/O 打爆。Dim 在不破坏逻辑事件序号的前提下，在存储边界做了三项物理压缩，而且全部对上层透明：
+
+**内容寻址的消息链表。** 每轮 `context/prepare` 和 `model/call` 携带的 `request.messages` 往往与上一轮共享 95% 以上的前缀。SQLite 存储把每条消息存成 Session 内容表里按内容哈希寻址的链表节点，指向前一个节点的地址；`tools` 和 `system` 也按内容哈希去重。事件正文里只存最后一个节点的地址、长度以及 `tools` 与 `system` 的引用编号。
+
+**流式输出合行与事务内热缓存。** 同一分支、同一请求下连续产生的 `step/text` 或 `step/thinking` 增量，在物理表里合并为同一条输出行（受 1 秒或 4 KB 阈值切分），行内按序保存各逻辑事件的 `id`、`sequence`、`create_at`、`tags` 和 `delta`。写入器在同一个事务内按分支缓存最后一条输出行的已解码结构，后续增量直接内存追加，免去反复查表和解析 JSON，非输出事件到达或事务结束时立刻失效。
+
+**分流式写入轮节流。** 后台写入器在上一轮提交完成后，只要队列里还有普通批次（比如工具调用、审批、输入采用），立刻开始下一轮提交，不人为加延迟。只有当队列里全部是流式输出行增量时，才等到距上一轮开始满 20 毫秒再合并提交，把纯流式输出压在每秒至多 50 次 WAL fsync。
+
+`docs/architecture/rust-agent/timeline-storage.md` 坦诚记录了这套策略的实测权衡：在 Apple M4 上用 `timeline_acceptance rounds 64 200 64` 实测（64 条流式分支每秒各 200 增量，叠加 64 条依赖写入链），普通批次不等待让依赖链每步发布延迟中位数从 22 ms 降到了 9 ms、吞吐翻了 1.8 倍，但代价是每秒写入轮次升到 97 轮、WAL 写入量从每秒 40 MB 升到 80 MB（因为普通批次顺带把所有在等的流式增量一起带走了）。上游团队明确记下了这个代价，并决定暂不打破“一轮取走全部待写批次”的简单模型。
+
+读写并发同样做了收敛：所有只读查询走按需创建的只读连接池，上限 4 条连接，空闲时收缩回 1 条，读操作在语句开始时的最新提交快照上执行，不抢写连接互斥锁；大 Session 的分叉与删除则通过复制连接按每 256 个逻辑序号、每 1024 个内容哈希分块提交，每块之间把写锁让给正常的写入轮。
+
+当事件稳稳落盘并推进发布水位之后，真正决定业务怎么流转的，是站在总线另一端的 `Dispatcher` 和一整套事件驱动契约。
+
+
+# 事件驱动契约：Dispatcher、before 与重启重建
+
+把事件写进 SQLite 只是前半场。如果订阅者各自开后台线程轮询数据库、或者在处理回调里同步等一个耗时 30 秒的模型请求，整个分支的顺序语义就会瞬间瓦解。Dim 用四个机制把消费端锁死在可预测的轨道上：单分支 `Dispatcher`、提交锁内的 `before` 同步变形链、`consume` 重建交接协议，以及不经时间线的轻量广播通道 `SessionBroadcast`。
+
+## Dispatcher：一条分支唯一的顺序读者
+
+在 `crates/dim-agent-runtime/src/core/dispatcher.rs` 里，`Dispatcher` 挂载在每条分支的私有总线通道 `dim/timeline/{instance}/committed` 上。每当 `Timeline` 推进发布水位，热窗口里的已发布事件按 `sequence` 从小到大送进 `Dispatcher`，再逐条匹配订阅者注册的键模式：精确键（如 `approval/request`）、域通配（如 `approval/*`）或全局通配（`*`）。
+
+事件处理器（handler）有两条不能碰的红线：
+
+第一，**handler 绝对不能等慢操作**。网络请求、工具执行、磁盘冷读、子分支构建都不允许卡在 handler 里。`docs/architecture/rust-agent/event-driven-flows.md` 规定得很清楚：能力在 handler 返回之前，把异步工作登记到自己持有的任务表里就立刻返回。等异步任务将来跑完，再通过 `Timeline::append` 把结果事实写到时间线尾部，交给后面的分发轮次消费。
+
+第二，**错误与 panic 必须归属到具体订阅者**。`SubscriptionListener::on_event` 用 `catch_unwind` 包住同步启动和异步 future 轮询。一旦某个订阅者返回 `Err` 或发生 panic，Dispatcher 会把故障归因到该订阅者名称，通过 `Dispatcher::fail` 终止该分支的后续派发并上报，而不是悄无声息地跳过一条事实继续往下跑。
+
+## 九条时间线扩展规则的核心约束
+
+`docs/architecture/rust-agent/principles.md` 第 4 节写下了通过时间线扩展行为的九条规则，其中四条直接决定了业务代码的写法：
+
+**改别人的状态，只能写指令事件。** 调用方永远不直接调同步方法去修改另一个模块的内存状态，也不替状态所有者写结果事件。审批是最典型的例子：外部客户端发来决定后，经入口写入 `approval/respond`；`Approval` 状态机按序号读到指令，只有第一条对未决请求有效的指令会被采纳，后面抢跑的指令直接忽略，不需要为“什么都没发生”再多写一条无用事件。输入撤回同理：入口写 `input/withdraw`，`InputQueue` 只有在还握着这条未采用输入时才写 `input/deleted`。
+
+**交接一旦完成，原模块就不再插手。** 当 `InputQueue` 写出 `input/applied`，这条输入的所有权就正式移交给了 `Loop`。交接之前可以用 `input/withdraw` 撤回；交接之后想停下来，只能走新所有者的指令 `stop/interrupt`。
+
+**原子批次一起落盘，但消费端按条可见。** 需要同时生效的事实（例如 `Prompt` 变更、`input/applied` 与 `context/configured`）由产生方打包进一次 `append_batch_registered` 提交，起决定作用的事件放在批次最后。订阅者看不到批次边界，只按序号一条条收，需要校验批次终点的地方（如历史分页、分叉切点）统一通过 `Timeline::batch_end` 查询存储记录的批次元数据。
+
+**写入前复核由状态机自负其责，且只看已消费状态。** 状态机先做决定、稍后才提交写入时，不能去偷看时间线尾部尚未被自己消费的事件，只能拿自身已消费的状态复核。即便生产方在消费中断前写出了迟到请求，消费方按序处理时也会依据自己已经消费到的 `stop/interrupt` 把属于该 turn 的请求取消掉。
+
+## `before` 钩子：受限的可信变形器
+
+有时宿主需要在事件真正落盘前改写草稿，比如注入元数据、重写测试用的候选载荷，或者统一规范化字段。Dim 没有让外部去篡改已提交历史，而是在 `Timeline` 的提交锁内部提供了一条同步瀑布链 `BeforeCommit`（`crates/dim-agent-runtime/src/core/timeline.rs`）。
+
+`before` 的边界被卡得非常窄：
+
+- 它只在写入前同步变换当前 `EventDraft`，不能改写已经提交的历史，也不能阻止写入或等待任何异步 I/O。
+- 因为运行在分支提交锁内部，任何跨进程 RPC 都可能把整条分支锁死，所以只有进程内的 Rust 插件可以注册 `before`，TypeScript 和 Python 插件无法注册（ADR 001）。
+- 每一个钩子的输入和变形结果都会被记录成 `TraceStep`，挂在 `TimelineTrace` 里随事件一起持久化，通过 `dimcode export` 可以完整导出审计轨迹。
+- 一旦链上任意一个 `before` 钩子报错或 panic，整条链直接回退，提交**最初的原始草稿**，且不会让分支提交锁中毒。
+- 产生方登记状态和后续执行，一律以 `before` 变形后最终提交的事件为准，绝不能继续拿着提交前的候选变量干活，也不做二次校验去反对可信变形。
+
+## 副作用不重放与 `consume` 重建协议
+
+在 Dim 的世界观里，插件热重载和进程崩溃重启对新一代状态机来说是同一件事，走的也是同一套交接协议：`Dispatcher::consume`（`docs/design/plugin-contract.md` 第 5.2 节）。
+
+普通写法很容易掉进漏事件或重复事件的坑：如果先读历史再订阅，读历史期间新到达的事件会漏掉；如果先订阅再读历史，重叠区间的事件会被处理两遍。`Dispatcher::consume` 用一个极简的暂存闸门堵死了这个窗口：
+
+1. 先向 Dispatcher 注册监听，进入 `holding = true` 状态，期间到达的实时匹配事件全部暂存进 `Held.events` 列表。
+2. 执行该能力提供的 `rebuild` 回调。回调在分支 `Timeline` 上固定一个查询截点 `cutoff`（内部重建可包含已提交未发布的尾部），只查询自己折叠状态所需的事件字段，按历史恢复内存视图，并把上一代留在半路的在途操作结算成终态（绝不重新发起外部工具或模型请求），最后把 `cutoff` 返回给 Dispatcher。
+3. Dispatcher 把 `holding` 切回 `false`，只把 `Held.events` 里序号**严格大于 `cutoff`** 的事件按序喂给实时 handler，之后无缝衔接后续实时事件。
+
+每条事件在重建和实时两个阶段合起来恰好处理一次，既不丢、也不重。
+
+这套要求同时划清了内存状态的合法性边界（`time-bus.md` 第 3 条）：任何跨工作、跨代使用的业务状态，都必须能由“时间线历史 + 重读外部配置状态”恢复到等价。唯独已结算的在途 I/O 局部控制状态是例外，比如单次模型调用失败后的重试计数、退避等待预算、凭据刷新标记，它们只属于当前这一次调用，重载时原调用直接按失败或取消结算，不会把重试计数带进下一项工作。
+
+## 时间线事实 vs 总线通知：什么该落盘
+
+不是所有消息都值得占用时间线序号。`principles.md` 第 4 节第 9 条定了一个很硬的筛选条件：只有影响后续业务决定的事实才进 Timeline。
+
+给界面展示的实时进度、进程级状态变化（比如会话标题更新、Provider 目录变更、设置修订）不进 Timeline，而是走 `rutis` 根上的扁平事件总线。每条会话有一条由 `SessionBroadcast` 插件维护的命名通道 `session/{sessionId}`，负责把本会话各分支已经分发的事件零拷贝（`Arc<AgentEvent>`）广播给订阅方，同时转发进程级所有者发出的 `SessionNotice`、宿主观察屏障 `Fence { recipient, token }` 以及卸载时的 `Closed`。
+
+| 传输通道 | 持久化与重放 | 顺序保证 | 典型用途 |
+| --- | --- | --- | --- |
+| 分支 Timeline + Dispatcher | SQLite WAL 持久化，按 `consume` 重建 | 分支内严格单调 `sequence` | 输入、模型调用、工具结果、审批、分支创建、压缩 |
+| `session/{sessionId}` 广播 | 不持久化、不补发、无订阅即丢弃 | 同分支与分发序一致，跨分支按发出序 | TUI / Web / ACP 客户端实时流、UI 通知、交付屏障 |
+| `settings/{source}` 等总线事件 | 不持久化、不重放 | 单事件名内按发出序启动监听 | 配置变更提醒、`skills/catalog`、`agent/session-deleted` |
+
+因为总线事件不重放，任何消费总线事件的部件（比如 `SessionTitle` 监听 `input/applied`）都必须具备从 Timeline 或所有者状态重新读取的能力，这样漏掉一次总线事件顶多延迟动作，不会破坏状态一致性。
+
+把单条分支的时间线和分发契约夯实之后，下一步就能顺理成章地看一条会话如何长出一整棵分支树。
+
+
+# 分支时间线：默认分支、父子通信与配额路由
+
+排查一个棘手的线上 Bug 时，工程师常会同时顺着两条线索查：一边读重试逻辑的实现代码，一边对照单元测试看失败路径有没有覆盖，或者顺手让另一条思路试一个备选改法。普通单线对话里，一旦模型在同一个上下文窗口里同时追两个假设，文件片段、报错日志和半成品结论就会混成一锅粥，回退也只能靠手动撤回或者复制整个会话。
+
+Dim 在同一 Session 内部引入了分支时间线（Timeline Branches）。在本次快照 `88a3df3669405730cbee6bfd113a7f75cf520677`（直接对应上游最新合入的 PR #1917 `branch-default-routing` 以及 `v0.1.0-alpha.27` 的默认分支改动）中，这套机制刚刚完成了从“一切围绕 `main`”到“起点 `main` 与可移动默认分支分离”的完整落地。
+
+## 先分清三种容易混淆的概念
+
+在源码 `docs/design/timeline-branches.md` 第 2 节里，Dim 把分支、协作子代理和会话分叉划得清清楚楚：
+
+| 机制 | 本质 | 历史起点 | 身份与工具 | 协作方式 |
+| --- | --- | --- | --- | --- |
+| 分支（Branch） | 同一个 Agent 主体在同 Session 内的另一条行为线 | 继承父分支切点之前的只读事实，之后各自独立 | 共用 Session 的系统提示、工具、模型、权限与工作区 | 仅父子间异步互写输入和按页互读，无交付结果合同 |
+| 协作子代理（Collaboration Member） | 另一个拥有独立 Profile 的 Agent，住在独立 Session 里 | 从领队下发的任务开始，不带领队历史 | 独立的指令、模型策略和工具集 | 领队派活，完成后自动回传结果，子代理不能再委派 |
+| 会话分叉（Fork） | 从 `main` 某个静止点复制出的全新独立 Session | 复制 `main` 到切点的历史，末尾写入 `session/forked` | 复制当时的配置快照，之后完全独立 | 分叉后互不关联 |
+
+判断标准很简单：需要换一个身份、换一套角色指令或换一个隔离的工作目录时，走协作子代理或分叉；同一个 Agent 想基于同一段已知事实并行推进多条线索，走分支。分支之间**共享历史事实，但不共享上下文**：每条分支有自己的 `Timeline`、`Dispatcher` 和上下文压缩节奏，子分支只在切点之前共享祖先链上的只读事件段。
+
+## 起点 `main`、可移动默认分支与配额保护链
+
+![分支时间线、保护路径配额与三键状态](../wiki/assets/diagrams/branch-tree-cap.svg)
+
+读懂分支树，最关键的是区分两个长期容易混为一谈的角色：**起点（root）**和**默认分支（default branch）**。
+
+起点永远是 id 为 `main`（源码常量 `ROOT_BRANCH_ID`）的那条没有父节点的线，界面中文名叫“起点”。它永不结束，即使整个 Session 关闭也不是分支意义上的 `end`。
+
+默认分支则是当前会话对话所在的位置，界面中文名叫“主线”。所有省略了 `branchId` 的客户端请求都会路由到当前默认分支。会话刚建好时，默认分支就是起点 `main`；之后用户可以通过界面或 RPC 把任意一条打开的对话线（工具线或用户线）设为新的默认分支，也可以随时切回起点。决定谁是默认分支的唯一权威事实，是写在起点 `main` 上的非模型事件 `branch/default { branch, from }`。因为起点永不结束，恢复多分支会话时只需用 `timeline_events_by_kind` 索引查一次起点上最新的一条 `branch/default` 或 `session/forked` 就能还原：如果最新的是 `session/forked`，说明这是分叉出来的新会话，复制过来的旧 `branch/default` 自动作废，默认分支回到起点；如果目标分支已结束或是插件线，同样安全回退到起点。
+
+更精妙的设计藏在**开线权**和**工具线配额**的联动里（`crates/dim-agent-capabilities/src/timeline_tree.rs` 中的 `admit_open`、`can_open`、`counted_tool_lines` 和 `protects`）：
+
+- **谁能用 `branch` 工具开新线**：只有两条线被允许，一是起点 `main`（无论它此刻是不是默认分支），二是当前默认分支。其他所有工具线、曾经当过默认分支的线、以及插件线调用 `create` 都会被拒绝并返回 `branch_not_opener`。这样做是为了保证用户把主线切到子分支 B 后，如果仍想在起点 `main` 上基于起点的新进展开一条并行线，起点依然有开线权；而前任默认分支失去开线权后，仍保留并继续协调它此前已经开启的子线。
+- **配额怎么算才不会卡死用户**：`BranchTool` 对整个 Session 的活跃工具线设了默认上限 `DEFAULT_MAX_OPEN_LINES = 4`。计算配额时，统计全树中所有仍打开或处于预留状态的 `BranchSource::Tool` 工具线，但**排除受保护路径**，也就是当前默认分支及其通向起点的全部祖先链。用户线（`BranchSource::User`）和插件线（`BranchSource::Host`，例如 Goal 的评估线）不计入配额。
+- **在树锁内预留即扣额**：`TimelineTree::open_tool_line` 把开线资格检查、已计数工具线统计与新分支身份预留放进同一把树锁内原子完成。构建中尚未发布的预留分支已经占住名额，防止并发两个 `create` 挤爆最后一个槽位；发布成功时不重复扣额，构建彻底失败写下 `branch/create-failed` 时立刻释放名额。
+- **切换默认分支绝不强关旧线**：假设配额为 2，树上已有 `main → A → B` 两条工具线且当前默认分支是 B，此时 A 和 B 都在保护链上，计额为 0，B 又开了子线 C（计额变为 1）。如果用户把默认分支切回 `main`，A、B、C 瞬间全部退出保护链，计额跳成 3（超过上限 2）。Dim 的规则是：切换操作本身直接成功，绝不擅自关闭任何已有分支，只是之后再调 `branch create` 会因 `branch_limit_reached` 被拒绝，直到有工具线结束腾出名额。
+- **结束保护与级联关闭**：`TreeCommands::end` 拒绝结束起点、当前默认分支以及默认分支的任何祖先（`branch_cannot_end`），因为结束一条线会先级联结束它下面的所有打开子孙，再按子到父的顺序在父线上写 `branch/ended`。此外，工具线只能结束自己（`end` 动作不带目标参数），用户线只能由用户结束，插件线遵循其创建插件的协议。
+
+## 切点固定与构建生命周期
+
+模型通过 `branch` 工具创建子分支时，如果不显式指定切点 `at`，`BranchTool` 不会草率地取父分支当前的尾部，而是通过事件查询定位本次模型请求的 `step/model-start` 序号并减 1，把默认截点钉在本次请求开始之前。原因很实际：此时模型输出和多工具调用批次都还没闭合，如果切在半截，子分支继承到的会是缺少 `tool_result` 的残缺轮次，直接触发模型接口报错。
+
+创建流程走标准的事件驱动交接：调用方在父分支提交 `branch/create` 并原子预留子分支 id → 父分支的 `TreeTimeline` 消费该事件，向 Session 的 `TimelineTree` 登记异步构建任务后立刻返回 → `TimelineTree` 按固定祖先截点初始化子分支，写入 `branch/start` 并等待分发完（让 `Prompt` 写入常驻系统内容），再写入首条 `mode=queue` 的初始输入 → 子分支公开发布。
+
+即使发起 `branch` 工具调用的那个 turn 在提交 `branch/create` 后被用户打断，工具调用会按取消结算，但已经提交的分支构建归 Session 所有，不会半途撤销；只有整个 Session 关闭时，才会停止准入、取消在建任务并等待完整回滚。重启恢复时也有明确的完成判据：子分支存在 `branch/start` 且其后存在首条 `Queue` 输入才算创建成功，否则统一补写 `branch/create-failed` 收口。
+
+## 父子通信、游标续读与三条独立键控块
+
+分支之间没有共享内存，也没有全局广播消息板。`branch` 工具只允许沿亲缘边（父子之间）通信和读取，兄弟分支或祖孙分支互发消息、互读历史一律返回 `branch_not_kin`；涉及插件线的消息或读取返回 `branch_not_tool_line`。
+
+发消息本质上是调用 `TreeCommands.input` 往对方时间线塞一条带 `<dim-branch-message from="C" to="P">` 标记的 `input/message`，只开放两种模式：`append`（默认，搭对方下一次模型请求的顺风车，不主动开 turn，也不唤醒 `wait`）和 `steer`（切入对方当前 turn 下一步，若对方空闲则直接开新 turn 并唤醒 `wait`）。普通 RPC 客户端提交只能写操作者内容，不能写原始 raw 块，因此外部无法伪造分支消息标记。
+
+拉取对方进展则靠 `branch read { branch, after?, limit? }`。它通过 `TreeCommands.page_end` 对齐原子批次终点，再按只读显示字段查询，不解码庞大的模型请求体。游标规则高度对称：子线首次读父线自动从自己的切点之后起步（即使显式传 `after: 0` 也会被抬高到切点，因为切点之前的历史本来就是子线自己的）；父线首次读子线从 0 起步。每次成功读取都会在调用方自己的 `step/tool-use` 与 `step/tool-result` 里留下记录，`BranchLine` 在重启后按需定位目标的最后一次成功读取即可恢复游标，无需全量重放。
+
+为了避免子分支在上下文压缩后忘了自己是谁、或者把父分支的工具名册误当成自己的，`BranchLine` 和 `TimelineTree` 在 `InputBlock::Raw` 上拆出了**三条互不干扰的键控状态块**（`key` 相同的新块覆盖旧块，压缩后每个活跃键独立重放最新一块）：
+
+1. **`branch:line`（身份与主线状态）**：记录本线 id、父线、切点、用途与当前是否为主线。每当默认分支切换时，`BranchLine` 在进出默认分支的非起点线上各写一条新的 `branch:line` 状态说明，逐字节重申出生身份并更新规则（起点永远不写，因为它的规则不受默认分支切换影响）。
+2. **`branch:roster`（活跃工具线名册）**：记录本线用 `branch` 工具开启且尚未结束的工具线列表（不含用户线和插件线）。子分支如果从父分支的截点继承了活跃的 `branch:roster`，`TimelineTree` 会在子分支开局输入里紧跟一条带 `retire: true` 的 `branch:roster` 块把继承来的名册退役，避免子分支把父分支的手下当成自己开的。
+3. **`branch:parent`（父线进展提示）**：当父线结束一个 turn 且有了新活动时，子线的 `BranchLine` 写一条只含父线最新 `head` 序号和自己读游标的 `<dim-branch-parent>` 块，绝不把父线正文塞进子线上下文，由子线自己决定要不要调 `read` 去拉取。
+
+最后还有一条贴心的防空等机制：一条非默认分支的工具线结束 turn 时，如果它这轮既没给父线发过 `steer`、没调用 `end`、也没挂着未消费的驱动输入（且创建时没配 `idleNotice: none`），`BranchLine` 会自动给父线发一条 `<dim-branch-idle>` steer 通知，防止父线一直在 `wait` 里干等沉默的子线；而一旦这条工具线被用户切成了默认分支，空闲通知立刻停止，免得用户每次跟主线聊天都把原来的父线吵醒。
+
+把分支树内部这四个部件（`TimelineTree`、`TreeTimeline`、`BranchTool`、`BranchLine`）合起来看，它们全都是标准的 `rutis` 插件部件。下一章我们直接切到插件引擎本身，看 Dim 如何靠 `rutis 0.23.0` 和跨语言数据面把 Rust、TypeScript、Python 揉进同一张依赖图里。
+
+
+# rutis 插件引擎与跨语言数据面
+
+很多用 Rust 写核心的 Agent 运行时，做到一半都会卡在扩展层：Rust trait 在进程内很好用，可一旦想让用户用 TypeScript 或 Python 写插件，就不得不给每个核心接口手写一套 JSON-RPC 适配层，最后 Rust 版接口和跨语言接口越跑越远，文档里写一套、代码里两套。
+
+Dim 在 `docs/design/rutis-usage.md` 和 `docs/design/service-faces.md` 里定了一条近乎苛刻的收敛原则：**公开服务只有一张合同，就是跨语言数据面（Data Face）；不写第二套适配层，也不留两套业务逻辑。**
+
+## 为什么选 rutis 0.23.0，以及单行装配模型
+
+![rutis 跨语言运行时与数据面边界](../wiki/assets/diagrams/rutis-data-face.svg)
+
+在工作区 `Cargo.toml` 和 `docs/adr/025-rutis-0-23.md` 里，Dim 把全栈（Rust 工作区 `rutis`/`rutis-loader`/`rutis-bridge`、`xtask` 类型生成器、内置 Node 运行时 `@arcships/rutis-runtime`、TypeScript 插件包以及 Python SDK）统一锁死在 `rutis 0.23.0`（会话协议版本 5）。没有任何双版本兼容垫片：只要握手对端还在说协议 4，连接直接以 `incompatible session` 拒绝。
+
+在装载结构上，Dim 遵循 ADR 006 D3 定下的单行规则：**一个插件在进程配置里只占一个 loader row**，不管它横跨了 Process、Session 还是 Branch 几个作用域。
+
+- 插件的入口模块在进程级 `apply` 里运行一次，从进程服务 `partRegistry` 登记自己要在每个 Session 或每条 Branch 里挂载的部件。
+- Rust 插件注册的是生成器函数（`AgentBuilder::feature` 或 `AgentBuilder::plugin`）；TypeScript 和 Python 插件注册的是由 `definePlugin` 构造出的插件定义（`partRegistry.registerDefinition`）。
+- 每当新的 Session 或 Branch 打开，作用域根挂载的 `required` 和 `optional` 两个 mounter 会把登记表里的部件实例化为自己的子插件；当原插件卸载或重载时，它登记在 `partRegistry` 里的定义自动撤回，所有活跃实例里的副本同步卸载。
+
+对于外部语言插件，唯一需要在启动前静态声明给宿主 loader 目录的，是它打算在 Session 或 Branch 内部向别处提供的服务名（`instanceNames`），因为 loader 目录在运行时启动前就已经定型。至于工具、提示词源、Session 方法命名空间和宿主管理方法命名空间，在 R6 改造落地之后全部不再占独立服务名，而是由插件在 `apply` 里直接向各自的所有者注册（`toolRegistry.register`、`promptRegistry.register`、`sessionMethods.register`、`managementMethods.register`）。注册与调用方生命周期绑定，插件一卸载，注册项立刻自动撤回；如果此时有正在执行的调用，会明确返回可能已生效的状态，后续调用直接拒绝。
+
+## 跨语言数据面的六条硬规定
+
+要让 Python 插件直接调用 Rust 实现的存储、让 TypeScript 插件直接消费分支事件并注册工具，光有名字解析还不够，接口形状必须天然能过线。`docs/design/service-faces.md` 给数据面立了六条硬规则：
+
+1. **输入输出全是 serde 数据**：普通结构体、标量、数组、枚举，绝不出现进程内句柄、`Arc<dyn Trait>`、`&mut`、迭代器、通道或 `PathBuf`/`OsString`。
+2. **身份一律是值**：Session、Branch、Task、File、Root、Subscription 在接口上都只是字符串或整数 id；id 只是标识，不等于授权。
+3. **操作代替对象**：把原来面向对象式的长生命周期句柄拆成“id + 一组无状态操作”。比如原来的 `FileStorage` 句柄拆成 `fsHost`（`stat`/`readBytes`/`openRead`/`readAt`/`closeRead`/`lock`/`replace` 等 12 个操作），`HostPlatform` 进程树拆成 `execHost`，`TimelineStore` 拆成 17 个操作的 `timelineStore` 数据面，活对象留在所有者内部托管。
+4. **流靠事件或分页，回调不在锁内跑**：大输出走游标分页；回调函数可以经 bridge 按引用跨语言传递（`RemoteFunction`），但严禁在提交锁内部同步回调。
+5. **错误是结构化数据**：统一为 `{ code, message }`，转发方原样透传错误码，绝不靠正则匹配错误文案（ADR 025 D5）。
+6. **取消是协议动作**：调用方丢弃调用或触发取消回调即可经协议通知对端，不在业务参数里塞状态标志。
+
+在 `rutis 0.23.0` 的传输层上，单帧默认上限是 16 MiB，但协议 5 新增了 `chunk` 分片帧：超过 16 MiB 的大帧自动按每片最大 8 MiB 切分并在派发前重组，总上限由 `RUTIS_MAX_TRANSFER` 控制（默认 256 MiB）。Dim 没有因为有了分片就放任大载荷横飞，而是在应用层主动补回了准入红线，例如 `pluginFiles` 的文本 `replace` 明确在写入前拒绝超过 16 MiB 的序列化记录，返回业务错误 `too_large`。
+
+## 真实装配盘点：75 个数据面与 36 个内部面
+
+纸面愿景和工程现状往往有距离，而 Dim 最好的一点是把迁移进度直接写进了 `xtask graph` 自动生成的 `docs/architecture/rust-agent/generated/catalog.md`，并用 `xtask check` 每天巡检。
+
+按当前提交 `88a3df3669405730cbee6bfd113a7f75cf520677` 的真实 App Server 产品装配统计，全目录共有 **111 个服务**（Process 58、Session 31、Branch 22）：
+
+| 分类 | 数量 | 判定规则（`service-faces.md` §2.3） | 代表服务 |
+| --- | --- | --- | --- |
+| `data`（跨语言数据面） | 75 | 在目录中声明为 `shared` 且在 `host_key(name)` 挂有 `HostDispatch` | `sessions`、`settings`、`store`、`sqliteStorage`、`fsHost`、`timelineStore`、`treeCommands`、`toolRegistry`、`timeline`、`dispatcher`、`approval`、`permission`、`branchLine` |
+| `internal(hot-path)` | 16 | 每轮或每条输入上的高频热路径，尚未操作化 | `agentLoop`、`loopState`、`prompt`、`contextPreparation`、`toolExecutor`、`historyRenderer`、`managedWorktrees` |
+| `internal(owner-api)` | 7 | 所有者原生 Rust 绑定，大多已有对应数据兄弟 | `agentIndex`（兄弟 `sessions`）、`sessionStore`（兄弟 `store`）、`settingsService`（兄弟 `settings`）、`modelHost`、`loader`、`timelineTree` |
+| `internal(control)` | 5 | 守护进程或作用域控制句柄 | `serverControl`、`connectionHub`、`uiHost`、`uiExtensions`、`timelineFactory` |
+| `internal(secret)` | 3 | 含 OAuth 或供应商凭据，凭据留在所有者内部 | `providerService`、`grokOAuthService`、`openAICodexOAuthService` |
+| `internal(host-resource)` | 3 | 宿主本地资源索引或连接解析器 | `mentionIndex`、`providerConnectionResolver`（另注：`hooksService` 与 `mcpService` 已迁成 `data`） |
+| `internal(object)` | 2 | 正在迁往操作面的原生对象包装 | `fileStorage`（数据面 `fsHost`）、`hostPlatform`（目标数据面 `execHost`） |
+
+`xtask check` 对这 111 个条目执行六选一硬校：既共享又没 dispatcher 报错，有 dispatcher 却没共享报错，既不共享又不标明合法迁移原因报错，把共享和内部标记混用也报错。任何想跑在独立节点或跨语言运行时里的叶子部件（leaf-ready），要求它 `inject` 和 `provides` 的每一个名字都必须是 `data`。
+
+## 真实跨语言插件长什么样
+
+在 `runtime/plugins/` 下，仓库自带了两个用 TypeScript 写的生产级跨语言插件，正好展示了这套数据面不是空壳：
+
+**`runtime/plugins/workflow`（多作用域工作流引擎）**，它的 `dim-plugin.json` 只占一个进程行，入口 `index.ts` 直接注入 7 个 Rust 提供的进程数据面：`sessions`、`settings`、`pluginFiles`、`workflowFiles`、`managementMethods`、`partRegistry` 和 `processActivity`，同时反向向全进程提供一个异步数据面 `workflowRuns { call: "async" }`。进程入口在 `apply` 里注册工作流设置源、注册管理 RPC 方法，再通过 `partRegistry.registerDefinition` 把 `session.ts` 里的 Session 部件挂进每一个会话，给模型提供 `workflow` 工具。整个引擎（定义解析、DAG 调度、持久化、状态机）全用 TypeScript 写成，却与 Rust 宿主无缝共享会话启动、停止、权限上限校验和空闲关机保护（`processActivity.hold`）。
+
+**`runtime/plugins/light-ocr`（极简跨语言能力提供者）**，整个 `index.ts` 不到 35 行，不注入任何宿主服务，只在 `apply` 里提供一个单方法异步数据面 `ocrHelper { describe: "async" }`，告诉 Rust 侧的 `dim-ocr` 和 `dim-modality` 本地 `node` 可执行文件路径、`helper.cjs` 位置和只读目录列表，随后实际的受限子进程执行仍交回 Rust 的 `HostPlatform` 监管。
+
+同时，`xtask types` 会根据所有标记了 `#[rutis::service]` 的 Rust 类型自动生成 `npm/branch-services.d.ts`（在 `rutis 0.23` 下全部输出为 `type` 别名而非 `interface`），并由 `xtask check` 检查新鲜度。只要 Rust 侧改了一个数据面字段，TypeScript 侧的类型定义就会立刻报过时。
+
+有了这套单行装载、跨语言数据面和热卸载基础设施，Dim 才得以实现它最具辨识度的产品场景：让 Agent 在正在运行的会话里给自己写一个 TypeScript 插件，当场安装、立刻调用、改完热重载。
+
+
+# 在会话里给自己写插件与热重载自演化
+
+普通编码 Agent 碰到缺工具的场景，常见做法是让模型临时写一段一次性 Python 或 Bash 脚本跑完就扔。下次再遇到同类任务，它还得重新拼命令行、重新处理边界条件，也没法把这块能力沉淀成带结构化参数校验、独立用户配置项和明确风险等级的一等工具。
+
+Dim 给出的路径完全不同：因为运行时本身就是插件化的，而且内置了 Node 运行时（`runtime/runtimes.json` 固定 Node `24.21.0`、Python `3.12.15` 和 `uv 0.13.7`，按需下载），用户可以在一个有写权限的会话里，直接让 Dim 给自己写一个 TypeScript 插件，当场用 `plugin` 工具装进正在运行的守护进程，下一轮模型请求就能直接调用这个新工具，发现 Bug 改完代码原地热重载，全程不需要重启守护进程，也不会丢掉当前会话的上下文。
+
+## `plugin-authoring` 技能：把装配规矩装进目录
+
+仓库内置的三个默认或可选插件包位于 `runtime/plugins/`，`runtime/default-plugins.json` 默认启用了其中的 `plugin-authoring`：
+
+```json
+{
+  "plugins": {
+    "plugin-authoring": "plugins/plugin-authoring"
+  },
+  "optional": {
+    "light-ocr": "plugins/light-ocr"
+  },
+  "locked": ["PluginManager", "Rpc", "Transport"]
+}
+```
+
+这里有两处值得细看的设计。一是 `locked` 列表把 `PluginManager`、`Rpc`、`Transport` 锁成不可被插件管理操作卸载或禁用的核心行，防止模型或误操作把自己和外部的通信链路拆掉。二是 `plugin-authoring` 本身并不是一段代码，它的 `dim-plugin.json` 只声明了 `"skills": "skills"`，向 `SkillsCatalog` 贡献了一份教模型怎么写 Dim 插件的技能文档 `runtime/plugins/plugin-authoring/skills/plugin-authoring/SKILL.md`。
+
+按这份技能文档，一个最小可运行的 TypeScript 插件目录只需要四个东西，而且**不需要任何编译打包步骤**（Node 24 运行时直接加载 `index.ts`）：
+
+```text
+echo-plugin/
+  dim-plugin.json    # 清单：name、description、code.entry、code.inject
+  index.ts           # 入口模块：直接加载 TypeScript，无需 tsc 构建
+  package.json       # 锁定 @arcships/rutis 版本
+  node_modules/      # 执行 npm install 生成的依赖
+```
+
+代码结构完美复用上一章讲过的“单进程行 + `partRegistry` 登记多作用域部件”模式：
+
+1. `dim-plugin.json` 里声明 `"code": { "entry": "index.ts", "inject": ["partRegistry", "settings"] }`。这里有一条由 `rutis 0.23.0`（ADR 025 D4）强制校验的规则：入口默认导出实际读取的每一个必填服务，都必须列在 `code.inject` 中，且外部插件自身的 `inject` 必须等于或是该列表的子集。
+2. 入口 `default` 导出在进程作用域执行一次 `apply`：先向 `settings` 数据面注册自己的业务配置源（带 JSON Schema、默认值和 `userOnly` 列表），再向 `partRegistry.registerDefinition('session', 'EchoTools', tools)` 注册 Session 级部件定义。
+3. Session 部件 `tools` 注入 `['toolRegistry', 'settings']`，在每个活跃会话（包括**当前正在写这个插件的会话本身**）挂载时，向该会话的 `toolRegistry` 注册新工具，声明名称（1 到 64 位字母数字及 `_`/`-`）、JSON Schema 和必填的 `risk` 风险等级（`read_filesystem`、`write_filesystem`、`execute_process`、`network` 或 `session`）。
+4. 工具处理器收到 `call.arguments` 后自行校验参数，实时从 `settings.read` 读取最新业务配置，返回 `{ content: string, isError?: boolean }`。其中 `content` 是模型唯一能读到的文本。
+
+## 从写代码到热重载的完整链路
+
+当模型在会话里写好这几个文件并跑完 `npm install` 后，接下来的自演化动作全靠宿主提供的 `plugin` 工具完成：
+
+| 步骤 | `plugin` 工具子命令 | 守护进程内部发生的事 |
+| --- | --- | --- |
+| 1. 安装 | `install <dir>` | `PluginManager` 校验清单与依赖，经 `rutis/loader` 创建新进程行并等待就绪；返回 `running`、`failed`（附带错误详情）或 `pending`（附带 `waitingFor` 缺失依赖名） |
+| 2. 活体挂载 | 无需重启 | 进程行 `apply` 调用 `partRegistry.registerDefinition` 后，当前打开会话里的 optional mounter 监听到登记表变化，立刻把 `EchoTools` 挂进本会话并注册工具到 `toolRegistry` |
+| 3. 下一轮即用 | 模型下一次请求 | `ToolBinding` 在下一次模型请求装配时读到新工具声明，模型立刻可以调用 `echo` 测试 |
+| 4. 改错与重载 | `reload <name>` | 卸载旧一代插件行，自动撤回 `partRegistry` 定义、`settings` 源与所有会话里的 `toolRegistry` 工具注册，重新导入 `index.ts` 并装配新一代 |
+| 5. 动态调参 | `config <name> set <k> <v>` | 写入业务配置源，**不触发插件重载**；下次工具调用直接读到新值 |
+| 6. 下线 | `disable <name>` / `remove <id>` | 停用或卸载行，等待各会话副本清理完毕 |
+
+这里藏着三个非常接地气的工程细节，都是只有真跑热重载才会碰上的坑：
+
+第一，**模块缓存边界**。Node 的 ESM 缓存机制决定了 `reload` 会重新导入入口文件 `index.ts`，但不会自动失效 `index.ts` 再 `import` 进去的二级子模块。所以 `SKILL.md` 直接提醒作者：需要频繁边改边重载的逻辑尽量留在 `index.ts` 里。
+
+第二，**敏感配置的权限隔离**。如果插件需要用到外部 API Key，可以在注册 `settings` 的 JSON Schema 里给该字段加上 `"writeOnly": true` 并放进 `userOnly` 列表。这样一来，模型通过 `plugin config` 既读不到密钥明文，也改不了这个字段，只能由用户本人修改。
+
+第三，**活会话故障隔离**。如果一个已经发布的会话正在运行，而此时某个插件注册了一个有 Bug 的 Session 部件并挂载失败，`rutis-usage.md` §2 规定该失败只会记日志并停留在可选部件局部，绝不会把整个已经发布的活会话拖垮。
+
+## 一个真实的源码观察：Alpha 期的文档版本漂移
+
+核对当前快照 `88a3df3669405730cbee6bfd113a7f75cf520677` 的源码时，可以发现一处很真实的 Alpha 期细节：在 ADR 025 把整个工作区、`runtime/package.json` 和 `runtime/plugins/workflow/package.json` 全部升级到 `@arcships/rutis` `0.23.0` 之后，`runtime/plugins/plugin-authoring/skills/plugin-authoring/SKILL.md` 第 36 与第 40 行的示例里仍然写着 `"@arcships/rutis": "0.17.1"`。因为协议 5 与旧版不兼容，如果用户严格照抄那份技能文档里的 `0.17.1` 版本号去 `npm install`，在当前 `0.1.0-alpha.27` 上握手会直接被拒绝。这类真实的版本同步滞后在快速演进的 Alpha 仓库里很常见，也恰恰说明为什么理解底层 `rutis` 协议版本与 `runtime/package.json` 基线比死背示例片段更重要。
+
+最后别忘了安全底线：能在会话里给自己写插件并加载，前提是用户给了写文件和调用 `plugin` 工具的权限；一旦插件被装入本地 Node 运行时，它就是受信任的本地代码（AGENTS 规则 11），不是靠 `inject` 声明就能困住的沙箱。关于权限、配置启用与执行隔离的边界，我们在第 9 章会专门拆解。在这之前，先看看随着会话拉长、工具和插件越来越多，Dim 是怎么控住上下文窗口和内存占用的。
+
+
+# 上下文投影、压缩与历史渲染边界
+
+一个持续跑了 2000 步、经历过七八次上下文压缩的长会话，每次发新请求前到底要从数据库里读多少字节？如果每次准备模型请求都把整条分支历史从第 1 条事件全量反序列化进内存，长会话很快就会把守护进程的内存拖爆；反过来，如果把压缩后的消息数组当成唯一真相写死在缓存里，一旦缓存版本升级、校验损坏或者用户把分支切回到更早的历史点，整个会话的上下文就会永久失真。
+
+Dim 在 `ContextPreparation`、`ContextUsage`、`HistoryRenderer` 和 `TimelineStore` 之间划出了一道非常干净的边界：**事件事实管真相，恢复快照只管加速，上下文入口只留两条窄门。**
+
+## 两条窄门：什么能进入模型上下文
+
+在 `AGENTS.md` 规则 10 和 `principles.md` §4 规则 6 里，Dim 明确禁止各个业务插件绕开统一路径往模型上下文里塞文字。一条事件能不能变成模型看到的 `messages`，只有两条合法通道：
+
+1. **已采用的输入**（经过 `InputQueue` 交接并由 `Loop` 消费的 `input/consumed`，以及由 `Prompt` 发布的 `context/configured`）。未经过交接的草稿、被撤回的 `input/deleted`、被 Hook 拦下的提交、控制类事件（如 `approval/*`、`stop/interrupt`、`branch/default`）天然不会进入模型消息，渲染器不需要到处写黑名单去补漏。
+2. **工具执行结果**（`step/tool-result` 里的 `ToolResult.content`）。这里还有一条容易被忽略的约定：`ToolResult.content` 是模型唯一能读到的文本，而 `structuredContent` 只留给持久化、客户端 UI 和内部状态机使用。凡是模型后续还需要用到的句柄、任务 id 或分页游标，工具作者必须显式写进 `content`。
+
+另外，所有运行时注入（例如技能文本、Hook 附加说明、分支身份块 `<dim-branch-line>`、分支名册 `<dim-branch-roster>`、父线进展提示 `<dim-branch-parent>`）一律包装成带标记的原始块 `InputBlock::Raw` 通过输入通道写入历史，绝不靠“针对某业务的特殊历史渲染器”在读历史时凭空拼装。这样模型实际看到的输入、客户端回放的记录、以及分支继承的前缀始终来自同一份事实。
+
+## 一次模型请求是怎么准备出来的
+
+当 `Loop` 准备发起一轮模型调用时，它会先向分支时间线写入 `context/prepare`，把本次请求的固定截点 `through` 与一个单次请求局部的投影交接给 `ContextPreparation`（`crates/dim-agent-capabilities/src/context_preparation.rs` 与 `context_policy.rs`）。
+
+整个准备过程保持单飞（single-flight），同一时间一条分支最多只有一个进行中的准备任务，随时可以被 `stop/interrupt` 或新的 `steer` 取消。准备阶段先结合 `ContextUsage` 记录的累计用量和已知投影边界做数值预算估算：
+
+- 如果估算没有超过上下文输入预算，且配置和投影边界没有变化，直接复用数值估算并发布 `model/call`，不需要对历史做第二次重读或全量投影，也不加载历次旧的模型请求正文。
+- 如果估算超出了输入预算，或者用户手动触发压缩，`ContextPreparation` 就在准备流程内部调用绑定的压缩策略宿主 `CompactionStrategyHost`（在提交 `context/compaction-start` 与 `context/compaction` 之间执行），成功后直接采用已提交的压缩事实构建新的 `model/call`，不会向外发布虚假的“模型调用失败”事件。如果压缩后依然装不下本次请求，则直接按终态失败结束，绝不陷入死循环重试。
+
+需要注意一个在 `event-driven-flows.md` §5 里写明的细节：如果在自动压缩正在跑的时候来了新的 `steer` 输入，`ContextPreparation` 会等这次压缩把结果落完盘，再替换请求，避免刚刚算好的摘要白白作废。此外，如果宿主没有绑定 `CompactionStrategyHost`，`ContextPreparation` 连 `dim-digest` 的提示词指引条目都不会注册，避免在没有压缩能力的配置里误导模型。
+
+## 不可变摘要事实 vs 可丢弃恢复快照
+
+![上下文压缩、SHA-256 恢复快照与回退重放](../wiki/assets/diagrams/compaction-replay.svg)
+
+上面这张图展示了 Dim 解决“长会话低内存”与“历史绝对可重放”矛盾的核心设计，对应 `timeline-storage.md` 的压缩检查点规范：
+
+| 持久化对象 | 性质与表位置 | 存储内容 | 损坏或失败时的后果 |
+| --- | --- | --- | --- |
+| `context/compaction`（`Completed`） | 不可变历史事实，随原子批次写入 `timeline` | 来源 `through`、截断游标 `cursor`、摘要文本 `summary`、`context_baseline` 与诊断信息，**绝对不内嵌快照** | 若已提交的 `cursor` 无法投影到固定历史，准备明确报错失败，不跳过该事实，也不静默重做摘要 |
+| `RecoverySnapshot` | 可丢弃的派生缓存，独立存于 `timeline_snapshots` | `{ sequence, event_id, interpreter, state }`，锚定已发布的 `Completed` 压缩事件 | 构建、编码或保存失败只打告警；读取时若缺失、损坏、校验和不符或越界，静默忽略并回退到完整事实重放，同时完整保留 `summary` |
+
+默认的投影解释器标识为 `dim/context-projection/v4`（位于 `HistoryRenderer`），它把 `ProjectionCheckpoint` 编码成带 **SHA-256 摘要**的 `state`：
+
+- `resume` 记录祖先链上的续读定位三元组 `(branch_id, sequence, event_id)`，指向压缩游标之后产生第一条保留历史条目的那条事件（且不晚于该次准备的 `through`）。
+- `state` 记录在 `resume` 之前已经折叠好的全部投影状态：保留起点锚点 `retain_from`、当前生效的提示词条目与修订号、已投递的上下文基线、已提交但尚未采用的排队输入、最新 `context/configured`、以及尚未闭合的输出和工具调用。
+
+读取路径的自我校验非常严格。`Timeline::checkpoint` 先按解释器版本挑出 `sequence <= through` 的最新快照，然后去查单个锚点事件（在热窗口里就直接取，不扫描区间），依次验证锚点 `event_id`、序号、状态是否为 `Completed`、游标是否匹配、SHA-256 摘要是否一致，再按 `resume.event_id` 确认续读位置落在当前固定祖先链与 `through` 范围内。v2 编解码器会自动绕过旧版没有摘要保护的 v1 缓存。只要任何一项检查不通过，系统立刻丢弃这个快照，从祖先链起点按 `HistoryRenderer::replay_context` 重新分页折叠所有带上下文标志的事实，依然应用已提交的 `context/compaction` 摘要，产出与快照完全等价的消息列表。
+
+把键控状态块（第 5 章的 `branch:line`、`branch:roster`、`branch:parent` 以及 `Goal` 的 `goal:state`）放进这套机制里看，就会明白它们的配合有多严丝合缝：压缩抹掉了旧对话轮次，但每个活跃键（未设置 `retire: true`）的最新一块都会被投影状态保留并在压缩后重放，所以分支压缩完既不会忘记自己是谁，也不会忘记自己开过哪几条活跃子线。
+
+## 内存驻留与冷读收敛
+
+为了防止 2000 步的长会话把常驻内存撑大，Dim 把内存生命周期绑死在操作边界上：
+
+- 热窗口只保存尚未发布和尚未分发完毕的事件，一旦 `Dispatcher` 分发完成就移出热窗口，进程内不留已分发事件的全量副本。
+- `HistoryRenderer::rendered_stream` 采用分页流式投影，消费完一页就释放该页事件对象；一次读取（`read_segments` / `read_page`）内部共享一个解码内容缓存，上限 64 MiB，超限先清空，单次读取结束立刻释放。
+- `ContextPreparation` 完成后只保留一个弱引用和数值证据，不跨调用缓存完整的 `ModelRequest`。
+- 仓库甚至在 `xtask` 里专门提供了 `context-replay`、`restore-replay` 和 `context-breakdown` 三个测量子命令，用来直接量化 100 轮模拟会话或真实 SQLite 数据库在恢复、读取、投影和组装请求四个阶段各自申请了多少字节。
+
+当上下文投影和压缩把对话主链路的资源账算清楚之后，另一块同样棘手的地盘就浮出了水面：脱离当前回合继续跑的后台工作、工具审批竞态，以及从 ADR 003 演进到 ADR 018 的整套权限边界。
+
+
+# 脱离工作、工具审批与权限边界
+
+一个能改文件、跑 Shell、连 MCP 服务器的本地编码 Agent，真正容易出事故的往往不是模型写错一行语法，而是权限边界画歪了。早期版本里，Dim 自己也踩过两个很典型的坑：一是给每个基于配置启动的外部命令（MCP、Hook、Workflow、插件）都准备单独搞一套“批准、指纹、撤销”接口，结果把“配置要运行”和“模型临时决定调用工具”混成一团；二是给工具调用设了两套互相打架的准入关卡，上面 `Permission` 刚判了放行，底下的 `HostPlatform` 又去读一份独立的 `host-isolation.json` 把它否决掉，导致用户选了 `full-access` 却照样跑不动普通构建命令。
+
+在 `docs/adr/` 里，ADR 003、009、010、012、014、017 和 018 完整记录了 Dim 怎样把这团乱麻拆成三条互不越权的清晰边界。
+
+## 脱离工作：为什么删掉统一的后台任务层
+
+先看一类经常让权限和中断逻辑发疯的场景：用户在当前 turn 里让 Agent 启动了一个耗时很长的编译或测试命令（`BackgroundExec`），或者派出了一个协作子代理（`Collaboration`）。这个工作越过了发起它的那个 turn 继续在后台跑，等将来跑完时再自动把结果送回分支并唤醒模型。Dim 把这类工作统称为**脱离工作（detached work）**。
+
+早期实现里曾有过一套共享的 `BackgroundTasks`、`BackgroundTimeline`、`task` 工具以及共享事件 `task/started`、`task/ended`、`task/stop`。后来在 `event-driven-flows.md` §3 的重构中，这整套统一后台任务层被彻底删除了。原因和第 2 章撤回接线模块如出一辙：把所有后台任务塞进共享管家，既制造了第二份任务状态，又模糊了取消与重启恢复的归属权。
+
+现在的合同简洁得多：
+
+- **谁发起、谁拥有**：任务句柄、取消令牌、输出采集、结果查询工具和重启恢复全部归发起它的能力自持，用 `rutis` effect 登记卸载清理。结果用所有者自己的事件表达，例如 `BackgroundExec` 的 `exec/started` 与 `exec/ended`，`Collaboration` 的 `collaboration/result`。
+- **两档中断各管各的**：用户按下普通中断发出 `scope=turn` 的 `stop/interrupt` 时，**不取消**该 turn 启动的脱离工作，后台进程继续跑，跑完后由所有者在结果事件的分发位置决定是否向分支提交一条 `mode=steer` 的唤醒输入；只有 `scope=branch` 的中断才会通知所有者取消本分支全部脱离工作，且必须**先释放资源，再写入终态事件**，且不再触发自动唤醒。
+- **独立提交结果与唤醒通知**：`exec/ended` 和附带截断预览的唤醒输入分两次提交（`timeline-storage.md` 末尾）。这样做的好处是两次提交之间可以正常触发上下文压缩，唤醒输入自带预览、不反向引用 `exec/ended`，恢复快照也就不需要背着沉重的命令输出事实跑。
+- **空闲关机保护，但不污染空闲状态**：所有者在接纳每项脱离工作前调用 `SessionLifecycle::take_hold()` 拿到会话活动持有，直到最后一个结果事实提交后才释放。只要还有活动持有，`daemon.shutdown { ifIdle: true }` 和会话空闲卸载就会被拒绝（显式关闭则直接停止并清理）。与此同时，`Session::idle` 依然只看 `Loop` 是否空闲，不把后台长任务伪装成主循环卡死。
+
+## 三条权限边界与五份核心 ADR 的演进
+
+![工具审批、文件事实、配置启用与执行隔离边界](../wiki/assets/diagrams/approval-permission.svg)
+
+上面这张图把 Dim 在当前版本收敛出的权限体系拆成了两条执行路径和一个独立的隔离开关，背后对应着几份互相承接、甚至自我推翻的架构决策。
+
+### ADR 003：审批只管模型决定，不管配置文件
+
+ADR 003 划出了第一道大坝：
+
+- **路径 A（模型决策）**：模型临时决定调用哪个工具（包括调用某个已连上的 MCP 服务器里的工具），归 `Permission` 和 `Approval` 裁决。
+- **路径 B（配置驱动）**：MCP stdio 进程启动、MCP HTTP/SSE 连接、Hook 脚本、Workflow 定义、插件包，这些命令之所以运行是因为配置文件写了它，不是模型临时起意。它们不走审批，没有指纹，也没有 `mcp.approve` 或 `mcp.revoke`（这些旧方法直接返回 `unknown_method`）。
+- **项目来源默认禁用**：凡是来自工作区项目目录（如 `.mcp.json`、`.dimcode/`）的配置条目，默认全部禁用，而且项目文件里的 `enabled` 字段会被忽略。只有用户通过本地配置操作（记录在用户自己的 `mcp-projects` 等本地存储里，按规范化工作区路径和条目 id 索引）显式启用后才会运行。
+
+ADR 003 D4 很坦诚地写明了接受的代价：一旦用户启用了某个项目条目，以后 `git pull` 拉下新提交改了该条目的命令或参数，不会因为指纹变化再次弹窗询问。启用一个项目条目，本身就意味着信任该项目对这条配置的修改；这本来就不是操作系统级沙箱，真要防恶意代码必须靠进程隔离。
+
+### ADR 009 与 ADR 010：Permission 拍板，HostPlatform 只管执行，沙箱默认关闭
+
+ADR 009 撤掉了 `HostPlatform` 内部的 `escalation` 二次否决门禁，确立了单一决策权：一个工具能不能跑，由 `Permission` 说了算；`HostPlatform` 只负责按照当前执行设置去拉起受限或非受限进程，不再反过来推翻已经通过准入的调用。
+
+紧接着，ADR 010 面对本地编码 Agent 的真实体验做了一次务实纠偏：旧设计默认开启严格沙箱并断网，导致没写过策略文件的普通用户一上手就找不到 `$HOME` 下的工具链，包管理器连不上网，连常规开发都跑不动。ADR 010 决定：
+
+1. **沙箱改为 opt-in（默认关闭）**：由用户在设置里通过开关决定是否开启进程隔离（macOS 用 seatbelt，Linux 用 `bwrap`，Windows 暂无沙箱后端，开启后准备阶段直接报 `isolation_unavailable`）；旧的 `host-isolation.json` 与 `host.isolation.*` 管理接口全部移除。
+2. **剥夺模型自选沙箱的权利**：`exec` 工具彻底删掉了 `sandbox`、`paths` 和 `network` 参数，任何仍传 `sandbox` 字段的调用直接按 `exec_invalid_request` 拒绝。模型只能接受宿主给定的环境，永远不能通过调工具给自己松绑。
+3. **`full-access` 不改变沙箱开关**：`full-access` 的语义严格限定为“不再弹窗询问工具审批”，它不会悄悄关掉用户打开的沙箱，也不会打开网络。
+
+### ADR 012 与 ADR 014：固定文件事实与会话级持久化授权
+
+对于 `read`、`grep`、`glob`、`write`、`edit` 这些文件操作，ADR 014 把裁决依据固定成四类事实，由 Session 级部件 `FileAccessFacts` 统一计算：`workspace`（工作区目录及经 Git 验证的受管 worktree 根目录）、`system`（平台系统只读根）、`owned`（本会话通过 `SessionFiles` 拥有或由本会话生成的命令输出文件）以及 `grant`（会话级授权）。路径检查排在工具白名单前面，先统一展开 `~`、`..` 和符号链接，再做裁决。
+
+当文件操作落在工作区之外触发询问时，如果每次恢复会话都要让用户重复点同意，体验会很差。ADR 012 引入了持久化的 `session_grants` 表（按 `(session_id, path)` 建键，记录 `kind: file | dir` 和 `mode: read | write`），并严格锁死了四条安全约束：
+
+- 授权仅在 `Permission` 判为 `Ask` 时生效，**绝不能把 `Deny` 洗白成 `Allow`**，在 `read-only` 预设下写授权完全不起作用；读授权也不能放行写操作。
+- 授权只属于当前 Session，重启可恢复，随会话删除事务一起清空，但分叉出的新 Session 和协作子代理**不继承**任何授权。
+- **模型永远不能写授权**：没有暴露给模型的 `add` / `remove` 工具，审批回复里也没有授权字段，领队模型替协作子代理答复审批时也不能写入授权；客户端是在用户点击“本会话允许”后，先调 `session.grants.add` 再回答 `approval.respond`。
+- 目录授权按规范化路径前缀匹配而非 inode，读取授权失败一律默认拒绝。
+
+### ADR 017 到 ADR 018：一次诚实的交互回撤
+
+从 ADR 017 到 ADR 018 的转折，非常值得做产品和架构的工程师反复细看。ADR 017 当时觉得单个预设名说不清“文件范围”和“工具是否询问”，于是把 `PermissionPolicy` 扩出了两个可选覆盖字段 `fileAccess` 和 `toolApproval`，并在 `/permissions` 面板上摆了文件访问、工具审批、进程隔离三个独立控件。
+
+上线后团队很快发现这套拆分反而把用户搞糊涂了：三个预设本身就已经把最合理的组合定死了，拆开之后暴露出来的组合（比如“路径无限制但每次调工具都要问”，或者“路径只读却跳过所有工具询问”）几乎没人真的想要；而且把属于 `ExecutionSettings` 的进程隔离硬塞进 `/permissions` 面板，反而让一个菜单背后挂了两个不同所有者。
+
+于是 ADR 018 干脆利落地把拆分撤了回去：
+
+- `/permissions` 面板只留三个预设：`read-only`、`workspace-write`、`full-access`，不再把文件范围和工具审批拆成独立控件，进程隔离退回 Settings 里的执行设置。
+- `PermissionPolicy` 删掉 `fileAccess` 和 `toolApproval`，只保留 `preset`、`allowedTools` 和 `disallowedTools`（显式拒绝永远压过显式允许，且两张列表永远不能绕过文件事实或进程隔离）。
+- 为了不重写用户磁盘上按 ADR 017 写下的旧 `permission/changed` 事件和定时任务文档，`PermissionPolicy` 主动拿掉了 `#[serde(deny_unknown_fields)]`，让旧记录里的那两个字段反序列化时被安静忽略。ADR 018 顺手把代价明明白白写进文档：这相当于放弃了对策略 JSON 拼写错误的解析拦截，拼错的字段会回退为默认行为；但外层的 Scheduler 任务和 Workflow 运行文档依然保持严格校验。
+
+## 分支级审批状态机：双端抢答与中断竞争
+
+沿着规则落地到代码里，每一次工具调用在 `ToolExecutor` 执行之前，都要穿过分支级 `Approval` 状态机（`docs/architecture/rust-agent/plugins/Permission.md` 与 `event-driven-flows.md` §2）：
+
+1. `Approval::admit` 调用 `Permission::admit_decision`，依次结合预设、命令规则（`user/permission` 里的 `exact`/`prefix` 词级匹配，无项目级来源）、文件事实，若结果不是 `deny`，再按名称顺序询问已注册的工具顾问（例如 `HooksBranch` 注册的 `PreToolUse` 钩子，组合规则为任意 `deny` > 任意 `ask` > 任意 `allow`，顾问无权推翻既有的 `deny`）。
+2. 若最终判定需要询问，`Approval` 向本分支时间线写入 `approval/request { approval_id, source, call, reason }`，通过 `SessionBroadcast` 推给所有在线客户端（新附着的客户端通过 `attach` 补发当前未决请求）。
+3. 两个客户端同时抢答 `allow` 和 `deny`，或者用户在审批等待期间按下中断键，所有动作都转成写向同一条分支时间线的事实：`approval/respond` 或 `stop/interrupt`。
+4. `Approval` 只按 `Dispatcher` 分发到的序号裁决：如果 `approval/respond` 先到且请求仍在未决表里，首个有效决定胜出，后面迟到的回复直接丢弃；如果 `stop/interrupt` 先到，或者同意后工具尚未启动时收到中断，`Approval` 写下 `approval/cancelled` 结案。每个已提交的 `approval/request` 都保证有且仅有一次终态结算，每次工具调用最多执行一次。
+
+权限和审批守住了外部动作的入口，而模型侧的两大核心引擎，则是下一章要拆解的内嵌 JavaScript 沙箱 Code Mode 和统一多协议模型宿主 Aimux。
+
+
+# Code Mode 与 Aimux 模型宿主
+
+让大模型批量查 20 个文件、过滤出 3 处匹配再交叉比对，如果每次读取都走一轮“模型生成 `tool_use` → 宿主执行 → 把几千行原文塞回上下文 → 模型再调下一轮”，不仅慢、费 Token，还会把大量中间噪音永久留在对话历史里。另一方面，真正把请求发给 OpenAI、Anthropic、Gemini 或兼容网关时，各家在多模态工具结果、提示词缓存断点、HTTP 重定向安全、请求体上限和流式录制上的细微差异，稍不留神就会变成线上故障。
+
+Dim 用两个职责极其聚焦的 crate 分别解决这两件事：`crates/dim-codemode` 和 `crates/dim-agent-aimux`。
+
+## Code Mode：用 rquickjs 把工具编排压回单次调用
+
+`dim-codemode` 基于 `rquickjs 0.14`（启用了 `futures` 和 `parallel` 特性），按三层作用域拆成三个部件：进程级保存运行表 `CodeModeRuns`，Session 级 `CodeModeSessionPlugin` 向 `toolRegistry` 注册名为 `codemode`（`risk: "session"`）的工具，分支级把调用接到本分支的 `ToolExecutor`。
+
+模型调用 `codemode` 时传入的是一段纯 JavaScript 异步函数体（支持顶层 `await` 和 `return`）。`crates/dim-codemode/src/interpreter.rs` 每次执行都会新建一个全新的 `AsyncRuntime` 和 `AsyncContext`，**里面没有 Node API、没有文件系统、没有网络、没有定时器，甚至没有 `console`**。宿主往这个全新上下文里注入的唯一对象是 `tools`，只暴露三个方法：
+
+- `tools.list()`：返回本次模型请求可见的工具摘要列表 `[{ name, description }]`（主动剔除了 `codemode` 自己，防止递归套娃）。
+- `tools.describe(name)`：按需返回某个工具的完整 JSON Schema 声明。
+- `tools.call(name, args)`：异步调用该工具，失败时抛出携带 `code`、`message` 和可选 `data` 的 `ToolCallError`。
+
+这里有三条设计原则，直接体现了 Dim 不搞旁路的克制：
+
+**第一，子调用绝不绕过权限与审批。** `tools.call` 通过 `NestedToolHost` 经过本分支的 `ToolExecutor`、`ToolBinding` 和 `Approval`，不会直接调底层文件或 Shell 函数。脚本里哪怕写了一百行循环，每一次外部读写或命令执行照样受当前会话的权限预设、文件事实和人工审批门禁约束，取消令牌也通过 `cancel.child_token()` 联动中断。
+
+**第二，子调用结果绝不污染主模型上下文。** 脚本里调用 50 次 `read` 读出来的几兆源码，全都在 QuickJS 内存里过滤、聚合、归并；最终只有 `return` 出来的 JSON 序列化值会成为外层 `codemode` 工具的 `ToolResult.content` 返回给模型。前面第 3 章提过的 `AgentEvent::parent_call_id` 在这里正好派上用场：所有子调用在时间线上留痕时都会通过 `tokio::task_local!` 自动盖上外层 `codemode` 的 `parent_call_id`，而 `AgentEvent::context_flags()` 见到非空 `parent_call_id` 直接返回 `(false, false)`，保证子工具的庞大结果永远不会漏进后续模型请求的上下文。
+
+**第三，硬资源边界留在宿主，不交给模型调参。** `crates/dim-codemode/src/config.rs` 给 `CodeModeConfig` 定义了八项纯宿主侧硬上限，全部不暴露成工具参数，也不写进提示词：
+
+| 配置项 | 默认上限 | 保护目标 |
+| --- | --- | --- |
+| `max_code_bytes` | `256 KiB`（262,144 字节） | 限制单次提交的脚本代码长度 |
+| `max_runtime_ms` | `600,000 ms`（10 分钟） | 配合 QuickJS 中断处理器强停死循环 |
+| `max_calls` | `4096` 次 | 限制单次脚本最多发起的子工具调用总数 |
+| `max_parallel_calls` | `16` 并发 | 用 Tokio `Semaphore` 控制脚本内 `Promise.all` 并发度 |
+| `max_memory_bytes` | `1 GiB` | 通过 `runtime.set_memory_limit` 限制 QuickJS 堆内存 |
+| `max_programs` | `2` | 限制同一作用域并发运行的程序数 |
+| `max_output_bytes` | `16 MiB` | 限制外层 `return` 序列化结果体积 |
+| `max_single_result_bytes` | `4 MiB` | 限制单个子工具结果传入 JS 内存的体积 |
+
+当脚本超时或中途被取消时，外层错误文案还会附带一句明确提示：`Some child calls may have completed; check their effects before retrying.` 提醒模型不要因为脚本报错就盲目重跑已经产生副作用的步骤。
+
+## Aimux 模型宿主：把协议怪癖封死在发送边界
+
+`crates/dim-agent-aimux` 把上游 crates.io 固定版本 `=0.6.1` 的 `aimux-core`、`aimux-provider-utils`、`aimux-providers` 和 `aimux-stream` 封装成进程级 `AimuxPlugin`（提供 `ModelHost`），负责对接 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Gemini GenerateContent、xAI、Bedrock 以及各类兼容端点。
+
+`crates/dim-agent-aimux/README.md` 和源码里的四个工程细节，把模型接入层最容易踩的暗坑全挡在了外面：
+
+### 1. 工具结果里的图像按协议分路，不污染历史
+
+当工具（比如 `read` 读取截图或 OCR 布局图）返回了图像内容块时，并非所有大模型协议都允许在 `tool_result` 消息里直接夹带图片。Aimux 宿主在发送前按 `ModelProtocol` 自动分路，同时保持 Timeline 历史和存储原样不变：
+
+- `anthropic` 与 `bedrock` 协议原生支持在 `tool_result.content` 数组里放图像块，直接内嵌发送。
+- `openai-chat`、`openai-compatible`、`openai-responses`、`xai`、`xai-responses` 和 `gemini` 的工具返回字段只接受纯字符串，转换器会在工具文本原位置留一个文本标记，等该步骤所有 tool 消息结束后，紧跟补发一条 `user` 消息，按调用顺序附带全部图像及来源说明。
+
+### 2. 发送前 64 MiB 体积闸门与严格的同源重定向
+
+多模态输入或超大工具输出很容易拼出异常庞大的 HTTP JSON 请求体。Aimux 宿主在真正发出网络请求前，会对协议编码后的实际字节长度做一道本地硬检查，取 `64 MiB` 与当前连接声明上限的较小者；超限直接作为本地请求拒绝结束，既不发往远端，也不触发重试。
+
+更细心的是 HTTP 重定向策略：模型请求是带 JSON body 和 API Key 的 `POST`。如果用 `reqwest` 默认的重定向策略，遇到 `301`/`302`/`303` 会被自动改成不带 body 的 `GET`，遇到跨源跳转时 `reqwest` 也只会剥离 `Authorization` 和 `Cookie`，却不会剥离 `x-api-key` 或 `x-goog-api-key`，直接造成凭据外泄。因此 Aimux 的 HTTP client 只在**完全同源（scheme、host、port 一致）**的前提下跟随 `307` 和 `308`，最多 10 跳；其余跳转一律拒绝并在 `src/driver.rs` 里把脱敏后的状态码、目标 URL 和拒绝原因补写回错误信息。
+
+### 3. Anthropic 提示词缓存断点的精准放置
+
+针对 Anthropic 协议，Aimux 转换器最多主动放两个 5 分钟生命周期的缓存断点（API 上限是 4 个）：第一个放在 System 最后一个块上，使工具声明和静态 System 文本合成一份跨轮复用的稳定前缀（前提是 System 没有自带显式断点）；第二个放在最后一条 `user` 或 `tool_result` 消息上（前提是总断点不超过 4 个）。如果调用方自己塞了超过 4 个显式断点，Aimux 绝不替它默默裁剪，请求发出后明确报错 `Unsupported model parameter: cacheControl breakpoint limit`。文档里甚至顺带坦承了统一打标的已知代价：压缩摘要这类一次性请求也会多付一次缓存写入费用（短于最小可缓存长度的不计费），换取的是代码路径完全统一，不需要给压缩请求开特例。
+
+### 4. 无重试归属与 RFC-0023 录制
+
+Aimux 适配器本身不做自动重试，HTTP 失败只保留类型化的状态码和条件码交回给上层 `ModelProvider` 决定是否退避重来；卸载时先关准入、释放未读流、排空已受理调用，再释放独占 HTTP 连接池，旧句柄一律返回 `OwnerClosed`。需要排查线上模型报文时，只需打开 `model-log` 设置源，Aimux 的 `RecordingOutcomeStream` 就会在流结束、出错或丢弃时把完整线上报文（含缓存断点）按 RFC-0023 格式写入 `<目录>/recordings.jsonl`，关闭时零调用开销。
+
+到这里，Agent 内核里的存储、事件、分支、插件、压缩、权限、脚本沙箱和模型宿主已经全部就位。下一章把视角拉到最外层，看看守护进程 App Server、终端 CLI、Web 工作区、MCP 与 ACP 网关是如何把这套内核送到用户手里的。
+
+
+# App Server、CLI、Web 与 ACP / MCP 网关
+
+一个设计得再干净的 Agent 内核，如果每个前端（终端 TUI、浏览器 Web 界面、Zed / Lody 这类外部 IDE）都各自内嵌一份运行时、各自读写同一个 SQLite 文件，很快就会撞上文件锁冲突、多端状态打架和后台任务随窗口关闭而夭折的问题。
+
+Dim 的解法是把所有执行、审批、存储和插件装配收拢到唯一的后台守护进程 `dim-app-server`，再让 CLI、Web 工作区和 ACP 网关都作为讲同一套协议的薄客户端接入。
+
+## 守护进程 App Server：受保护传输、优雅关机与单向升级
+
+App Server 住在 `crates/dim-app-server`，同时作为子命令 `dimcode app-server` 被编译进单一二进制 `dimcode` 里。它只管装配、持久化、传输安全与对外入口，不把具体业务插件逻辑塞回主干（`principles.md` §1）。
+
+**传输安全边界非常分明。** 产品模式和自定义模型配置模式下，执行与管理类 RPC v3 必须走受保护的本地传输：Unix 上是权限 `0700` 目录里的 `0600` 私有套接字（清理时只删除本监听器持有的 inode），Windows 上是带本地身份校验的命名管道。默认的 WebSocket 端点在非 mock 模式下只响应 `hello` 和 `ping`，防止局域网或浏览器任意页面直接调起本地执行。为了防止客户端连错守护进程，`hello.daemonProfile` 会显式声明当前守护进程属于 `product`、`configured`（附带模型配置文件原始字节的 64 位小写 SHA-256 摘要，不泄露环境变量值）还是 `mock`，客户端遇到配置或模式不匹配时直接拒绝连接，绝不擅自杀掉别人的守护进程。
+
+**精细的关机与活动持有协议。** 当客户端发来 `daemon.shutdown { ifIdle: true }`（协议 v3 特性标记 `daemon.shutdown.ifIdle`）准备空闲退出或原子升级时，App Server 不会粗暴地只看当前有没有 TCP 连接，而是同时核对四件事：没有其他客户端连接、没有已附着的会话、没有任何分支上的在途工作，也没有任何通过 `processActivity.hold()` 拿走的进程级活动持有（例如后台脱离工作、正在跑的 Workflow、或者尚未排空的定时投递）。只要其中一项为忙，就返回 `daemon_busy` 并附带计数详情；一旦判定全部空闲，才会关闭新准入并开始优雅清理。如果请求的是默认优雅关闭（`force: false`），发起方连接会把最终回复的写通道转交给进程协调器，等整个 `rutis` 根树彻底卸载、SQLite 刷盘并显式释放 `flock` 锁之后才回发成功（避免并发派生的子进程继承文件描述符导致下一个守护进程误报数据库被占用）。
+
+**提交确认的不确定性诚实告知。** 在 `session.submit` 的协议边界上，App Server 明确区分了“保证未落盘的拒绝错误”（`invalid_params`、`session_invalid_input`、`session_closed`、`session_build_failed`、`service_reloading`、`unknown_method`、`input_blocked`）与“提交后结果不确定的错误”（`submission_unknown`、存储/发布错误、连接断开）。客户端拿到不确定错误时绝不盲目重试，而是保留 Session id 提示用户恢复检查，避免把同一条指令提交两遍。同时，`UserPromptSubmit` 这类 Hook 失败但设为 `onFailure: continue` 时，不把提交判失败，而是通过加法字段 `warnings: [{ check, message }]` 告知客户端原样展示，绝不混入模型上下文。
+
+**单向原生存储升级与离线运维。** 原生 SQLite 数据库在当前版本采用明确的版本号标记，启动时若检测到支持的旧格式，会在进入任何可写 PRAGMA 之前，在单一准入事务内原地顺序升级，失败则完整回滚，不支持的版本（包括曾移除的分支专用格式）直接拒绝打开并原样保留文件。导出整条会话时间线（`dimcode export SESSION_ID`）直接以只读快照打开数据库，不争抢守护进程锁，不触发升级；回收空间（`dimcode daemon vacuum`）则要求守护进程已停机，先校验不存在悬空内容引用、清理不可达的内容寻址节点，再执行 `VACUUM`。
+
+## 终端 CLI 与 Web 工作区：薄客户端的不同接入姿态
+
+终端客户端位于 `crates/dim-cli`（内嵌终端控件源自 xAI `grok-build` 的 Ratatui 衍生实现，遵循 Apache-2.0 归属），它自己不跑模型也不决定权限，只管输入编辑、终端回滚区渲染和交互式审批。
+
+有意思的是，交互式 TUI 并不是只开一条普通 RPC 连接那么简单。在 `crates/dim-app-server/README.md` 描述的 UI 叶子（UI Leaf）协议里，交互式 `dimcode` 进程本身是一个监听在私有地址上的轻量 `rutis` 内核，通过 `ui.open` 让守护进程的 `UiLeaf` 反向拨号握手并挂载会话，再把普通的协议 v3 业务连接通过 `ui.attach` 登记上去，支持按代次原子替换（`ui.open { replace }`）且 20 秒内未附着自动回收。除了交互式 `tui`，CLI 还提供面向脚本与流水线的 `dimcode exec -p` / `exec --json`（审批或提问无法交互时主动停止当前 turn 并以退出码 3 退出，Ctrl+C 等待结算后以 130 退出），以及本地图像缩放校验（发送前统一把图片缩放到 2048 px 与 5,000,000 字节 base64 以内，单次最多 20 张，总请求体不超过 16 MiB）、超 16 KiB 粘贴自动走 `attachment.put`、跨平台剪贴板和 `@` 本地文件补全。
+
+Web 工作区则完全由守护进程按需拉起：通过 `web.open`（持有者模式）或 `web.toggle`（守护进程开关）只绑定在 loopback 回环地址，前端静态资源既可读取外部 `dimcode-web` 目录（每次打开校验 `dimcode-web.json` 里的协议版本，不匹配返回 `web_assets_incompatible`），也可通过 `embedded-web` Cargo 特性编译进二进制。浏览器拿着返回 URL 里的一次性引导令牌换取 Cookie 后，走协议 v3 建立连接，只开放 Session 执行方法和只读模型发现接口，把 `daemon.shutdown` 等宿主管理方法全部隐藏成 `unknown_method`。在 `v0.1.0-alpha.27` 中，Web 端还引入了共享的 `chat-ui` 工作区包，将 Web 时间线渲染与交互控制（包括运行中 `steer`、暂存草稿和中断发送）与 TUI 逐步对齐。
+
+## ACP 网关：零侵入的协议翻译层
+
+为了接入 Zed、Lody、acpx 等支持 Agent Client Protocol（ACP）的外部编辑器和工具，Dim 在 `crates/dim-acp` 实现了 `AcpGateway`，通过 `dimcode acp` 在标准输入输出上暴露 ACP v1 协议（固定 `agent-client-protocol` SDK 3.5.0）。
+
+| 架构边界 | `AcpGateway` 的具体做法 |
+| --- | --- |
+| 进程定位 | 运行在客户端侧的独立 `rutis` 进程插件，不是守护进程的 loader row，也不链接 App Server 内部类型 |
+| 共享传输 | 与 `dim-cli` 共同依赖提取出来的 `crates/dim-client`，共用 16 MiB 帧封装、套接字安全校验与 OAuth 环回回调捕获 |
+| 协议投影 | 只调用公开的 RPC v3 白名单方法，将 `session/new`、`load`、`resume`、`prompt`、`cancel`、`set_mode`、`set_config_option` 映射到原生方法；`approval.request` 映射为 `session/request_permission`（只给 `allow_once`/`reject_once`，不提供 `always`）；`ask_user` 条件映射为 `elicitation/create` 表单 |
+| 会话级临时 MCP | ACP 客户端在 `session/new` 时传入的 `mcpServers` 通过独立的 `TemporaryMcp` Session 插件挂载，仅作用于该会话，会话结束立刻丢弃，绝不污染全局持久化 MCP 配置 |
+| 严禁补假语义 | 现有原生接口无法保证的能力直接声明不支持（如 `logout`、客户端侧 `fs/*` 与 `terminal/*` 反向执行）；`session/load` 或 `resume` 要求守护进程明确声明 `session.attach.expectedCwd` 与 `session.history.latestTurn`，绝不退回到全量枚举会话或扫描全部历史 |
+
+## MCP 管理与 OAuth：代次平滑切换与变量防护
+
+对于持久化的 MCP 服务器，App Server 的 `McpPlugin` 把配置管理、连接代次和 OAuth 拆得很细：
+
+- **三源分层与逐条容错**：支持 `user`、工作区 `.mcp.json` 的 `project`（按 ADR 003 默认禁用）以及插件贡献的 `plugin:<id>` 三类来源，支持从 Claude Code、Codex、OMP 预览和导入配置。解析配置文件时采用逐条容错，单条格式损坏会进入 `invalid` 列表并保持原样，不拖垮其余正常条目。
+- **连接代次无缝交接**：每个 Session 通过子插件托管自己的 MCP 连接代次。修改或刷新配置时，正在执行中的旧工具调用继续跑完旧代次连接，新调用切换到新代次；只有最后一份旧租约释放后才关闭旧连接，而显式禁用则会主动排空并关闭所有会话里的活跃代次。失败重连采用 1 秒起跳、上限 5 分钟的指数退避；远端返回 HTTP 404 会重建会话并重放一次，单次工具调用超时默认 10 分钟（可在条目 `timeout` 里配 1 秒到 24 小时）。
+- **环境变量展开防护**：远程 URL、请求头和 Bearer Token 支持 `${NAME}` 和 `${NAME:-default}` 展开，但对于工作区 `.mcp.json` 和插件来源，所有受保护的敏感变量名（模型 Provider 密钥、云凭据、代理、`DIM_*`/`DIMCODE_*` 等）在远端字段里会被强制展开为空字符串且忽略默认值，防止恶意仓库借 `.mcp.json` 把用户的 API Key 偷发到外部服务器。
+- **按需懒加载的 MCP OAuth**：遇到远端返回 `401` 时，`mcp.auth.start` 自动发现受保护资源元数据并完成动态客户端注册，凭据按 `0600` 原子写入 `mcp-oauth.json` 并在过期前 30 秒跨会话单飞刷新；只要本地没有任何需要 OAuth 的 MCP 条目，守护进程甚至不会初始化 OAuth HTTP 客户端。
+
+把整个系统的内内外外走完一遍之后，我们有必要冷静停下来，用工程师的眼光审视这套高度严整的架构究竟付出了哪些工程代价、靠什么守住边界，以及哪些问题在当前 Alpha 里仍然有意留白。
+
+
+# 架构权衡与工程边界
+
+设计文档写得再严密，如果没有自动化门禁替人盯着，代码库跑上三个月就会开始长出捷径：某个插件偷调了另一个插件的私有函数，某个新加的 RPC 在代码里硬编码了字符串 `"main"`，或者改完服务接口却忘了更新给 TypeScript 用的 `.d.ts` 类型文件。另一边，任何架构选择都不是免费午餐，把状态机严格塞进时间总线和三层作用域里，必然带来可观测的工程代价。
+
+这一章专门看两件事：Dim 靠哪套机器检查把架构规矩钉在 CI 里，以及它明知存在却主动接受了哪些代价和未解边界。
+
+## `xtask-check` 与 `xtask`：把架构纪律变成编译级门禁
+
+Dim 把架构校验拆成了两档（`AGENTS.md` 与 `xtask/check/src/lib.rs`）：一档是零业务依赖的纯静态检查 `cargo run --locked -p xtask-check`，不需要编译庞大的 `dim-app-server` 和 `rutis`，几秒就能跑完；另一档是 `cargo run --locked -p xtask -- check`，在静态检查之上额外拉起真实的 App Server 产品装配并核对服务目录。
+
+`xtask/check/src/lib.rs` 的 `check_all` 串起了五道静态红线：
+
+| 门禁模块 | 源码位置 | 卡死什么违规行为 |
+| --- | --- | --- |
+| Crate 与模块边界 | `boundaries.rs`、`modules.rs` | 读取 `cargo metadata --offline` 与 `syn` AST，禁止 `types → runtime/capabilities`、`runtime → capabilities/server`、`capabilities → server` 以及 `xtask-check → dim-*/rutis` 反向依赖，同时核对 `crates.json` / `crates.mmd` 新鲜度 |
+| 插件文档一致性 | `plugin_docs.rs` | 校验 `docs/architecture/rust-agent/plugins/` 下每个部件页面的依赖表和自动生成块与代码一致，防止文档长期失真 |
+| 跨语言类型声明 | `types.rs` | 重新生成 `npm/branch-services.d.ts` 并比对差异，只要改了 `#[rutis::service]` 类型而没更新 TypeScript 声明立刻失败 |
+| 插件锁与清单 | `npm.rs` | 核验内置插件目录的 `package-lock.json` 与清单匹配，避免打包发版时依赖漂移 |
+| 注释链接与裸 `"main"` 检查 | `comment_links.rs`、`literal_main.rs` | 校验源码注释中的文档路径有效；用 `syn` AST 和 JS/TS/Vue 词法解析器禁止生产代码里出现裸字面量 `"main"` |
+
+这五道门禁里，最耐人寻味的是高达 2200 多行的 `xtask/check/src/literal_main.rs`。为什么要在 Rust、TypeScript 和 Vue 源码里大动干戈地封杀裸字符串 `"main"`？答案正来自第 5 章的默认分支改动（PR #1917）：当默认分支不再永远等于起点 `main` 之后，代码里到处散落的 `"main"` 会变成极隐蔽的 Bug 温床。有的地方真的指起点（必须写常量 `ROOT_BRANCH_ID`），有的地方指“不查默认分支时的兜底起点”（必须写 `DEFAULT_BRANCH_ID`），而且这两个常量全仓库只允许在 `crates/dim-agent-types/src/events.rs` 和 `web/src/rpc/protocol.ts` 里各定义一次，连 SQLite 的 `is_readonly("main")` 这种与分支无关的用法都要登记在 `UNRELATED` 白名单里写明理由。
+
+此外，工作区根 `Cargo.toml` 还打开了 `[workspace.lints.clippy]` 下的 `allow_attributes_without_reason = "warn"`：全仓库每一次写 `#[allow(...)]` 压制告警都必须附上 `reason = "..."`，把“图省事关警告”的口子堵死在审查阶段。
+
+## 真实装配图：拒绝手绘权威架构图
+
+在 `AGENTS.md` 里有一条很硬的规定：禁止手写维护现状架构图，也禁止手改 `docs/architecture/rust-agent/generated/` 下的文件。运行 `cargo run --locked -p xtask -- graph` 会直接装配真实的 App Server 产品 Profile（含一个 Session 和它的 `main` 分支），从活体依赖图里吐出四类权威快照：
+
+- `services.mmd` / `services.md` / `services.json`（真实服务装配关系）
+- `instances.mmd` / `instances.json`（实例键结构）
+- `crates.mmd` / `crates.json`（包依赖图）
+- `catalog.md`（111 个服务的组归属、提供方、`data`/`internal(reason)` 分类、方法表，以及按是否注入 `dispatcher`/`timeline` 自动标记出的 20 个 Capability）
+
+手绘的图表只允许用来画“目标设计”，现状架构永远以 `xtask` 从代码跑出来的图为准，改动装配却不更新图，`xtask check` 直接拦下 PR。
+
+## 主动接受的工程代价与未解边界
+
+一个成熟的架构不会假装自己没有短板。翻完 Dim 的源码、ADR 和设计文档，至少有七处明确写进了文档的已知代价或当前边界：
+
+**1. 跨语言数据面迁移尚未 100% 完成。** 真实目录 111 个服务中，已有 75 个迁成 `data` 数据面，但仍有 36 个停在 `internal(reason)`，其中 16 个是每回合高频热路径（`agentLoop`、`prompt`、`contextPreparation`、`toolExecutor` 等）。在它们完成操作化之前，核心执行链上的替换部件仍必须用进程内 Rust 编写。
+
+**2. 写入轮合批在混合负载下放大 WAL 写入量。** 如第 3 章所述，上游在 Apple M4 上实测确认：当 64 条流式分支与 64 条普通依赖写入链并发时，普通批次“不等 20 ms 立刻提交”的设计把普通链延迟中位数压到了 9 ms，但顺带每轮都重写了正在活跃的流式输出行，使 WAL 吞吐从 40 MB/s 涨到 80 MB/s。
+
+**3. 崩溃窗口期可能丢失两类分支通知。** `docs/design/timeline-branches.md` §6.2 明确记录：如果守护进程刚好在工具线 `turn/end` 提交之后、`BranchLine` 写出 `<dim-branch-idle>` 之前崩溃，或者在 `branch/ended` 与 `<dim-branch-ended>` 通知之间崩溃，因为 `BranchLine` 只对加载后的实时事件做通知决定，这两类提示通知不会补发（重启自愈只会更新名册 `branch:roster`，父线仍可通过名册和 `read` 查到完整历史）。
+
+**4. 分支共享同一工作区，不做按分支文件系统隔离。** 同一 Session 的多条分支共用一个磁盘工作目录。想并行修改同一组文件而不互相覆盖，不能用分支，必须靠受管 Git worktree（`dim-app-server` 支持工作区 worktree 启动与关联）、独立分叉或带独立 `cwd` 的协作子代理。同时，分支的“比较与采纳（compare & adopt）”语义仍留待后续设计。
+
+**5. 热重载与结构性配置变动的传播代价。** 按 ADR 002 D3，业务配置变更绝不重载插件，但真正的结构性操作（装卸插件、替换被依赖的底层行）会沿 `rutis` 依赖图级联重载下游依赖，并直接让在途 turn 失败。Dim 明确把这列为已接受成本，不为这类低频操作增加复杂的无损热迁移层。
+
+**6. 安全模型明确不是多租户沙箱。** 已启用的插件、Hook、MCP stdio 进程都是受信任本地代码（AGENTS 规则 11）；ADR 003 D4 接受用户启用项目条目后不校验后续配置指纹变化；ADR 010 让进程沙箱默认关闭且 Windows 尚无后端；ADR 018 拿掉 `PermissionPolicy` 的 `deny_unknown_fields` 换取旧记录兼容，代价是放弃了对策略 JSON 拼写错误的解析拦截。此外，默认 App Server 产品装配里 `CompactionStrategyHost` 与上下文压缩模型宿主仍依赖显式绑定配置。
+
+**7. 极简学习门槛并不低。** 哪怕只写一个简单状态机插件，开发者也必须理解单调序号、`committed`/`published` 差异、`consume` 重建截点、`before` 不可逆与副作用不重放。为了不让这套设计停留在纸面概念里，下一章我们用不到四百行零依赖的 Python 代码，亲手把 Dim 最核心的五组不变量搭起来，并用 18 个单元测试逐条跑通验证。
+
+
+# 零依赖 Python 教学模型与 18 个单元测试
+
+光读 Rust 工作区的 28 个 crate 和几十万字设计文档，脑子里很容易记住一堆名词，却对边界条件缺乏手感：到底为什么 `Dispatcher::consume` 要先暂存实时事件再跑重建；为什么默认分支切回 `main` 后计数会瞬间超额却不该关闭已有分支；为什么破坏了快照的 SHA-256 摘要以后，上下文投影照样能完整保留压缩摘要。
+
+本书在 `examples/mini_dim.py` 里用纯 Python 3.10+ 标准库写了一个不到四百行的教学模型，配套 `examples/test_mini_dim.py` 共 18 个单元测试，把 Dim 最核心的五组机制剥离网络与 SQLite 细节，缩成一眼能看穿的可运行代码。
+
+## 模型结构与上游源码的精确映射
+
+| `examples/mini_dim.py` 模块 | 对应上游 Rust 位置 | 验证的核心不变量 |
+| --- | --- | --- |
+| `Timeline`、`EventDraft`、`RESERVED_DOMAINS` | `crates/dim-agent-types/src/events.rs`、`crates/dim-agent-runtime/src/core/timeline.rs` | 13 个核心保留域拦截外部写入；`before` 链同步变换并留 `TraceStep`，任意钩子抛错回退原始草稿；`append_batch` 登记失败整批中止；`committed()` 与 `published()` 双水位隔离 |
+| `Dispatcher` | `crates/dim-agent-runtime/src/core/dispatcher.rs` | 按发布序号严格派发；`consume(name, keys, rebuild, handler)` 先开启暂存闸门再执行重建，随后只派发序号严格大于 `cutoff` 的实时事件 |
+| `TimelineTree`、`BranchNode` | `crates/dim-agent-capabilities/src/timeline_tree.rs` | 仅 `ROOT_BRANCH_ID`（`main`）与当前默认分支有工具开线权；`counted_tool_lines` 排除默认分支及其祖先链；预留即占槽、失败释放槽并写 `branch/create-failed`；禁止结束保护链并级联关闭子孙；仅父子亲缘可发消息与按游标读历史；重启读 `main` 最新 `branch/default` 或 `session/forked` 恢复 |
+| `ApprovalCapability` | `crates/dim-agent-capabilities/src/permission.rs`（`Approval`） | 双端并发应答时首条有效 `approval/respond` 胜出；`stop/interrupt` 写 `approval/cancelled` 并阻断迟到同意；重启重建只恢复已决表，绝不重放已执行过的工具副作用 |
+| `RecoverySnapshot`、`project_context` | `crates/dim-agent-capabilities/src/context_preparation.rs`、`history.rs` | 校验解释器版本、锚点与 SHA-256 摘要后增量续读；摘要篡改或缺失时自动回退全量重放，同时完整保留 `context/compaction` 摘要 |
+
+## 核心代码片段拆解
+
+先看 `Dispatcher.consume` 怎么堵死“重建与实时事件重叠”的竞态窗口：
+
+```python
+def consume(
+    self,
+    name: str,
+    keys: tuple[str, ...],
+    rebuild: Callable[[Timeline], int],
+    handler: Callable[[AgentEvent], None],
+) -> int:
+    held: list[AgentEvent] = []
+    holding = True
+
+    def gate(ev: AgentEvent) -> None:
+        if holding:
+            held.append(ev)
+        else:
+            handler(ev)
+
+    self.subscribe(name, keys, gate)
+    cutoff = rebuild(self.timeline)
+    holding = False
+    for ev in held:
+        if ev.sequence > cutoff:
+            handler(ev)
+    return cutoff
+```
+
+这段 20 行代码就是 `crates/dim-agent-runtime/src/core/dispatcher.rs` 里 `Held` 结构的忠实微缩：哪怕在 `rebuild` 正在读历史的过程中，第 3 号新事件被提交并发布，它也会稳稳落进 `held`；等 `rebuild` 返回 `cutoff = 2` 并撤掉闸门，只有序号大于 2 的第 3 号事件被放行给实时 `handler`，1 号和 2 号绝不会二次投递。
+
+再看 `TimelineTree` 里最容易写错的“受保护路径配额”算法，它直接对应 `crates/dim-agent-capabilities/src/timeline_tree.rs` 的 `counted_tool_lines` 和 `protects`：
+
+```python
+def protected_path(self) -> set[str]:
+    protected: set[str] = set()
+    cur: str | None = self._default_branch
+    while cur is not None:
+        protected.add(cur)
+        node = self.nodes.get(cur)
+        cur = node.parent if node else None
+    return protected
+
+def counted_tool_lines(self) -> int:
+    protected = self.protected_path()
+    return sum(
+        1
+        for bid, node in self.nodes.items()
+        if node.source == "tool" and not node.ended and bid not in protected
+    )
+```
+
+每次切换默认分支，不需要在节点上维护容易漂移的加减计数器，而是直接对全树活跃工具线减掉当前保护路径做集合差。这样无论子树有多深，从 `main → A → B` 切回 `main` 时，A、B 以及 B 新开的子线 C 都会瞬间重新计额，既不会漏算，也不会强关任何已有分支。
+
+最后看 `ApprovalCapability._rebuild` 怎么体现“副作用不重放”：
+
+```python
+def _rebuild(self, timeline: Timeline) -> int:
+    cutoff = timeline.published()
+    for ev in timeline.query(
+        through=cutoff, keys=("approval/*", "stop/interrupt")
+    ):
+        self._fold(ev, execute_side_effects=False)
+    return cutoff
+```
+
+同一套折叠函数 `_fold` 通过一个布尔开关区分重建和实时两条路径：重建时把历史上的 `approval/request`、`approval/respond`、`approval/cancelled` 折叠成完全等价的内存状态，却绝不触发 `on_allow` 回调，也不向 `executed_side_effects` 追加记录。
+
+## 18 个单元测试的覆盖矩阵
+
+在仓库根目录执行 `python3 -m unittest discover -s examples -v`，全部 18 个用例在数毫秒内跑完：
+
+| 用例编号 | 测试名称 | 验证的关键边界 |
+| --- | --- | --- |
+| 01 | `test_01_sequence_is_monotonic_and_batch_end_marks_boundary` | 批次序号单调递增，仅末事件 `batch_end=True` |
+| 02 | `test_02_reserved_domains_reject_extension_appends` | 扩展写入 13 保留域被拒，自定义域放行 |
+| 03 | `test_03_before_hook_transforms_draft_and_records_trace` | `before` 同步变形草稿并记录 `TraceStep` |
+| 04 | `test_04_before_hook_failure_commits_original_draft` | `before` 抛错整链回退并提交原草稿 |
+| 05 | `test_05_register_callback_failure_aborts_entire_batch` | 提交锁内登记回调失败时整批中止、水位不动 |
+| 06 | `test_06_committed_and_published_watermarks_stay_distinct` | 未发布事件仅内部可见，发布后才触发 Dispatcher |
+| 07 | `test_07_dispatcher_consume_holds_live_facts_and_delivers_above_cutoff` | 重建期间到达的实时事件暂存并在截点后不重不漏交付 |
+| 08 | `test_08_only_root_and_default_branch_can_open_tool_lines` | 非默认工具线开线被拒，晋升默认后与 `main` 双双可开 |
+| 09 | `test_09_protected_path_excluded_from_cap_and_switch_back_counts_all` | 保护链免计额；切回 `main` 超额不关旧线，仅拒新开 |
+| 10 | `test_10_failed_build_releases_cap_slot_and_records_create_failed` | 构建失败释放预留配额并写 `branch/create-failed` |
+| 11 | `test_11_user_and_plugin_lines_never_spend_tool_cap_and_plugin_cannot_be_default` | 用户线与插件线不占工具配额；插件线不可选为默认分支 |
+| 12 | `test_12_ending_root_default_or_ancestor_is_refused_and_cascade_ends_children` | 保护链拒绝结束；切离后结束父线先级联结束子线 |
+| 13 | `test_13_kinship_messaging_and_read_cursor_enforcement` | 兄弟互发互读返回 `branch_not_kin`；子读父自动抬高至切点并续读游标 |
+| 14 | `test_14_default_branch_restores_from_root_and_resets_after_session_forked` | 从 `main` 恢复默认分支，遇到 `session/forked` 重置回 `main` |
+| 15 | `test_15_approval_first_decision_wins_under_concurrent_clients` | 双客户端并发拒绝与同意，先落盘序号者胜出 |
+| 16 | `test_16_stop_interrupt_cancels_pending_approval_and_prevents_late_allow` | `stop/interrupt` 写 `approval/cancelled` 并拦截迟到同意 |
+| 17 | `test_17_restart_rebuild_reconstructs_state_without_replaying_side_effects` | 同存储重启构建第二代 `ApprovalCapability`，状态等价且零重放副作用 |
+| 18 | `test_18_compaction_snapshot_accelerates_projection_and_falls_back_on_corruption` | SHA-256 正常快照走增量续读，篡改摘要自动回退全量重放并保留摘要 |
+
+需要强调一次定位边界：`examples/mini_dim.py` 是单进程同步教学模型，省去了 SQLite 异步写入轮、真实 `rutis` 跨进程通道、文件系统权限探针和真实模型网络流。它的价值在于用极低阅读成本，让读者亲手改一行条件就能观察到对应不变量立刻报警，再回头翻 Rust 源码时就能一眼认出每把锁和每个状态字段为什么长在那个位置。
+
+
+# 附录 A：源码索引、术语与核验命令
+
+本附录汇总本书所依据的上游快照元数据、关键源码与文档索引、核心术语对照，以及可在本地复现的核验命令。
+
+## 上游快照信息
+
+| 项目 | 数值或标识 |
+| --- | --- |
+| 仓库地址 | `https://github.com/arcships/dim` |
+| 固定提交 | `88a3df3669405730cbee6bfd113a7f75cf520677` |
+| 工作区版本 | `0.1.0-alpha.27` |
+| 快照采集日期 | `2026-11-22` |
+| Rust 版本与 Edition | `1.100` / `2024` |
+| 核心依赖基线 | `rutis = "0.23.0"`、`aimux-* = "=0.6.1"`、`rquickjs = "0.14"`、`tokio = "1.53.3"`、`axum = "0.8"`、`jiff = "0.2.46"` |
+| 工作区实测规模 | 28 个 Cargo 成员（23 业务 crate + 2 xtask + 3 测试 crate）；111 个目录服务（75 `data` / 36 `internal`）；20 个分支 Capability；3 个内置运行时插件包；26 份 ADR |
+
+## 关键源码与上游文档索引
+
+| 主题 | 上游路径 |
+| --- | --- |
+| 工作区与依赖基线 | `Cargo.toml`、`AGENTS.md`、`README.md` |
+| 时间总线与事件驱动契约 | `docs/architecture/rust-agent/time-bus.md`、`docs/architecture/rust-agent/event-driven-flows.md`、`docs/architecture/rust-agent/principles.md`、`docs/architecture/rust-agent/timeline-storage.md` |
+| 事件类型与 13 保留域 | `crates/dim-agent-types/src/events.rs`、`crates/dim-agent-types/tests/fixtures/` |
+| 运行时内核与分发器 | `crates/dim-agent-runtime/src/core/timeline.rs`、`crates/dim-agent-runtime/src/core/dispatcher.rs`、`crates/dim-agent-runtime/src/assembly.rs`、`crates/dim-agent-runtime/src/parts.rs` |
+| 分支时间线与默认分支 | `docs/design/timeline-branches.md`、`docs/architecture/rust-agent/plugins/TimelineTree.md`、`docs/architecture/rust-agent/plugins/BranchTool.md`、`crates/dim-agent-capabilities/src/timeline_tree.rs` |
+| rutis 装配与跨语言数据面 | `docs/design/rutis-usage.md`、`docs/design/plugin-contract.md`、`docs/design/service-faces.md`、`docs/architecture/rust-agent/generated/catalog.md`、`docs/adr/002-plugin-scope.md`、`docs/adr/015-scopes-are-plugins.md`、`docs/adr/025-rutis-0-23.md` |
+| 内置运行时插件与自演化 | `runtime/default-plugins.json`、`runtime/runtimes.json`、`runtime/package.json`、`runtime/plugins/plugin-authoring/skills/plugin-authoring/SKILL.md`、`runtime/plugins/workflow/`、`runtime/plugins/light-ocr/` |
+| 上下文准备与压缩检查点 | `docs/architecture/rust-agent/plugins/ContextPreparation.md`、`crates/dim-agent-capabilities/src/context_preparation.rs`、`crates/dim-agent-capabilities/src/history.rs` |
+| 权限、审批与执行隔离 | `docs/architecture/rust-agent/plugins/Permission.md`、`docs/adr/003-approval-scope.md`、`docs/adr/009-permission-decides.md`、`docs/adr/010-sandbox-opt-in.md`、`docs/adr/012-session-grants.md`、`docs/adr/017-independent-permission-controls.md`、`docs/adr/018-permission-is-the-preset.md` |
+| Code Mode 与 Aimux | `crates/dim-codemode/src/config.rs`、`crates/dim-codemode/src/interpreter.rs`、`crates/dim-codemode/src/session.rs`、`crates/dim-agent-aimux/README.md`、`crates/dim-agent-aimux/src/driver.rs` |
+| App Server、CLI、Web 与 ACP | `crates/dim-app-server/README.md`、`crates/dim-cli/README.md`、`crates/dim-acp/src/gateway.rs`、`docs/design/acp-gateway-implementation.md` |
+| 静态门禁与装配图生成 | `xtask/src/main.rs`、`xtask/check/src/lib.rs`、`xtask/check/src/boundaries.rs`、`xtask/check/src/literal_main.rs` |
+
+## 核心术语速查
+
+| 术语 | 在 Dim 中的精确含义 |
+| --- | --- |
+| Timeline（时间总线） | 单条分支的有序持久化事件流，分配单调 `sequence`，区隔 `committed()` 与 `published()` 双水位 |
+| Capability（能力） | 注入 `dispatcher` 或 `timeline` 的分支级状态机部件，受时间总线规则约束；不注入这两者的只是普通部件 |
+| `before` 钩子 | 仅限进程内 Rust 在分支提交锁内同步运行的草稿变形链，不改历史、不阻写入、出错回退原草稿 |
+| Data Face（数据面） | 在目录共享且在 `host_key(name)` 挂有 `HostDispatch` 的跨语言公开服务，参数、返回值与错误全为 serde 数据 |
+| 起点（root）与默认分支（default branch） | 起点恒为 id `main` 且永不结束；默认分支是当前会话对话路由位置，由写在 `main` 上的 `branch/default` 决定 |
+| 脱离工作（detached work） | 越过发起它的 turn 继续运行的异步工作（如 `BackgroundExec`、协作任务），归发起能力自持并用活动持有保护空闲关机 |
+| `RecoverySnapshot` | 存于 `timeline_snapshots` 的可丢弃派生加速缓存（带 SHA-256 摘要），损坏或缺失时自动回退完整事实重放 |
+
+## 常用核验命令
+
+上游仓库核验（在 `arcships/dim` 仓库根目录执行）：
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo run --locked -p xtask-check
+cargo run --locked -p xtask -- check
+```
+
+本书教学模型与出版产物核验（在本书仓库根目录执行）：
+
+```sh
+python3 -m unittest discover -s examples -v
+python3 scripts/make_diagrams.py
+node wiki/build.mjs
+python3 scripts/make_epub.py
+python3 scripts/check_links.py
+```

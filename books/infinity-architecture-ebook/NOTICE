@@ -1,0 +1,17 @@
+Infinity Architecture Ebook (Independent Source-Code Study)
+
+This repository contains independent Chinese technical analysis, custom SVG diagrams,
+and an offline Python teaching model written under the MIT License.
+
+Upstream Project Analyzed:
+- Name: Infinity (hydro-project/infinity)
+- Repository: https://github.com/hydro-project/infinity
+- Snapshot Commit: e1a3e4b36e5f6143e03a59a7ad86e1abacfd22e8 (2026-11-05)
+- Upstream License: Apache License, Version 2.0
+- Upstream Notice:
+  Copyright 2026 Hydro Contributors
+  The Initial Developer of some parts of the framework is Amazon Web Services.
+  Copyright 2026 Amazon.com, Inc. or its affiliates.
+
+This ebook is not affiliated with, endorsed by, or an official publication of the
+UC Berkeley Hydro team or Amazon Web Services.

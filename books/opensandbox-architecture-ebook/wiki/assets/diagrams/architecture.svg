@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="980" viewBox="0 0 1160 980" role="img" aria-labelledby="overview-title overview-desc">
+<title id="overview-title">OpenSandbox：管理、入向访问与出向控制</title>
+<desc id="overview-desc">客户端通过生命周期服务器管理沙箱，通过解析到的访问路径连接 execd。运行时提供资源；沙箱出向由 egress 控制，观测是旁路。</desc>
+<style>text{font-family:"Noto Sans CJK SC",system-ui,sans-serif;fill:#252820}.title{font-size:22px;font-weight:650}.sub{font-size:17px;fill:#525d53}.edge{font-size:17px;fill:#29564c}.box{fill:#faf7ef;stroke:#a5ad9e;stroke-width:1.4}.focal{fill:#edf2e9;stroke:#29564c;stroke-width:2}.wire{fill:none;stroke:#29564c;stroke-width:2}.passive{fill:none;stroke:#7a8575;stroke-width:1.5;stroke-dasharray:6 5}</style>
+<defs><marker id="overview-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 1 L9 5 L0 9" fill="#29564c"/></marker></defs>
+<rect width="1160" height="980" fill="#faf7ef"/>
+<text x="40" y="36" class="sub">控制面管理资源；数据面处理执行与服务访问，两者不是串行代理链</text>
+<!-- Connectors precede nodes. Separate management, access, outbound and observation. -->
+<path class="wire" d="M190 170 V250" marker-end="url(#overview-arrow)"/>
+<text class="edge" x="204" y="210">生命周期 / endpoint 查询</text>
+<path class="wire" d="M340 120 H400" marker-end="url(#overview-arrow)"/>
+<text class="edge" x="346" y="100">访问</text>
+<path class="wire" d="M340 315 H400" marker-end="url(#overview-arrow)"/>
+<text class="edge" x="346" y="293">委派</text>
+<path class="wire" d="M620 390 V470" marker-end="url(#overview-arrow)"/>
+<text class="edge" x="636" y="432">创建 / 分配</text>
+<path class="wire" d="M1000 120 H1092 Q1100 120 1100 128 V430 Q1100 438 1092 438 H788 Q780 438 780 446 V470" marker-end="url(#overview-arrow)"/>
+<text class="edge" x="840" y="420">HTTP / SSE / WebSocket</text>
+<path class="wire" d="M600 660 V740" marker-end="url(#overview-arrow)"/>
+<text class="edge" x="616" y="706">出向流量</text>
+<path class="wire" d="M800 805 H900" marker-end="url(#overview-arrow)"/>
+<text class="edge" x="814" y="783">放行</text>
+<path class="passive" d="M400 550 H340" marker-end="url(#overview-arrow)"/>
+<text class="sub" x="346" y="580">采集</text>
+
+<g data-box="1" id="client"><rect class="box" x="40" y="70" width="300" height="100" rx="6"/>
+<text class="title" x="60" y="102">客户端</text>
+<text class="sub" x="60" y="132">SDK · osb CLI · MCP</text>
+</g>
+<g data-box="1" id="access"><rect class="box" x="400" y="70" width="600" height="100" rx="6"/>
+<text class="title" x="420" y="102">解析得到的访问路径</text>
+<text class="sub" x="420" y="132">直连 / ingress 网关 / 服务器代理，保留地址与请求头</text>
+</g>
+<g data-box="1" id="server"><rect class="focal" x="40" y="250" width="300" height="140" rx="6"/>
+<text class="title" x="60" y="282">生命周期服务器 :8080</text>
+<text class="sub" x="60" y="312">认证 · 租户 · 校验 · 委派</text>
+<text class="sub" x="60" y="338">SQLite / PG：快照与模板目录</text>
+</g>
+<g data-box="1" id="runtimes"><rect class="box" x="400" y="250" width="600" height="140" rx="6"/>
+<text class="title" x="420" y="282">运行时适配：Docker 或 Kubernetes</text>
+<text class="sub" x="420" y="312">Docker daemon；K8s 容器 provider + Controller</text>
+<text class="sub" x="420" y="338">K8s 模板分支：FastPath → Fastlet → microVM</text>
+</g>
+<g data-box="1" id="observe"><rect class="box" x="40" y="470" width="300" height="190" rx="6"/>
+<text class="title" x="60" y="502">观测（旁路，不转发业务）</text>
+<text class="sub" x="60" y="532">OTel 指标 / diagnostics</text>
+<text class="sub" x="60" y="558">可选 Node Agent：</text>
+<text class="sub" x="60" y="584">K8s 节点级日志采集</text>
+</g>
+<g data-box="1" id="sandbox"><rect class="focal" x="400" y="470" width="400" height="190" rx="6"/>
+<text class="title" x="420" y="502">沙箱中的执行与服务</text>
+<text class="sub" x="420" y="532">execd :44772 → 命令 / 文件 / PTY</text>
+<text class="sub" x="420" y="558">用户 entrypoint 与应用端口</text>
+<text class="sub" x="420" y="584">代码执行可选接入 Jupyter</text>
+</g>
+<g data-box="1" id="egress"><rect class="box" x="400" y="740" width="400" height="140" rx="6"/>
+<text class="title" x="420" y="772">egress：出向策略与 Vault</text>
+<text class="sub" x="420" y="802">容器：每沙箱 / Pod 一个 sidecar</text>
+<text class="sub" x="420" y="828">Fast Sandbox：每 Fastlet 共享进程</text>
+<text class="sub" x="420" y="854">DNS + nftables；可选 MITM 注入凭据</text>
+</g>
+<g data-box="1" id="external"><rect class="box" x="900" y="740" width="220" height="140" rx="6"/>
+<text class="title" x="920" y="772">外部服务</text>
+<text class="sub" x="920" y="802">依赖源 · 模型 API</text>
+<text class="sub" x="920" y="828">其他允许的目标</text>
+</g>
+<line x1="40" y1="922" x2="1120" y2="922" stroke="#d9d2c3"/>
+<text class="sub" x="40" y="950">实线：管理或流量关系。虚线：旁路观测。模块细节见后续章节；并非要求部署所有组件。</text></svg>

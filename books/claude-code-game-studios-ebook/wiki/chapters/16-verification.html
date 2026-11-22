@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从需求、配置、角色到 Hook 与验收，解剖 Claude Code Game Studios 的工作流"><meta name="author" content="独立源码研究">
+<title>验证与演进：Markdown 写的框架，怎么证明自己没改坏 · Claude Code 游戏工作室</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">G</span><span>Claude Code 游戏工作室</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 16</div><div class="rail-title">验证与演进：Markdown 写的框架，怎么证明自己没改坏</div><ol><li><a href="#场景-你魔改了两个技能-怎么知道没把流程拆散架">场景：你魔改了两个技能，怎么知道没把流程拆散架</a></li><li><a href="#studio-tests-里面到底装了什么">studio-tests/ 里面到底装了什么</a></li><li><a href="#四种检查模式与-skill-lint-sh-静态体检">四种检查模式与 skill-lint.sh 静态体检</a></li><li><a href="#写门禁与技能的五条铁律-claude-rules-skill-authoring-md">写门禁与技能的五条铁律（.claude/rules/skill-authoring.md）</a></li><li><a href="#升级策略-别拿-allow-unrelated-histories-给自己找几百个冲突">升级策略：别拿 --allow-unrelated-histories 给自己找几百个冲突</a></li><li><a href="#诚实说清楚-这套验证到底覆盖不到什么">诚实说清楚：这套验证到底覆盖不到什么</a></li><li><a href="#常见误解">常见误解</a></li><li><a href="#练习">练习</a></li><li><a href="#答案提示">答案提示</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 16 章</div><h1>验证与演进：Markdown 写的框架，怎么证明自己没改坏</h1><div class="chapter-meta">CCGS v1.3.0 快照 2026-11-09 · 约 20 分钟</div></header><div class="prose"><h2 id="场景-你魔改了两个技能-怎么知道没把流程拆散架">场景：你魔改了两个技能，怎么知道没把流程拆散架<a class="anchor" href="#场景-你魔改了两个技能-怎么知道没把流程拆散架" aria-label="链接到本节">#</a></h2>
+<p>CCGS 本身就是个鼓励你按自己团队习惯魔改的模板。今天你改了 <code>/dev-story</code> 的 Phase 5，明天删掉了两个用不上的角色。普通代码改完有编译器和单元测试兜底，可技能和角色全是 Markdown 文本，没有编译器报错——改坏了往往要等跑崩一次真实任务才发现。</p>
+<p>CCGS 给出的解法，是把一套专门测“框架自己”的质检设施随模板一起打包在根目录的 <strong><code>studio-tests/</code></strong> 里，用 <code>/skill-test</code> 和 <code>/skill-improve</code> 两个技能驱动。</p>
+<h2 id="studio-tests-里面到底装了什么"><code>studio-tests/</code> 里面到底装了什么<a class="anchor" href="#studio-tests-里面到底装了什么" aria-label="链接到本节">#</a></h2>
+<p>先说清一个极容易混淆的目录分工：<strong><code>tests/</code> 是留给你放游戏测试的（刚克隆的模板里没有框架自测代码）；<code>studio-tests/</code> 才是用来测 CCGS 自己的技能和角色的。</strong></p>
+<p>打开 v1.3.0 仓库里的 <code>studio-tests/</code>，结构非常完整：</p>
+<ul>
+<li><strong><code>catalog.yaml</code></strong>：主花名册，登记了全部 <strong>75 个正式技能</strong>（v1.3.0 同步把旧名规格改成了 <code>next-step.md</code>、<code>project-settings.md</code>、<code>write-changelog.md</code>，并新增了 <code>cut.md</code>）和 <strong>49 个角色</strong>，追踪各自的优先级、分类以及上次测试时间与结果。</li>
+<li><strong><code>quality-rubric.md</code></strong>：按技能类别（<code>gate</code>、<code>review</code>、<code>authoring</code>、<code>readiness</code>、<code>pipeline</code>、<code>analysis</code>、<code>team</code>、<code>sprint</code>、<code>utility</code>）定好的通过门槛。</li>
+<li><strong><code>skills/</code> 与 <code>agents/</code></strong>：每个技能、每个角色各有一份行为规格文件（spec），比如 <code>gate-check.md</code> 里写死了要检查它读没读评审模式、solo 模式下是不是跳过全部门禁、是不是禁止自动推进阶段。</li>
+<li><strong><code>templates/</code></strong>：给你自己新写的技能/角色抄的规格模板。</li>
+<li><strong><code>results/</code></strong>：跑完测试后存放报告的目录（注意它没进 <code>.gitignore</code>，不想提交结果的话要自己加进去）。</li>
+</ul>
+<p>文档甚至诚实地列了一张“如果嫌占地方把 <code>studio-tests/</code> 删了会怎样”的账单：</p>
+<ul>
+<li><code>/skill-test static</code>：照常能跑（只读技能文件本身）；</li>
+<li><code>/skill-test audit</code>：降级（报找不到花名册）；</li>
+<li><code>/skill-test spec</code> 和 <code>category</code>：直接罢工；</li>
+<li><code>/skill-improve</code>：失去按类别的打分循环。</li>
+</ul>
+<h2 id="四种检查模式与-skill-lint-sh-静态体检">四种检查模式与 <code>skill-lint.sh</code> 静态体检<a class="anchor" href="#四种检查模式与-skill-lint-sh-静态体检" aria-label="链接到本节">#</a></h2>
+<p>驱动这套质检的 <code>/skill-test</code> 分四个模式：<code>static</code>（7 项结构检查）、<code>spec</code>（逐条对照行为规格）、<code>category</code>（对照类别打分表）、<code>audit</code>（出覆盖率全景报告）。其中唯一纯靠脚本确定性运行的，是 <code>static</code> 背后的 <code>.claude/scripts/skill-lint.sh</code>。</p>
+<p>拿它扫单个技能（比如 <code>bash .claude/scripts/skill-lint.sh dev-story</code>），它会把技能的主 <code>SKILL.md</code> 连同 <code>references/</code> 下的拆页一起读完，吐出 7 项冷冰冰的客观数据：</p>
+<ol>
+<li><code>check1</code>：YAML 前置元数据齐不齐、<code>name</code> 和目录名对不对得上；</li>
+<li><code>check2</code>：阶段数和二级标题数；</li>
+<li><code>check3</code>：出现了哪些判决词（如 <code>BLOCKED</code>、<code>COMPLETE</code>、<code>FAIL</code>）；</li>
+<li><code>check4</code>：有没有写“写入前请示批准”以及声明的写工具；</li>
+<li><code>check5</code>：最后一节标题是什么、点名了哪些下一步技能；</li>
+<li><code>check6</code>：有没有用独立上下文（<code>context: fork</code>）；</li>
+<li><code>check7</code>：参数提示（<code>argument-hint</code>）和参数解析段落。</li>
+</ol>
+<p>全仓扫描 <code>bash .claude/scripts/skill-lint.sh all</code> 时，脚本最后一行一定会报实测读到的总数（在 v1.3.0 上，因为目录里有 75 个正式技能 + 3 个旧名转发层 <code>help</code>/<code>settings</code>/<code>changelog</code>，磁盘上一共 78 个 <code>SKILL.md</code>）。如果某个文件读失败，脚本专门打印 <code>NOT_READ</code> 且不计入已读计数，绝不拿“扫了 70 个没报错”冒充全仓通过。同时它依然只报观察数据，具体“这样算不算合格”留给 <code>/skill-test</code> 去判。</p>
+<h2 id="写门禁与技能的五条铁律-claude-rules-skill-authoring-md">写门禁与技能的五条铁律（<code>.claude/rules/skill-authoring.md</code>）<a class="anchor" href="#写门禁与技能的五条铁律-claude-rules-skill-authoring-md" aria-label="链接到本节">#</a></h2>
+<p>全仓库最值得打印出来贴墙上的规范，其实是 <code>.claude/rules/skill-authoring.md</code> 里的五条铁律——哪怕你不做游戏，只要给公司写 AI Workflow 或 CI 门禁，条条都扎心：</p>
+<ol>
+<li><strong>任何门禁必须有“无法评估（<code>NOT ASSESSED</code>）”这一档，而且必须排在通过之上、失败之下。</strong> 只有“通过/失败”二态的系统，最终一定会把所有拿不到数据、脚本没跑起来的情况偷偷塞进“通过”。</li>
+<li><strong>缺了配置或路径时，绝不准默认成最宽松的值。</strong> 写默认值前先问一句：“这个键框架里到底有没有人写？”如果压根没人写，你随手写的默认分支就是所有真实项目的线上行为（比如代码根解析不出绝不默认 <code>src/</code>）。</li>
+<li><strong>跳过的检查必须在大屏输出里明说，不能只写在源码注释里。</strong> 注释只有作者看，用户看到空输出只会以为检查跑过且全绿。</li>
+<li><strong>没法溯源的事实不准断言，且发现的缺口必须接进最终判决里。</strong> 光在正文里提醒一句“缺少某项证据”却不影响最终 Verdict，那条提醒就只是一行没人看的装饰废话。</li>
+<li><strong>覆盖范围靠动态派生，绝不手写死白名单。</strong> 手写死名单只要以后新增一个技能就会立刻漏检（像 <code>/project-settings</code> 动态 grep <code>effects-map.md</code> 的 <code>&gt; ### RESERVED</code> 标题，就是这条铁律的活教材）。</li>
+</ol>
+<p>旁边还附了两条特别毒辣的实操守则：</p>
+<ul>
+<li><strong>别写“碰巧就能为真”的断言</strong>：比如检查字符串里有没有 <code>unity</code>，结果连 <code>community</code> 这个词都能命中导致假通过。</li>
+<li><strong>没亲眼见过它报错的门禁，根本不算门禁</strong>：写完一个检查后，必须动手搞一次<strong>变异测试</strong>——故意把被守护的东西改坏，亲眼看着门禁红灯报警，再改回来变绿。</li>
+</ul>
+<h2 id="升级策略-别拿-allow-unrelated-histories-给自己找几百个冲突">升级策略：别拿 <code>--allow-unrelated-histories</code> 给自己找几百个冲突<a class="anchor" href="#升级策略-别拿-allow-unrelated-histories-给自己找几百个冲突" aria-label="链接到本节">#</a></h2>
+<p>随着上游从 v1.2.0 演进到 v1.3.0，<code>UPGRADING.md</code> 总结出了一套非常务实的升级分流：</p>
+<ul>
+<li><strong>同源 clone 的项目（有共同 Git 历史）</strong>：直接加 <code>template</code> 远程，<code>git fetch --tags template main &amp;&amp; git merge template/main</code>，只解决你改过的 <code>CLAUDE.md</code>、<code>project.yaml</code> 等少数冲突即可。</li>
+<li><strong>ZIP 下载或独立 <code>git init</code> 的项目（无共同历史）</strong>：<strong>千万别硬敲 <code>git merge --allow-unrelated-histories</code></strong>，没有共同祖先会让 Git 把几百个模板文件全标成冲突。正确姿势是选策略 A2——用 <code>git checkout template/main -- .claude UPGRADING.md CHANGELOG.md studio-tests docs/engine-reference/web ...</code> 只精准拉框架目录到暂存区，看清 <code>git diff --cached --stat</code>，把你自己魔改过的文件逐个 <code>git checkout HEAD -- &lt;file&gt;</code> 救回来，<code>CLAUDE.md</code> 和 <code>project.yaml</code> 手工 <code>git diff</code> 合并。</li>
+<li><strong>升级顺序别搞反</strong>：像 v1.2.0 → v1.3.0 这种更新，必须<strong>先把 <code>.claude/hooks/</code> 和 <code>.claude/scripts/</code> 覆盖到位，再去合 <code>.claude/settings.json</code></strong>，不然新 <code>settings.json</code> 指向的新脚本还没落盘，每次调用都会报错。</li>
+</ul>
+<h2 id="诚实说清楚-这套验证到底覆盖不到什么">诚实说清楚：这套验证到底覆盖不到什么<a class="anchor" href="#诚实说清楚-这套验证到底覆盖不到什么" aria-label="链接到本节">#</a></h2>
+<p>必须点破两个真实边界：</p>
+<ol>
+<li><strong><code>/skill-test</code> 全部四个模式都只读文件，从来不真的执行技能。</strong> 连 <code>spec</code> 和 <code>category</code> 也是让大模型读完 <code>SKILL.md</code> 和规格文档后做“纸面代码审查”。它能保证结构规范没写漏、规矩没改丢，但<strong>不能证明模型在真实多轮对话里 100% 乖乖照做</strong>。</li>
+<li><strong>模板仓里没有随附框架自己的单元测试套件。</strong> <code>studio-tests/</code> 放的是针对技能/角色的静态与规格检查；而类似测试 <code>yaml-helper.sh</code> 几十个 YAML 边界、验证 <code>validate-commit.sh</code> 各种 shell 嵌套的自动化单测脚本，并没有打包进公开分发模板里（这也是为什么本书下一章专门用独立 Python 写了 17 个单测来亲手验证核心约束）。</li>
+</ol>
+<h2 id="常见误解">常见误解<a class="anchor" href="#常见误解" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>误解一：<code>/skill-test static all</code> 全过，说明我魔改的技能跑起来绝对没问题。</strong> 错，它只验静态结构，不跑真实会话。</li>
+<li><strong>误解二：根目录的 <code>studio-tests/</code> 是用来测我写的游戏代码的。</strong> 不是。游戏测试放 <code>tests/</code>（或 <code>Assets/Tests/</code> 等引擎测试根），<code>studio-tests/</code> 只测 CCGS 自己的技能和角色。</li>
+<li><strong>误解三：把 <code>studio-tests/</code> 删干净能让仓库更清爽且没副作用。</strong> 会直接弄废 <code>/skill-test spec</code> 和 <code>category</code> 两个模式。</li>
+</ul>
+<h2 id="练习">练习<a class="anchor" href="#练习" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>如果你给自己的项目改写了一个技能，按 <code>skill-authoring.md</code> 的五条铁律，设计一次最小“变异测试”来确认你加的检查门禁真的有效。</li>
+<li>为什么 <code>/skill-test spec</code> 即使通过，也不能完全替代用真实游戏跑一遍 <code>/dev-story</code>？</li>
+<li>假设你是从 ZIP 下载的 CCGS v1.2.0 启动了项目，现在想升到 v1.3.0，为什么 <code>UPGRADING.md</code> 严禁直接把 <code>project.yaml</code> 和 <code>CLAUDE.md</code> 也放进 <code>git checkout template/main -- ...</code> 命令里？</li>
+</ol>
+<h2 id="答案提示">答案提示<a class="anchor" href="#答案提示" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>比如在技能里加了“禁止硬编码密钥”或“坏 JSON 必须阻断”的检查后，先故意构造一份坏 JSON 或假密钥提交/写入，确认脚本或门禁确实触发 <code>exit 2</code> 或打出 <code>BLOCKED</code>；恢复正常后再跑一遍确认放行。</li>
+<li><code>spec</code> 是大模型读文本做静态对照，只能验证“步骤和规则写进去了”，验证不了真实执行时的工具权限弹窗、脚本跨平台兼容、上下文压缩后的遗忘率，以及模型在复杂代码里的实际遵循度。</li>
+<li>因为 <code>git checkout template/main -- &lt;file&gt;</code> 会整文件覆盖，直接把你自己配好的 <code>engine.name</code>、<code>modes.rigor</code>、<code>project.goal</code> 和 <code>CLAUDE.md</code> 里的技术栈/引擎引用一行不剩全洗白；这两个文件必须保留本地版，只看 <code>git diff</code> 手工合入新结构。</li>
+</ol>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="15-security.html"><small>上一章</small><strong>安全边界：能聊天、有 Hook，不等于有沙箱</strong></a><a class="next" href="17-mini-studio.html"><small>下一章</small><strong>最小实验：用两百行 Python 亲手跑通四条核心约束</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：先看清这东西到底是怎么跑起来的</a><a href="../chapters/01-requirements.html"><span>01</span>需求：一个人写游戏，为什么还要套规矩</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：一个会话，四种约束</a><a href="../chapters/03-onboarding.html"><span>03</span>入门：先玩一把（<code>/prototype</code>）与 Studio Mode（<code>/start</code>）双轨入口</a><a href="../chapters/04-config.html"><span>04</span>配置求值：一个 <code>rigor</code> 如何长出六个设置</a><a href="../chapters/05-agents.html"><span>05</span>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</a><a href="../chapters/06-skill-protocol.html"><span>06</span>Skill 协议：一条斜杠命令怎么从解析走到交接</a><a href="../chapters/07-artifacts.html"><span>07</span>产物模型：一页简报与故事、需求、ADR 三张网</a><a href="../chapters/08-dev-story.html"><span>08</span>实施链路：<code>/dev-story</code> 怎么把故事变成代码</a><a href="../chapters/09-story-done.html"><span>09</span>验收：<code>/story-done</code> 如何堵死“基本完成”</a><a href="../chapters/10-hooks.html"><span>10</span>Hook：十五个检查点里，到底谁真的能拦住</a><a href="../chapters/11-registries.html"><span>11</span>注册表：跨文档事实怎么管才不漂移</a><a href="../chapters/12-teams.html"><span>12</span>协作：团队流水线、默认塌缩与“透镜折叠”</a><a href="../chapters/13-engine.html"><span>13</span>引擎与品类适配：统一引擎表、Web 一等公民与品类库</a><a href="../chapters/14-context.html"><span>14</span>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</a><a href="../chapters/15-security.html"><span>15</span>安全边界：能聊天、有 Hook，不等于有沙箱</a><a href="../chapters/16-verification.html"><span>16</span>验证与演进：Markdown 写的框架，怎么证明自己没改坏</a><a href="../chapters/17-mini-studio.html"><span>17</span>最小实验：用两百行 Python 亲手跑通四条核心约束</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.3.0 源码索引、实测数据、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · CCGS v1.3.0 · 快照 abc0de79d6ce · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

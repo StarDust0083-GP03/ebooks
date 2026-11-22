@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 Octop v1.0.3b7 源码的架构解剖：单进程宿主、托管专家、多层存储、多副本租约与安全边界"><meta name="author" content="独立源码研究">
+<title>启动与退出：装配顺序、延迟绑库与有序收尾 · Octop 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">O</span><span>Octop 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 03</div><div class="rail-title">启动与退出：装配顺序、延迟绑库与有序收尾</div><ol><li><a href="#为什么把-launch-py-和-server-py-拆开">为什么把 launch.py 和 server.py 拆开</a></li><li><a href="#从空目录到可接请求的装配链">从空目录到可接请求的装配链</a></li><li><a href="#首次安装的延迟绑库与空库重绑">首次安装的延迟绑库与空库重绑</a></li><li><a href="#v1-0-3b5-的启动关口-下线-history-v2-的一次性迁移">v1.0.3b5 的启动关口：下线 history_v2 的一次性迁移</a></li><li><a href="#退出为什么必须按逆序来">退出为什么必须按逆序来</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 03 章</div><h1>启动与退出：装配顺序、延迟绑库与有序收尾</h1><div class="chapter-meta">Octop v1.0.3b7 快照 2026-11-18 · 约 14 分钟</div></header><div class="prose"><p>服务刚启动时最容易出隐蔽故障：数据库还没选定，路由已经放进来读写请求；旧版本残留的历史归档还没迁完，新对话已经把 checkpoint 祖先剪掉了；进程收到 <code>SIGTERM</code> 后直接强杀，定时任务刚好触发一半，通道租约没释放，另一台副本只能干等 90 秒超时。</p>
+<p>Octop 把整套启动和退出拆成了两个清晰的装配入口：<code>src/octop/launch.py</code> 负责外部进程与 Web 服务器接线，<code>src/octop/infra/server.py</code> 里的 <code>OctopServer</code> 负责领域对象的依赖排序、延迟绑库、启动迁移和逆序关闭。</p>
+<h2 id="为什么把-launch-py-和-server-py-拆开">为什么把 launch.py 和 server.py 拆开<a class="anchor" href="#为什么把-launch-py-和-server-py-拆开" aria-label="链接到本节">#</a></h2>
+<p>执行 <code>octop run</code> 时，CLI 并不直接构造 FastAPI，而是调用 <code>launch.run_foreground_blocking</code>。<code>launch.py</code> 先启动 <code>OctopServer</code>，再把构建好的领域服务树交给 <code>api/app.py</code> 的 <code>build_app()</code>，最后挂载到 uvicorn 事件循环。</p>
+<p>把这两个文件分开有两个实在的好处。第一，像 <code>octop chats repl</code>、<code>octop cron run-now</code>、<code>octop acp</code> 这类嵌入式 CLI 命令，可以直接实例化 <code>OctopServer</code> 跑完就退，不用绑定 TCP 端口，也不用引入任何 FastAPI 路由代码。第二，HTTP 层与领域层的依赖方向被物理切断，哪怕未来换一套 Web 框架，核心启动树也不用动。</p>
+<h2 id="从空目录到可接请求的装配链">从空目录到可接请求的装配链<a class="anchor" href="#从空目录到可接请求的装配链" aria-label="链接到本节">#</a></h2>
+<p>进入 <code>OctopServer.start()</code> 后，对象树严格按依赖顺序逐层拉起：</p>
+<ol>
+<li>解析 <code>PathLayout.from_env()</code> 和 <code>load_config(config.json)</code>，叠加环境变量覆盖，确定数据目录、密钥目录与数据库配置。</li>
+<li>判断是否需要延迟打开控制面数据库（<code>should_defer_control_plane_db</code>）。首次安装且尚未指定数据库时，服务先以未绑定状态启动，只放行安装向导与健康检查路由。</li>
+<li>控制面就绪后，调用 <code>open_database()</code> 打开 <code>SqlitePool</code> 或 <code>PostgresPool</code>，顺序执行 <code>infra/db/migrations/</code> 下的带编号迁移脚本（SQLite 与 PostgreSQL 成对维护，截至 <code>v1.0.3b7</code> 已到 <code>025_user_mfa</code>）。</li>
+<li>装配 <code>SharedServices</code>（所有仓储与公共服务）、<code>WizardTokenStore</code>（5 分钟有效的向导令牌）、<code>ExpertCatalog</code>、<code>SubagentCatalog</code>，以及 <code>PluginManager.seed_bundled()</code> 与 <code>load_installed()</code>（内置插件默认关闭）。</li>
+<li>构造进程级 <code>AgentManager</code>，并在任何专家写新对话之前执行一次性 <code>migrate_history_v2()</code>（见下文）。</li>
+<li>拉起 <code>Gateway</code>（包含按需建立的 <code>ChannelManager</code> 与 <code>WebSocketHub</code>）、<code>CronManager</code>（APScheduler）和 <code>UserManager</code>，把四个核心单例收进 <code>AppRuntime</code> 暴露给 API 路由。</li>
+</ol>
+<p>这套顺序里藏着一条关键区分：进程存活不等于业务就绪。如果健康检查只看 TCP 端口通不通，首次安装进入向导锁定态，或者某个专家的远程后端失联时，排障很容易误判。区分宿主未绑库、用户未初始化、单个专家构建超时和单次模型调用失败，能省掉大量查日志的时间。</p>
+<h2 id="首次安装的延迟绑库与空库重绑">首次安装的延迟绑库与空库重绑<a class="anchor" href="#首次安装的延迟绑库与空库重绑" aria-label="链接到本节">#</a></h2>
+<p>自托管用户第一次打开页面，往往是在浏览器向导里决定用 SQLite 还是填一套外部 PostgreSQL 地址。如果 <code>OctopServer.start()</code> 强行在启动瞬间建好默认 SQLite 并初始化所有服务，用户选 PostgreSQL 时就会出现两套库互相打架的局面。</p>
+<p><code>infra/db/factory.py</code> 中的 <code>should_defer_control_plane_db</code> 专门处理这个空白期：未完成初始选库时，服务先启动 HTTP 界面并由 <code>setup_lockdown</code> 中间件拦截非向导请求；用户提交数据库选择并测试连通后，服务端调用 <code>bind_control_plane()</code> 正式打开目标库、跑完迁移并启动 <code>_boot_runtime()</code>。</p>
+<p>对于已经绑定了空库、还没有创建任何用户（<code>user_count == 0</code>）的向导场景，<code>infra/db/rebind.py</code> 还允许切换一次控制面，并调用各运行时组件的 <code>replace_repos()</code> 等重绑方法同步新连接池，避免直接改私有字段留下一半旧引用。一旦管理员账号建好、系统进入正常使用，这条热重绑通道就关上了，不存在运行中把存量 SQLite 数据在线切到 PostgreSQL 的魔法。</p>
+<h2 id="v1-0-3b5-的启动关口-下线-history-v2-的一次性迁移">v1.0.3b5 的启动关口：下线 history_v2 的一次性迁移<a class="anchor" href="#v1-0-3b5-的启动关口-下线-history-v2-的一次性迁移" aria-label="链接到本节">#</a></h2>
+<p>在 <code>v1.0.3b1</code> 时，Octop 曾试验过一套名为 <code>history_v2</code> 的本地分段归档库（<code>history_v2.sqlite</code>）。到了 <code>v1.0.3b5</code>，团队决定正式下线这套仅支持 SQLite 的平行历史库，统一回到控制面的 <code>thread_messages</code> 投影表。</p>
+<p>处理这种历史包袱时，最危险的做法是在后台异步慢慢搬数据，或者允许新对话边写边迁。看 <code>src/octop/infra/server.py</code> 的 <code>_boot_runtime()</code>，团队把 <code>migrate_history_v2()</code> 放到了一个非常卡死的位置：<strong>数据库迁移完成之后、任何 Agent 开始写新历史或裁剪 checkpoint 祖先之前</strong>。</p>
+<p><code>src/octop/infra/history/retire_v2.py</code> 的实现很克制：</p>
+<ul>
+<li>检测到 <code>~/.octop/history_v2.sqlite</code> 或 <code>history_v2.required</code> 存在时才触发；如果只有标记文件却缺归档文件，或者当前控制面已经不是 SQLite，直接抛错中止启动，绝不静默丢历史。</li>
+<li>以只读模式（<code>mode=ro</code> + <code>PRAGMA query_only = ON</code>）打开旧归档，校验 <code>archive_meta.version == 1</code>。</li>
+<li>按 <code>thread_id</code> 逐条开控制面事务迁回 <code>thread_messages</code>，并在同一事务里向 <code>history_v2_retirement</code> 表写入归档片段的 SHA-256 摘要。哪怕迁移到一半进程崩溃，重启后已迁完的线程靠摘要幂等跳过，未迁完的继续补齐；如果有人换了一份不同内容的旧归档顶包，摘要不匹配会立刻报错拦下。</li>
+<li>全部线程落稳后，再把旧归档和标记文件归档移走，之后整套系统才正式接流。</li>
+</ul>
+<p>这个启动关口示范了什么叫负责任的架构退场：不留双写尾巴，不靠运维手工倒库，把幂等和崩溃恢复做在启动链路里。</p>
+<h2 id="退出为什么必须按逆序来">退出为什么必须按逆序来<a class="anchor" href="#退出为什么必须按逆序来" aria-label="链接到本节">#</a></h2>
+<p>收到退出信号后，<code>OctopServer.stop()</code> 不会直接让进程一死了之，而是反着依赖树拆掉：先停主动关怀调度器和 <code>CronManager</code>，再停 <code>Gateway</code> 和外部通道连接，随后停止 <code>AgentManager</code> 中的活跃专家与连接器会话，最后关闭历史资源和数据库连接池。</p>
+<p>先停调度器和入口，再停执行器，道理很朴素：如果先关了数据库或 Agent 注册表，而 APScheduler 刚好唤醒一条定时任务，或者 IM 通道正好收进一条群消息，就会撞上一连串半销毁状态。在多副本 PostgreSQL 部署里，有序退出还多了一层价值：<code>CronManager</code> 和通道管理器退出时会主动释放自己持有的数据库租约行，另一台副本在下一轮 25 秒巡检里就能立刻接管，不用干等 90 秒租约自然过期。</p>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/launch.py"><code>src/octop/launch.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/server.py"><code>src/octop/infra/server.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/db/factory.py"><code>src/octop/infra/db/factory.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/db/rebind.py"><code>src/octop/infra/db/rebind.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/history/retire_v2.py"><code>src/octop/infra/history/retire_v2.py</code></a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="02-architecture.html"><small>上一章</small><strong>总体架构：单进程宿主与四套可复用运行库</strong></a><a class="next" href="04-agent-runtime.html"><small>下一章</small><strong>Agent 装配：原生专家、托管专家与中间件顺序</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：看懂一个 Agent 宿主如何拼起来</a><a href="../chapters/01-requirements.html"><span>01</span>需求推导：脱离模型 SDK 之后要守住什么</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：单进程宿主与四套可复用运行库</a><a href="../chapters/03-lifecycle.html"><span>03</span>启动与退出：装配顺序、延迟绑库与有序收尾</a><a href="../chapters/04-agent-runtime.html"><span>04</span>Agent 装配：原生专家、托管专家与中间件顺序</a><a href="../chapters/05-identity.html"><span>05</span>身份与会话：四种标识与共享专家的线程隔离</a><a href="../chapters/06-storage.html"><span>06</span>存储与历史：六类数据平面、下线归档与安全清理</a><a href="../chapters/07-workspace.html"><span>07</span>工作区后端：内容访问、对象存储与容器挂载边界</a><a href="../chapters/08-turn-path.html"><span>08</span>一次对话：从 WebSocket 入队到工具熔断与推送</a><a href="../chapters/09-memory-rag.html"><span>09</span>记忆与知识库：命名空间维护、图谱扩展与重排序</a><a href="../chapters/10-extensions.html"><span>10</span>工具与扩展：Skill、Plugin、Connector 与 MCP OAuth</a><a href="../chapters/11-teams.html"><span>11</span>多 Agent 团队：共享展示时间线，隔离执行状态</a><a href="../chapters/12-security.html"><span>12</span>安全边界：MFA、权限分离、审批串行与云凭证隔离</a><a href="../chapters/13-dashboard.html"><span>13</span>前端状态机：离线订阅、五道恢复门与历史竞态</a><a href="../chapters/14-interop.html"><span>14</span>跨端协作：托管 ACP 回环与 Bridge 实例隧道</a><a href="../chapters/15-operations.html"><span>15</span>部署与运维：Electron 壳、镜像分层与多副本租约</a><a href="../chapters/16-tradeoffs.html"><span>16</span>架构取舍：单机够用到何时，复杂度卡在哪里</a><a href="../chapters/17-mini-host.html"><span>17</span>代码实战：用两百行标准库模型验证六条边界</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.0.3b7 源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Octop v1.0.3b7 · 快照 ecd2cdbce3a5 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

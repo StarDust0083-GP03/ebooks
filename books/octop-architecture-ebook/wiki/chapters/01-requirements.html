@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 Octop v1.0.3b7 源码的架构解剖：单进程宿主、托管专家、多层存储、多副本租约与安全边界"><meta name="author" content="独立源码研究">
+<title>需求推导：脱离模型 SDK 之后要守住什么 · Octop 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">O</span><span>Octop 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 01</div><div class="rail-title">需求推导：脱离模型 SDK 之后要守住什么</div><ol><li><a href="#产品定位与信任边界">产品定位与信任边界</a></li><li><a href="#八条核心需求如何推导出系统骨架">八条核心需求如何推导出系统骨架</a></li><li><a href="#用可核对的行为取代空泛指标">用可核对的行为取代空泛指标</a></li><li><a href="#非功能指标必须拆成可定位的段">非功能指标必须拆成可定位的段</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 01 章</div><h1>需求推导：脱离模型 SDK 之后要守住什么</h1><div class="chapter-meta">Octop v1.0.3b7 快照 2026-11-18 · 约 14 分钟</div></header><div class="prose"><p>把大模型接进产品时，第一周通常顺风顺水：上传一份文档、拼好系统提示词、流式吐字，原型就能演示。麻烦往往在第二周同时冒出来。同事问能不能共用你调好的那位研究专家，但又不能互相看见私有聊天记录；长工具调用跑了三分钟，用户切了个标签页或者合上笔记本，后台任务该不该直接掐断；Agent 准备调用外发或删文件工具时，审批按钮点快了两次会不会发出两份；好不容易配好的一套系统，换台机器或者加个副本后配置全散了。</p>
+<p>这些问题没有一个能靠换更强的模型解决。它们决定了 Octop 必须长成什么样的宿主架构，也决定了每一条代码边界到底在防什么。</p>
+<h2 id="产品定位与信任边界">产品定位与信任边界<a class="anchor" href="#产品定位与信任边界" aria-label="链接到本节">#</a></h2>
+<p>Octop 面向的典型场景是个人、家庭和小团队的自托管 AI 助手。这个定位划出了很清楚的能力边界：它需要支持多用户、角色权限、用户组资源可见性和企业 LDAP/OIDC 登录，但它的默认假设仍是可信小团队内的自托管环境，不等同于面向陌生公网租户的强隔离多租户 SaaS。</p>
+<p>在权限设计上，系统里至少存在四类行为主体，各自需要什么权力、不该顺带拿到什么权力，在源码里分得非常明确：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>主体角色</th>
+<th>核心操作需求</th>
+<th>必须拦住的越权动作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>普通成员</td>
+<td>聊天、上传附件、管理自己的专家与连接器</td>
+<td>读取他人的私有线程，或修改他人共享出来的专家配置</td>
+</tr>
+<tr>
+<td>专家所有者</td>
+<td>配置模型、技能、知识库、后端及分享范围</td>
+<td>分享专家后把自己的历史私有会话一并暴露给他人</td>
+</tr>
+<tr>
+<td>管理员</td>
+<td>完成首次初始化、管理用户组、限制允许的存储后端</td>
+<td>无审计地混用个人云凭证，或绕过容器宿主挂载约束</td>
+</tr>
+<tr>
+<td>外部协作者</td>
+<td>通过 IM 通道或跨实例 Bridge 调用授权专家</td>
+<td>用本机用户编号冒充对端身份，或借隧道打穿管理接口</td>
+</tr>
+</tbody></table></div>
+<p>源码里管理员在多处路由拥有 bypass 逻辑（例如 <code>api/common/agent.py</code> 和 <code>api/deps.py</code> 中的权限检查），这是为了降低小团队运维成本做的刻意取舍。部署到跨部门场景时，要把哪些能力留给管理员、哪些云账号凭证按用户隔离（如 <code>v1.0.3b6</code> 起腾讯云 CVM 登录严格按用户隔离），当成架构前提来评估。</p>
+<h2 id="八条核心需求如何推导出系统骨架">八条核心需求如何推导出系统骨架<a class="anchor" href="#八条核心需求如何推导出系统骨架" aria-label="链接到本节">#</a></h2>
+<p>从真实使用中的失败模式往回推，Octop 现在的模块分布几乎都能找到对应的工程动因：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>面对的工程问题</th>
+<th>Octop 采取的架构方案</th>
+<th>源码落点</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>装完还要配 Redis 和 Celery 劝退个人用户</td>
+<td>单 Python 包打包全部后端与 React SPA，默认 SQLite 零外部依赖</td>
+<td><code>docs/adr/001-single-process-model.md</code>、<code>pyproject.toml</code></td>
+</tr>
+<tr>
+<td>Web、CLI、IM、Cron 各自写一套聊天循环必分叉</td>
+<td>所有入口翻译成统一 <code>InboundMessage</code>，汇入 <code>GlobalProcessor</code></td>
+<td><code>api/routers/chat/turn.py</code>、<code>infra/gateway/process/processor.py</code></td>
+</tr>
+<tr>
+<td>分享专家方便协作，但私有对话不能串台</td>
+<td>专家可见性与线程可见性分两步校验，支持显式共享单条对话</td>
+<td><code>api/common/agent.py</code>、<code>infra/gateway/threads.py</code></td>
+</tr>
+<tr>
+<td>刷新页面或弱网断连不能把长任务杀掉</td>
+<td>回合归宿主进程持有，WebSocket 只做订阅与弱恢复</td>
+<td><code>api/routers/chat/ws.py</code>、<code>dashboard/.../wsResumeGate.ts</code></td>
+</tr>
+<tr>
+<td>专家文件既要能落本机，也要能放对象存储或沙箱</td>
+<td>内容读写统一经过 <code>BackendWorkspace</code>，禁止业务代码直读写本地路径</td>
+<td><code>docs/agent-backend-file-io.md</code>、<code>infra/backend/adapter.py</code></td>
+</tr>
+<tr>
+<td>图恢复、聊天展示、长期记忆与文档检索节奏不同</td>
+<td>拆成控制面、checkpoint、消息投影、Memory、知识索引多层存储</td>
+<td><code>docs/adr/002-database-backends.md</code>、<code>docs/adr/003-skill-package-kb-pg-storage.md</code></td>
+</tr>
+<tr>
+<td>多位专家协作和外部编程 Agent 需要接入同一工作台</td>
+<td>团队主持人共享房间但隔离成员 checkpoint；托管专家通过回环 MCP 消费宿主能力</td>
+<td><code>docs/expert-teams.md</code>、<code>infra/agents/managed.py</code></td>
+</tr>
+<tr>
+<td>单机扛不住或升级要不断服，但又不想重写全套分布式队列</td>
+<td>多副本共享 PostgreSQL，前置 Cookie 粘滞，Cron 与通道走数据库同行租约</td>
+<td><code>docs/cluster_CN.md</code>、<code>infra/db/lease.py</code></td>
+</tr>
+</tbody></table></div>
+<p>这张对照表在日常改需求时非常顺手。比如要接入一个新的 IM 平台，变动应该停在通道适配和 <code>octop-gateway</code>，不该去改 <code>AgentManager</code>；如果要调整共享专家的会话可见性，变动就必须落在服务端鉴权和线程表模型上，只改前端列表过滤毫无意义。</p>
+<h2 id="用可核对的行为取代空泛指标">用可核对的行为取代空泛指标<a class="anchor" href="#用可核对的行为取代空泛指标" aria-label="链接到本节">#</a></h2>
+<p>给一个 Agent 平台写验收标准，一上来就拍脑袋写一个并发 QPS 数字往往没什么用。模型耗时动辄几秒到几十秒，真正让人在生产里踩坑的是状态和边界失真。对照 Octop 的核心路径，至少有七条行为验收线必须盯死：</p>
+<ol>
+<li>用户上传的附件先进入受控工作区 <code>inbound/</code>，模型与工具只读取工作区引用，不拿浏览器预览地址当文件权威。</li>
+<li>浏览器断开 WebSocket 后，宿主里的在途回合继续执行；重新订阅后能接上后续流，历史刷新不会把屏幕上正在生成的回复冲掉。</li>
+<li>共享专家允许授权成员开启自己的对话，但拿着他人的 <code>thread_id</code> 请求历史或订阅时，除非该线程被显式标记为共享对话，否则服务端必须拒绝。</li>
+<li>危险工具触发人工审批暂停后，审批决定必须绑定具体的 <code>pending_id</code> 和参数快照，用户连点两次批准不会把外部动作投递两遍。</li>
+<li>模型陷入死循环反复调用同一个工具、传同一组参数时，宿主按连续相同次数熔断并结束回合，但不能误杀正常换参数探索的多步任务。</li>
+<li>模型或工具中途报错时，历史与界面明确记录失败回合，不能把一段报错文本混成普通成功回复。</li>
+<li>服务重启或切换数据库维护后，已提交的对话历史仍可读；清理孤儿 checkpoint 时绝不能误伤共享库里其他智能体的活跃对话。</li>
+</ol>
+<p>这七条线几乎每一条都对应着 Octop 在 <code>v1.0.3b1</code> 到 <code>v1.0.3b7</code> 之间真实修过的线上问题。后面每一章拆源码时，我们都会拿具体代码去对照这些边界到底是怎么落地的。</p>
+<h2 id="非功能指标必须拆成可定位的段">非功能指标必须拆成可定位的段<a class="anchor" href="#非功能指标必须拆成可定位的段" aria-label="链接到本节">#</a></h2>
+<p>在 Agent 平台里笼统说系统慢或不稳定，几乎没法排障。延迟至少要拆成四段来看：WebSocket 建连与首帧确认、模型首 token 等待、单次工具执行耗时、回合结束后的历史与轨迹落盘耗时。稳定性同样要拆成具体故障点：弱网断线重连、上游模型超时与自动切换、本地磁盘空间不足时的 SQLite 压缩跳过、进程优雅退出时租约释放、以及知识库索引或重排序超时降级。</p>
+<p>记录一次线上问题时，把用户 ID、<code>agent_id</code>、<code>session_key</code>、<code>thread_id</code>、选中的模型引用和实际落盘结果一起抓出来，排障就能直接定位到某一层，而不用对着一张回复空白的截图猜半天。</p>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/README_CN.md"><code>README_CN.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/architecture.md"><code>docs/architecture.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/api/common/agent.py"><code>src/octop/api/common/agent.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/api/routers/chat/ws.py"><code>src/octop/api/routers/chat/ws.py</code></a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="00-preface.html"><small>上一章</small><strong>前言：看懂一个 Agent 宿主如何拼起来</strong></a><a class="next" href="02-architecture.html"><small>下一章</small><strong>总体架构：单进程宿主与四套可复用运行库</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：看懂一个 Agent 宿主如何拼起来</a><a href="../chapters/01-requirements.html"><span>01</span>需求推导：脱离模型 SDK 之后要守住什么</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：单进程宿主与四套可复用运行库</a><a href="../chapters/03-lifecycle.html"><span>03</span>启动与退出：装配顺序、延迟绑库与有序收尾</a><a href="../chapters/04-agent-runtime.html"><span>04</span>Agent 装配：原生专家、托管专家与中间件顺序</a><a href="../chapters/05-identity.html"><span>05</span>身份与会话：四种标识与共享专家的线程隔离</a><a href="../chapters/06-storage.html"><span>06</span>存储与历史：六类数据平面、下线归档与安全清理</a><a href="../chapters/07-workspace.html"><span>07</span>工作区后端：内容访问、对象存储与容器挂载边界</a><a href="../chapters/08-turn-path.html"><span>08</span>一次对话：从 WebSocket 入队到工具熔断与推送</a><a href="../chapters/09-memory-rag.html"><span>09</span>记忆与知识库：命名空间维护、图谱扩展与重排序</a><a href="../chapters/10-extensions.html"><span>10</span>工具与扩展：Skill、Plugin、Connector 与 MCP OAuth</a><a href="../chapters/11-teams.html"><span>11</span>多 Agent 团队：共享展示时间线，隔离执行状态</a><a href="../chapters/12-security.html"><span>12</span>安全边界：MFA、权限分离、审批串行与云凭证隔离</a><a href="../chapters/13-dashboard.html"><span>13</span>前端状态机：离线订阅、五道恢复门与历史竞态</a><a href="../chapters/14-interop.html"><span>14</span>跨端协作：托管 ACP 回环与 Bridge 实例隧道</a><a href="../chapters/15-operations.html"><span>15</span>部署与运维：Electron 壳、镜像分层与多副本租约</a><a href="../chapters/16-tradeoffs.html"><span>16</span>架构取舍：单机够用到何时，复杂度卡在哪里</a><a href="../chapters/17-mini-host.html"><span>17</span>代码实战：用两百行标准库模型验证六条边界</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.0.3b7 源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Octop v1.0.3b7 · 快照 ecd2cdbce3a5 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

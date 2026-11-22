@@ -1,0 +1,60 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>需求篇：Agent 执行环境要满足什么 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="01-requirements"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#从一个修-bug-的编码-agent-说起">从一个修 bug 的编码 Agent 说起</a></li><li><a href="#需求一-隔离是运行时属性-不能靠约定">需求一：隔离是运行时属性，不能靠约定</a></li><li><a href="#需求二-创建要快在提前准备好的容量上">需求二：创建要快在提前准备好的容量上</a></li><li><a href="#需求三-沙箱内部要有结构化的干活接口">需求三：沙箱内部要有结构化的干活接口</a></li><li><a href="#需求四-访问路径由平台签发-调用方不猜拓扑">需求四：访问路径由平台签发，调用方不猜拓扑</a></li><li><a href="#需求五-出向流量默认拒绝-凭据留在沙箱之外">需求五：出向流量默认拒绝，凭据留在沙箱之外</a></li><li><a href="#需求六-生命周期细化到绝对过期-暂停与快照">需求六：生命周期细化到绝对过期、暂停与快照</a></li><li><a href="#明确不做的事">明确不做的事</a></li><li><a href="#六条需求之间的拉扯">六条需求之间的拉扯</a></li><li><a href="#源码入口">源码入口</a></li></ol></details><article class="content"><h1 id="需求篇-agent-执行环境要满足什么">需求篇：Agent 执行环境要满足什么</h1><p>如果跳过需求直接翻 OpenSandbox 源码，很多决定会显得奇怪：为什么 Docker 后端每个容器只映射一个宿主端口，为什么 Kubernetes 暂停要把容器提交成镜像再推回仓库，为什么出向网络默认全拒而且沙箱进程不能持有 <code>NET_ADMIN</code>。每一条实现都在回应 Agent 执行场景里的一个硬约束。</p>
+<h2 id="从一个修-bug-的编码-agent-说起">从一个修 bug 的编码 Agent 说起</h2><p>设想一个自动修 bug 的编码 Agent，它的日常循环只有五步：克隆代码仓库、跑单元测试定位失败用例、修改源码、重跑测试验证、把 diff 交给人审。</p>
+<p>这五步背后压着四类真实执行动作：跑 shell 命令、读写文件树、拉起语言运行时与测试框架、按需联网拉依赖或调模型接口。放到多人并发的团队环境里，它还带着三个隐含前提：同一时刻几十个任务并行互不干扰；任务一完环境立刻清理不留残渣；模型吐出来的代码默认不可信，可能手滑删光目录，也可能被提示注入后去探内网元数据服务。</p>
+<p>OpenSandbox 把这些要求压成了六条具体需求，每一条都能在上游仓库里找到对应的工程落点。</p>
+<h2 id="需求一-隔离是运行时属性-不能靠约定">需求一：隔离是运行时属性，不能靠约定</h2><p>靠提示词叮嘱模型别删不该删的目录，迟早会失手。容器命名空间能挡住大多数误操作，但共享宿主机内核意味着内核漏洞仍可能带来逃逸。不同业务对安全与成本的容忍度不同，隔离必须做成可替换的层次：</p>
+<ul>
+<li>默认用标准容器 <code>runc</code>，换取最低开销与完整系统调用兼容；</li>
+<li>需要缩窄内核攻击面时，切到用户态内核 gVisor 或轻量虚拟机 Kata（支持 QEMU、Cloud Hypervisor 与 Firecracker）；</li>
+<li>追求高密度硬隔离时，直接给每个沙箱分配一台独立的 Firecracker microVM。</li>
+</ul>
+<p>上游把选择权留在服务端配置 <code>[secure_runtime]</code> 里（<code>type</code> 取 <code>&quot;&quot;</code>、<code>gvisor</code>、<code>kata</code> 或 <code>firecracker</code>），调用方不改请求参数。把隔离强度固定在平台层，同一个集群就不会混出说不清边界的异构沙箱，审计时也有据可查。</p>
+<h2 id="需求二-创建要快在提前准备好的容量上">需求二：创建要快在提前准备好的容量上</h2><p>对话式 Agent 等 30 秒才拿到一个空壳环境，交互节奏就断了。缩短创建延迟只有两条路：把现建链路里的 API 往返和拉镜像压到极致，或者干脆让创建请求不再从零创建，而是认领一份已经跑起来的容量。</p>
+<p>OpenSandbox 两条路都铺了。Kubernetes 容器后端靠 <code>Pool</code> 维护一组预热好的 Ready Pod，分配时写一条注解即可认领，跳过调度器与镜像拉取；Fast Sandbox 走得更彻底，把 OCI 镜像预编译成带 guest 接线的不可变 golden image，创建时从内存与设备快照里唤醒 microVM。</p>
+<p>上游性能文档给出了两套量级参考：Kubernetes 启用 <code>Pool</code> 后交付 100 个沙箱总耗时 0.92 秒；Fast Sandbox 在 ACK 两节点集群上（模板已缓存、串行 100 次）的 SDK 创建 p50 为 64.0 ms。两个数字的测量边界差异极大，不能直接横向比快慢，第 8 篇会逐条拆开它们的测试条件。</p>
+<h2 id="需求三-沙箱内部要有结构化的干活接口">需求三：沙箱内部要有结构化的干活接口</h2><p>拿到一个隔离空壳还不够，Agent 需要流式执行命令、管理后台长任务、原子替换文件、打开交互式 PTY 终端、在持久 Jupyter 内核里跑代码片段，并读取 CPU、内存与磁盘指标。把这些事塞给 SSH 很难收场：SSH 是面向人类终端的字节流协议，既没有结构化事件模型，也不好做细粒度接口鉴权。</p>
+<p>因此数据面契约围绕三件事设计：一套覆盖命令、文件、PTY、代码上下文与指标的 HTTP/WebSocket API；边跑边推的 SSE 流式语义；能让客户端明确区分正常结束、执行超时、非零退出和中途断流的终止契约。比如前台命令正常结束必须返回携带 <code>exit_code: 0</code> 的 <code>execution_complete</code> 事件，超时明确报 <code>CommandTimeout</code>，在终止事件之前断流绝不能乐观当成成功。</p>
+<h2 id="需求四-访问路径由平台签发-调用方不猜拓扑">需求四：访问路径由平台签发，调用方不猜拓扑</h2><p>沙箱里常跑着 8080 Web 服务、5900 VNC 桌面或 8888 Jupyter。单机 Docker 用宿主端口映射，Kubernetes 用集群内 ingress 网关，网络隔离时还要回退到控制面代理。如果让调用方自己拼 URL，换一种部署拓扑，客户端代码就得重写。</p>
+<p>契约层把这件事收口到一个端点：<code>GET /v1/sandboxes/{id}/endpoints/{port}</code> 返回已经可用的地址和必须原样携带的请求头。客户端不需要分辨后面是宿主代理、头路由网关还是 Fast Sandbox 的签名路由，只要原样拿着地址和头去发请求即可。这种设计换来调用端统一，代价是 endpoint 解析会被高频调用，且在 Fast Sandbox 这类本地签名模式下，拿到 endpoint 并不等于证明沙箱已经就绪。</p>
+<h2 id="需求五-出向流量默认拒绝-凭据留在沙箱之外">需求五：出向流量默认拒绝，凭据留在沙箱之外</h2><p>放开沙箱出网等于把内网出口交给一段模型生成的代码。控制出向却很难一步到位：运维习惯按域名写白名单（如 <code>pypi.org</code>、<code>*.github.com</code>），但内核发包只认 IP；只拦 DNS 时，代码直接连已知 IP 就能绕开；落到包级过滤，又得实时跟踪域名解析出来的动态 IP 集合，还要保证平台禁止的目标绝不被租户策略打开。</p>
+<p>上游的解法是分层执行：DNS 代理按域名放行并把解析出的 IP 喂给 nftables 集合，未命中策略的出向包默认丢弃，平台规则 <code>deny.always</code> / <code>allow.always</code> 和端口白名单永远压过租户策略。顺着这条链路往下，还衍生出 Credential Vault：Agent 调外部模型或私有制品库时，真实密钥停在沙箱外的 egress 代理里，沙箱内只放假值或占位符，请求出站前再由代理注入或按请求动态换取签名。</p>
+<h2 id="需求六-生命周期细化到绝对过期-暂停与快照">需求六：生命周期细化到绝对过期、暂停与快照</h2><p>短任务跑完就该回收，等人类审批的长任务不该一直占着计算节点，跑了一半的实验环境需要存成可复用的起点。OpenSandbox 把生命周期拆成四个正交机制：</p>
+<ol>
+<li><strong>绝对过期（TTL）</strong>，创建时写死到期时间戳，服务端重启或暂停都不重置，保证每个沙箱的寿命可审计；</li>
+<li><strong>暂停与恢复</strong>，释放算力同时保留同一个 <code>sandboxId</code>；</li>
+<li><strong>公开快照</strong>，从运行中（或 Docker 暂停态）的沙箱产出可复用制品，支持 <code>full</code> 与面向 Fast Sandbox 的 <code>rootfsOnly</code> 两种模式，恢复时创建全新的沙箱 ID；</li>
+<li><strong>访问驱动的续期与空闲暂停</strong>，活跃会话自动延寿，长时间无流量自动挂起并在下次访问时唤醒。</li>
+</ol>
+<h2 id="明确不做的事">明确不做的事</h2><p>看清一套系统的边界，往往要先看它主动放弃了什么。从 <code>ROADMAP.md</code> 与兼容性文档可以确认四条克制的红线：</p>
+<ul>
+<li><strong>暂不承诺稳定的生命周期 v1 契约</strong>。ROADMAP 把不贸然宣布稳定 v1 放在非计划项首位，因为多后端语义与 SDK 兼容性仍在收口。</li>
+<li><strong>不把单活控制面包装成通用高可用</strong>。服务端默认单副本，升级采用 <code>Recreate</code> 策略并有短暂中断；PostgreSQL 只用来协调 Kubernetes 公开快照创建这一窄路径，文档直言通用负载均衡高可用尚未实现。</li>
+<li><strong>不掩盖三种后端的能力差异</strong>。模板只归 Fast Sandbox，卷挂载在 Fast Sandbox 被拒绝，<code>rootfsOnly</code> 快照在 Docker 与 Kubernetes 返回 <code>409</code>，这些差异全部摊在 <code>docs/api/implementation-compatibility.md</code> 里。</li>
+<li><strong>不承诺容器可写层自动持久化</strong>。显式暂停或快照之外，主进程退出、OOM、Pod 驱逐或节点丢失都不会触发自动保存。</li>
+</ul>
+<h2 id="六条需求之间的拉扯">六条需求之间的拉扯</h2><p>这六条需求彼此冲突，而非简单叠加。要毫秒级创建就得用预热池，预热 Pod 在请求到来之前就已就位，天然与按请求定制卷挂载和网络策略打架，于是上游把 <code>entrypoint</code> 和环境变量改造成分配后的 task，并禁止 <code>poolRef</code> 与 <code>networkPolicy</code> 同用。要高密度 microVM 隔离就不能给每个沙箱挂独立 sidecar，Fast Sandbox 因此改为每个 Fastlet 共用一个共享 egress 进程按源 IP 分治。要透明拦截 HTTPS 注入凭据就得把代理 CA 装进沙箱信任库，这又增加了数据面硬依赖。后面每一篇拆到看似绕弯的设计时，根源几乎都落在这几组拉扯上。</p>
+<h2 id="源码入口">源码入口</h2><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>README.md</code></td>
+<td>项目定位与核心能力清单</td>
+</tr>
+<tr>
+<td><code>CHARTER.md</code></td>
+<td>厂商中立的沙箱执行平台使命与文档许可</td>
+</tr>
+<tr>
+<td><code>ROADMAP.md</code></td>
+<td>当前演进重点与明确不做的边界</td>
+</tr>
+<tr>
+<td><code>docs/guides/secure-container.md</code></td>
+<td>五种安全容器运行时的隔离机制与开销对照</td>
+</tr>
+</tbody></table>
+</article><nav class="pager" aria-label="篇章导航"><a href="00-preface.html"><small>上一篇</small>前言：一次创建请求背后到底发生了什么</a><a href="02-architecture.html"><small>下一篇</small>技术方案：一条契约、三种后端、两个平面</a></nav></main><script src="../assets/wiki.js"></script></body></html>

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="源码拆解 PrimeIntellect-ai/prime-agent v0.10.5：Rust 多进程宿主、Protocol v3 Python REPL、持久信箱、递归子 Agent 与 Continual Harness"><meta name="author" content="独立源码研究">
+<title>为什么传统工具调用在长程任务上会失速 · Prime Agent 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">PA</span><span>Prime Agent 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 01</div><div class="rail-title">为什么传统工具调用在长程任务上会失速</div><ol><li><a href="#把提示词和中间数据降格成变量">把提示词和中间数据降格成变量</a></li><li><a href="#单工具收口带来的新工程债">单工具收口带来的新工程债</a></li><li><a href="#从-typescript-原型到-rust-工作区的演进痕迹">从 TypeScript 原型到 Rust 工作区的演进痕迹</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 01 章</div><h1>为什么传统工具调用在长程任务上会失速</h1><div class="chapter-meta">Prime Agent v0.10.5 快照 2026-11-21 · 约 14 分钟</div></header><div class="prose"><p>假设你在修一个跨 40 个文件的编译器回归。传统编程 Agent 的工作方式很固定：调用 <code>grep</code> 拿到 600 行匹配结果，全部塞进一条 <code>toolResult</code> 消息；再调 8 次 <code>read_file</code> 把几个大文件原文贴进对话历史；再调 <code>bash</code> 跑测试，2,000 行堆栈又进了一遍历史。才过了 12 轮，上下文里 85% 的 Token 都已经变成过期日志，模型每推理一个字都要重新扫一遍这些早就看过的数据。</p>
+<p>更麻烦的是组合动作。想同时查三个子目录、按错误码分组统计再批量生成补丁，传统 JSON 工具调用只能一轮出一批工具调用、等宿主执行完把文本拼回来，下一轮模型自己用自然语言去数数。每多一次中间汇总，就多一次昂贵的模型往返和一笔无法回收的上下文账单。</p>
+<p>Prime Agent 试图从根上改掉这套数据流。它在 <code>README.md</code> 里点出两条核心抽象：<strong>递归语言模型（RLM，Recursive Language Model）</strong> 与 <strong>持续脚手架（Continual Harness）</strong>。这两件事分别对应两种常见失速：上下文被原始数据撑爆，以及跨回合、跨会话的经验无法沉淀。</p>
+<h2 id="把提示词和中间数据降格成变量">把提示词和中间数据降格成变量<a class="anchor" href="#把提示词和中间数据降格成变量" aria-label="链接到本节">#</a></h2>
+<p>RLM 在代码层面的落点很直接：不要让模型用聊天记录当内存。</p>
+<p>在 <code>crates/pa-core/src/prompts/layers/core.md</code> 第 3 行，基础系统提示词开门见山写着：Prime Agent 脚手架只暴露一个工具 <code>python_repl</code>，其余所有能力都是运行在持久 CPython 进程里的程序化工具（Programmatic Tool Calling，PTC），默认异步且支持全局顶层 <code>await</code>。</p>
+<p>这条约束彻底改变了数据走向：</p>
+<ol>
+<li><strong>读文件与检索不再把原文倒进上下文</strong>。<code>usage.md</code> 明确要求模型用 Python 读文件、搜索、过滤，并把中间结果赋给命名变量。模型要找某个符号，只需在 REPL 里把文件读入变量 <code>src</code>，切片打印出最关键的 20 行；后续还要改这几行时，直接从 <code>src</code> 里截取精确片段传给 <code>await edit(...)</code>，不需要把整份文件在对话历史里保存十几个回合。</li>
+<li><strong>控制流交给解释器，不再消耗推理轮次</strong>。循环、条件分支、正则提取、并发等待多个命令或子任务，在一次 <code>python_repl</code> 调用里就能写完。模型不必为每个子步骤各发一次网络请求。</li>
+<li><strong>上下文压缩与工作内存脱钩</strong>。传统 Agent 一做压缩，之前读过的文件内容、统计表和中间变量全被压成几段含糊文字。在 Prime Agent 里，压缩折叠的是对话消息历史，持久 Python 内核照常活着，内存里的变量、导入模块和辅助函数全部留存，只有序列化超过 <code>16 MiB</code> 的单个巨型变量会在压缩时被定向清理（<code>DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES</code>）。</li>
+</ol>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>传统多工具 JSON 脚手架</th>
+<th>Prime Agent（单工具 RLM + PTC）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>模型工具面</td>
+<td><code>read</code>、<code>write</code>、<code>grep</code>、<code>bash</code>、子任务等十余个 JSON Schema</td>
+<td>仅注册 <code>python_repl</code> 一个工具，其余均为 REPL 内可调用函数</td>
+</tr>
+<tr>
+<td>大数据存放位置</td>
+<td>直接以 <code>toolResult</code> 文本写入消息历史</td>
+<td>绑定为 CPython <code>__main__</code> 命名变量，仅回传切片或 Head-Tail 摘要</td>
+</tr>
+<tr>
+<td>编排逻辑执行者</td>
+<td>模型逐轮串联工具调用</td>
+<td>Python 解释器在单次单元内完成循环、过滤与并发调度</td>
+</tr>
+<tr>
+<td>压缩后状态保留</td>
+<td>依赖摘要文本，易丢细节</td>
+<td>对话压缩与内核状态分离，小中型变量跨压缩存活</td>
+</tr>
+<tr>
+<td>后台并发处理</td>
+<td>往往阻塞等待或反复轮询</td>
+<td><code>bash()</code> 与 <code>rlm.spawn()</code> 立即返回句柄，异步结果进入持久信箱</td>
+</tr>
+</tbody></table></div>
+<h2 id="单工具收口带来的新工程债">单工具收口带来的新工程债<a class="anchor" href="#单工具收口带来的新工程债" aria-label="链接到本节">#</a></h2>
+<p>把几十个工具收口进一个持久 Python REPL 听起来很清爽，但代价立刻会冒出来。如果你只在 Toy Demo 里 <code>exec()</code> 一段代码，很快会撞上五道墙：</p>
+<p>第一道墙是<strong>协议帧污染</strong>。如果模型写的代码调了 C 扩展、<code>os.write(1, ...)</code> 或子进程直接往文件描述符 1 写字节，就会把宿主和内核之间的 JSON 通信流搅碎。为此 <code>prime-agent-runtime/src/rlm/repl.py</code> 必须把原始 <code>fd 1</code> 复制成私有协议通道，再把公开的 <code>fd 1</code> 和 <code>fd 2</code> 重定向进带围栏令牌的独立管道线程。</p>
+<p>第二道墙是<strong>长输出与死循环拖死会话</strong>。一条无限循环的 Python 单元或者吐出 50 MB 日志的构建脚本，瞬间就能把模型上下文或进程内存打穿。宿主 <code>crates/pa-core/src/kernel/manager/requests.rs</code> 专门写了 <code>HeadTailBuffer</code>，按 3 比 1 切分头部和滚动尾部，默认把单次输出卡死在 <code>65,536</code> 字符以内，并配了默认 <code>60</code> 秒（模型可申请最高 <code>180</code> 秒）的中断与强杀重启路径。</p>
+<p>第三道墙是<strong>异步通知风暴</strong>。后台命令、子 Agent、状态机工厂、定时心跳都能在主会话忙着的时候产出事件。如果每个事件都把完整日志塞进用户输入队列，模型刚腾出来的上下文又会被机器消息淹没。因此 v0.10.5 引入了持久信箱 <code>rlm.inbox</code>，把 6 类机器通知先写进 <code>inbox.jsonl</code>，只往主队列投递一行合并后的短计数唤醒提示。</p>
+<p>第四道墙是<strong>进程存活与断连恢复</strong>。跑研究评测或长程重构时，SSH 断掉、终端关闭、软件热更新都是常态。如果会话引擎和 Python 内核绑在前端 TUI 进程里，终端一关全盘归零。所以 <code>pa-daemon</code> 把架构拆成了 Supervisor 加 per-session Worker，前端 TUI 只通过 Socket 挂载，随时断开重连。</p>
+<p>第五道墙是<strong>经验沉淀与缓存破坏的矛盾</strong>。想让 Agent 在长程任务里越跑越顺，就得允许它修改补充提示、记忆、技能和子 Agent 模板。可一旦直接改写系统提示词，大模型供应商的前缀缓存（Prompt Caching）立刻失效，成本飙升。Prime Agent 的解法是把系统提示词拆成字节级稳定的静态前缀和动态尾部，把可演化的 Continual Harness 放进独立的 <code>[harness-digest]</code> 用户消息里，按指纹变化追加，不动基础提示词。</p>
+<h2 id="从-typescript-原型到-rust-工作区的演进痕迹">从 TypeScript 原型到 Rust 工作区的演进痕迹<a class="anchor" href="#从-typescript-原型到-rust-工作区的演进痕迹" aria-label="链接到本节">#</a></h2>
+<p>读源码时很容易发现一个事实：现在的 Rust 仓库保留了大量 TypeScript 时代的契约注释。比如 <code>Cargo.toml</code> 里给 <code>serde_json</code> 开了 <code>preserve_order</code> 特性，注释写得很直白：如果不保序，<code>serde_json::Map</code> 默认是按字母排序的 <code>BTreeMap</code>，序列化出来的线协议帧和磁盘 JSONL 就会和旧版 TS 守护进程的字节序对不上。<code>AGENTS.md</code> 的品牌规范里也明文写着一条例外：线协议标识符（例如 <code>PI_PACKAGE_DIR</code>、<code>prime-inference</code>、<code>ai.primeintellect.prime-agent</code>）一律保持原样，因为兼容性优先于表层改名。</p>
+<p>理解这层背景后，再看后面十几章里的很多设计，就不会觉得奇怪。比如 <code>rlm.spawn()</code> 在线协议里发出的请求类型仍然叫 <code>rlm.run</code>；比如 <code>crates/pa-daemon/src/update_restore.rs</code> 里专门保留了对旧版 TypeScript 更新清单的父先于子重建逻辑；比如 <code>pa-tui</code> 为了抢出首帧渲染速度，甚至自己打了一个 <code>vendor/crossterm</code> 补丁。</p>
+<p>搞清楚了 Prime Agent 为什么要押注持久 REPL、为什么被迫长出这一整套进程与协议设施，下一步就可以打开工作区，看清这 10 个 Rust crate 和 Python 运行时是怎么切分地盘的。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="00-preface.html"><small>上一章</small><strong>前言：把长程自主编程收进一个持久 Python REPL</strong></a><a class="next" href="02-workspace-topology.html"><small>下一章</small><strong>十个 Rust Crate 与一层 Python 运行时的双层拓扑</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：把长程自主编程收进一个持久 Python REPL</a><a href="../chapters/01-why-rlm.html"><span>01</span>为什么传统工具调用在长程任务上会失速</a><a href="../chapters/02-workspace-topology.html"><span>02</span>十个 Rust Crate 与一层 Python 运行时的双层拓扑</a><a href="../chapters/03-agent-loop.html"><span>03</span>Turn 循环、Claim-First 抢占与三层消息队列</a><a href="../chapters/04-python-repl.html"><span>04</span>Protocol v3 内核：<code>python_repl</code> 如何把状态、输出和中断管稳</a><a href="../chapters/05-bash-edit-skills.html"><span>05</span>单工具收口下的程序化工具链：<code>bash</code>、<code>edit</code> 与可执行技能</a><a href="../chapters/06-subagents-delegation.html"><span>06</span>递归子 Agent 树、Spawn 账本与状态机工厂</a><a href="../chapters/07-agent-inbox.html"><span>07</span>持久信箱 <code>rlm.inbox</code> 与跨进程消息投递</a><a href="../chapters/08-session-search-acp.html"><span>08</span>会话生命周期、流式全文搜索与 ACP 外部协议</a><a href="../chapters/09-prompt-continual-harness.html"><span>09</span>分层系统提示词与 Continual Harness 自我改进</a><a href="../chapters/10-context-compaction-autonomy.html"><span>10</span>自动压缩、目标驱动与有界自主运行</a><a href="../chapters/11-mcp-bridge.html"><span>11</span>宿主管认证、内核跑协议的 MCP 桥接层</a><a href="../chapters/12-tui-observability.html"><span>12</span>把渲染留在关键路径上：TUI 卡片、延迟护栏与可观测性</a><a href="../chapters/13-security-cost-mini-model.html"><span>13</span>安全边界、成本账本与可运行教学模型</a><a href="../chapters/appendix-sources.html"><span>A</span>源码索引、关键常量表、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Prime Agent v0.10.5 · 快照 783acb5d72a9 · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

@@ -1,0 +1,129 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>运行时路由：一个接口装下三种后端 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="05-runtime-routing"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#sandboxservice-按调用方动作组织的抽象接口">`SandboxService`：按调用方动作组织的抽象接口</a></li><li><a href="#工厂函数-66-行决定运行态装配">工厂函数：66 行决定运行态装配</a></li><li><a href="#组合路由器-无状态前缀分发">组合路由器：无状态前缀分发</a></li><li><a href="#快照跨后端路由-让数据自己说话">快照跨后端路由：让数据自己说话</a></li><li><a href="#新增的-workloadprovider-spi-把-pool-路由从硬编码里解耦">新增的 `WorkloadProvider` SPI：把 Pool 路由从硬编码里解耦</a></li><li><a href="#三种后端的能力对照与失败约定">三种后端的能力对照与失败约定</a></li><li><a href="#源码入口">源码入口</a></li></ol></details><article class="content"><h1 id="运行时路由-一个接口装下三种后端">运行时路由：一个接口装下三种后端</h1><p>上一篇定下了规矩：API 层不碰任何运行时细节。可真正落到代码里，Docker 操作的是本地容器、Kubernetes 操作的是自定义资源和预热 Pod、Fast Sandbox 操作的是远端 FastPath gRPC 服务。三种完全异构的底层，怎么放进同一个抽象类里而不把接口撑散？</p>
+<p>答案在 <code>server/opensandbox_server/services/</code> 下的四份文件里：<code>sandbox_service.py</code>、<code>factory.py</code>、<code>composite_service.py</code> 和 <code>k8s/workload_provider.py</code>。</p>
+<h2 id="sandboxservice-按调用方动作组织的抽象接口"><code>SandboxService</code>：按调用方动作组织的抽象接口</h2><p>翻开 <code>sandbox_service.py</code>（345 行），随着 <code>1.3.0-rc.1</code> 彻底移除旧的 <code>devops</code> 路由与 <code>get_sandbox_inspect</code>，抽象接口的方法分布变得更加干净：</p>
+<div class="table-wrap"><pre tabindex="0"><code class="hljs">生命周期（8 个）：create_sandbox / list_sandboxes / get_sandbox / delete_sandbox
+                pause_sandbox / resume_sandbox / renew_expiration / patch_sandbox_metadata
+访问入口（1 个）：get_endpoint
+诊断通道（5 个）：get_sandbox_diagnostic_context / get_sandbox_log_diagnostics /
+                get_sandbox_event_diagnostics / get_sandbox_logs / get_sandbox_events</code></pre></div><p>此外还有两个默认可空实现的成员 <code>set_tenant_provider</code> 和 <code>close</code>，加上一组共用辅助方法（UUID4 沙箱 ID 生成、端口范围校验、保留元数据 patch 校验与合并）。</p>
+<p>接口完全按调用方能发起的业务动作组织，而不是按某个后端恰好有的命令来切。<code>set_tenant_provider</code> 留成空实现而非抽象方法，说明抽象类能统一方法签名，但没法抹平依赖差异，Docker 后端本就不需要租户提供方。</p>
+<h2 id="工厂函数-66-行决定运行态装配">工厂函数：66 行决定运行态装配</h2><p><code>services/factory.py</code> 只有 66 行，逻辑没有弯绕：</p>
+<div class="table-wrap"><pre tabindex="0"><code class="hljs">implementations = {
+    <span class="hljs-string">&quot;docker&quot;</span>: DockerSandboxService,
+    <span class="hljs-string">&quot;kubernetes&quot;</span>: KubernetesSandboxService,
+}
+<span class="hljs-keyword">if</span> selected_type <span class="hljs-keyword">not</span> <span class="hljs-keyword">in</span> implementations:
+    <span class="hljs-keyword">raise</span> ValueError(...)
+<span class="hljs-keyword">if</span> selected_type == <span class="hljs-string">&quot;kubernetes&quot;</span>:
+    implementation = KubernetesSandboxService(config=active_config)
+    <span class="hljs-keyword">return</span> CompositeSandboxService(
+        implementation,
+        FastSandboxService(active_config, k8s_client=implementation.k8s_client),
+    )
+<span class="hljs-keyword">return</span> implementations[selected_type](config=active_config)</code></pre></div><p>这里藏着三个刻意的工程决定：配置项 <code>runtime.type</code> 只认 <code>docker</code> 和 <code>kubernetes</code>，Fast Sandbox 不另设配置枚举；<code>FastSandboxService</code> 直接复用 <code>KubernetesSandboxService</code> 初始化好的 <code>k8s_client</code>，避免维护两套集群连接；遇到不认识的 <code>runtime.type</code> 立刻抛错退出，绝不降级成默认 Docker。</p>
+<h2 id="组合路由器-无状态前缀分发">组合路由器：无状态前缀分发</h2><p><code>CompositeSandboxService</code>（184 行）把容器分支和模板分支包成一个 <code>SandboxService</code>，路由逻辑浓缩在两段判断里：</p>
+<div class="table-wrap"><pre tabindex="0"><code class="hljs"><span class="hljs-keyword">def</span> <span class="hljs-title function_">_backend</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span></span>) -&gt; KubernetesSandboxService | FastSandboxService:
+    <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>._fsb <span class="hljs-keyword">if</span> sandbox_id.startswith(<span class="hljs-string">&quot;fsb-&quot;</span>) <span class="hljs-keyword">else</span> <span class="hljs-variable language_">self</span>._kubernetes
+
+<span class="hljs-keyword">async</span> <span class="hljs-keyword">def</span> <span class="hljs-title function_">create_sandbox</span>(<span class="hljs-params">self, request: CreateSandboxRequest</span>) -&gt; CreateSandboxResponse:
+    <span class="hljs-keyword">if</span> (request.template_id <span class="hljs-keyword">or</span> <span class="hljs-string">&quot;&quot;</span>).strip():
+        <span class="hljs-keyword">return</span> <span class="hljs-keyword">await</span> <span class="hljs-variable language_">self</span>._fsb.create_sandbox(request)
+    <span class="hljs-keyword">if</span> (request.snapshot_id <span class="hljs-keyword">or</span> <span class="hljs-string">&quot;&quot;</span>).strip() <span class="hljs-keyword">and</span> request.resolved_snapshot_backend == <span class="hljs-string">&quot;fsb&quot;</span>:
+        <span class="hljs-keyword">return</span> <span class="hljs-keyword">await</span> <span class="hljs-variable language_">self</span>._fsb.create_sandbox(request)
+    <span class="hljs-keyword">return</span> <span class="hljs-keyword">await</span> <span class="hljs-variable language_">self</span>._kubernetes.create_sandbox(request)</code></pre></div><p>创建时看意图来源：传了 <code>templateId</code>，或者引用了 <code>fsb</code> 后端产出的快照，就走 <code>FastSandboxService</code>，其余走 <code>KubernetesSandboxService</code>。创建完成后，后续一切查询、暂停、续期、删除、查 endpoint 只看 ID 前缀：以 <code>fsb-</code> 开头就走模板后端，否则走容器后端。</p>
+<p>这套做法最大的好处是<strong>零状态</strong>：不需要维护一张 <code>sandbox_id -&gt; backend</code> 的数据库映射表，控制面崩溃重启后路由信息依然完好无损地写在 ID 里。代价也很明确：前缀成了硬编码的隐式契约，任何后端一旦漏加或误加 <code>fsb-</code> 前缀，请求不会立刻报错而是静默落进错误分支；如果未来要再接入第三种并行后端，单靠前缀就撑不住了。</p>
+<h2 id="快照跨后端路由-让数据自己说话">快照跨后端路由：让数据自己说话</h2><p>按 <code>snapshotId</code> 创建沙箱时，控制面不会按当前默认后端瞎猜，而是在路由前由 <code>services/snapshot_restore.py</code> 查询持久化快照表，从 <code>restore_config.backend</code> 读出该快照究竟由谁产出，并挂到请求的 <code>resolved_snapshot_backend</code> 上。</p>
+<p>Docker 快照是本机 OCI 镜像，Kubernetes 快照是推到远端仓库的镜像，Fast Sandbox 快照是对象存储或 OverlayBD 里的内容寻址制品集（含 <code>full</code> 与 <code>rootfsOnly</code> 两种模式）。让快照记录自带归属元数据，就能准确把恢复请求送回唯一能读懂它的后端。</p>
+<h2 id="新增的-workloadprovider-spi-把-pool-路由从硬编码里解耦">新增的 <code>WorkloadProvider</code> SPI：把 Pool 路由从硬编码里解耦</h2><p>在 Kubernetes 容器分支内部，还藏着更细的一层抽象：<code>kubernetes.workload_provider</code> 可以选默认的自有 CRD <code>batchsandbox</code>，也可以选社区的 <code>agent-sandbox</code>（<code>kubernetes-sigs/agent-sandbox</code>）。</p>
+<p>早期版本里，<code>/v1/pools</code> 路由和池分配逻辑直接写死了对 <code>pools.sandbox.opensandbox.io</code> CRD 的查询，导致集群选用非 BatchSandbox 的工作负载 provider 时会撞上一堆硬编码报错。<code>1.3.0-rc.2</code> 把池管理与分配彻底移到 <code>services/k8s/workload_provider.py</code>（446 行）的 <code>WorkloadProvider</code> SPI 之后：</p>
+<ul>
+<li><code>BatchSandboxProvider</code> 覆盖 <code>create_pool_service</code>，正常提供池 CRUD 与缓冲容量管理；</li>
+<li>未实现池服务的 provider 沿用基类默认行为，<code>api/pool.py</code> 懒创建时直接返回清晰的 <code>501 KUBERNETES::POOL_NOT_SUPPORTED</code>，且整进程共享同一份 <code>PoolService</code> 和 <code>K8sClient</code>，不再像旧版那样按请求反复重写进程全局的 kube 配置。</li>
+</ul>
+<h2 id="三种后端的能力对照与失败约定">三种后端的能力对照与失败约定</h2><p>同一个接口下，各后端动作和不支持时的失败方式保持诚实区分：</p>
+<table>
+<thead>
+<tr>
+<th>操作</th>
+<th>Docker</th>
+<th>Kubernetes 容器</th>
+<th>Fast Sandbox</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>create</code></td>
+<td>拉镜像、建容器、注入 execd、分配宿主端口</td>
+<td>建 BatchSandbox 或从 Pool 认领、watch 等就绪</td>
+<td>FastPath gRPC 提交 intent，CR 收敛</td>
+</tr>
+<tr>
+<td><code>pause</code></td>
+<td>冻结主容器与 sidecar（保留内存）</td>
+<td>commit rootfs 镜像并推仓、释放 Pod</td>
+<td>写完整检查点落 store、释放 Fastlet</td>
+</tr>
+<tr>
+<td><code>resume</code></td>
+<td>先解冻 sidecar、再解冻主容器</td>
+<td>改写模板镜像、重建 Pod</td>
+<td>任意合格 Fastlet 恢复检查点并校准时钟</td>
+</tr>
+<tr>
+<td><code>create_snapshot</code></td>
+<td>仅 <code>full</code>（支持运行中或暂停态）；<code>rootfsOnly</code> 返 <code>409</code></td>
+<td>仅 <code>full</code>；<code>rootfsOnly</code> 返 <code>409</code></td>
+<td><code>full</code> 与 <code>rootfsOnly</code>（原生 S3 与 OCI 均支持）</td>
+</tr>
+<tr>
+<td><code>diagnostics</code></td>
+<td>日志与事件均支持（必填 <code>scope</code>）</td>
+<td>日志与事件均支持（必填 <code>scope</code>）</td>
+<td>仅支持 <code>runtime</code> 事件，日志未实现（<code>501</code>）</td>
+</tr>
+<tr>
+<td><code>pools</code></td>
+<td>不支持</td>
+<td>BatchSandbox 支持；其他 provider 返 <code>501</code></td>
+<td>由 fast-sandbox 独立池管理</td>
+</tr>
+</tbody></table>
+<p>此外，安全运行时配置也在 <code>services/runtime_resolver.py</code> 完成跨后端翻译：</p>
+<div class="table-wrap"><pre tabindex="0"><code class="hljs">DEFAULT_DOCKER_RUNTIMES = {<span class="hljs-string">&quot;gvisor&quot;</span>: <span class="hljs-string">&quot;runsc&quot;</span>, <span class="hljs-string">&quot;kata&quot;</span>: <span class="hljs-string">&quot;kata-runtime&quot;</span>}
+DEFAULT_K8S_RUNTIME_CLASSES = {<span class="hljs-string">&quot;gvisor&quot;</span>: <span class="hljs-string">&quot;gvisor&quot;</span>, <span class="hljs-string">&quot;kata&quot;</span>: <span class="hljs-string">&quot;kata-qemu&quot;</span>, <span class="hljs-string">&quot;firecracker&quot;</span>: <span class="hljs-string">&quot;kata-fc&quot;</span>}</code></pre></div><p>同样一行 <code>[secure_runtime] type = &quot;kata&quot;</code>，在 Docker 侧变成 <code>--runtime kata-runtime</code>，在 Kubernetes 侧变成 <code>runtimeClassName: kata-qemu</code>，调用方无需感知底层名词差异。</p>
+<h2 id="源码入口">源码入口</h2><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>server/opensandbox_server/services/sandbox_service.py</code></td>
+<td>抽象方法定义与共用元数据校验逻辑</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/factory.py</code></td>
+<td>配置到后端实例的装配入口</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/composite_service.py</code></td>
+<td><code>fsb-</code> 前缀分发与快照后端分流</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/k8s/workload_provider.py</code></td>
+<td><code>WorkloadProvider</code> SPI 与池服务扩展点</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/api/pool.py</code></td>
+<td><code>501 KUBERNETES::POOL_NOT_SUPPORTED</code> 与共享 <code>PoolService</code></td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/runtime_resolver.py</code></td>
+<td>安全运行时的跨后端映射与启动自检</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/snapshot_restore.py</code></td>
+<td>按快照元数据反查归属后端</td>
+</tr>
+</tbody></table>
+</article><nav class="pager" aria-label="篇章导航"><a href="04-lifecycle-server.html"><small>上一篇</small>控制平面：一台 FastAPI 服务器的四条不变量</a><a href="06-docker.html"><small>下一篇</small>Docker 后端：单端口复用与续期竞态锁</a></nav></main><script src="../assets/wiki.js"></script></body></html>

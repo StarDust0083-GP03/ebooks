@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从无阻塞执行切片、RAP 响应式工具协议到堆叠沙箱与跨主机热迁移，解剖 hydro-project/infinity 的 Rust Agent 运行时架构"><meta name="author" content="独立源码研究">
+<title>失败模式、安全边界与架构取舍 · Infinity 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">∞</span><span>Infinity 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 12</div><div class="rail-title">失败模式、安全边界与架构取舍</div><ol><li><a href="#安全边界-本地沙箱防的是误写-不是恶意代码">安全边界：本地沙箱防的是误写，不是恶意代码</a></li><li><a href="#溢出恢复的已知盲区-已提交历史本身逼近上限">溢出恢复的已知盲区：已提交历史本身逼近上限</a></li><li><a href="#本地-vs-serverless-的能力落差">本地 vs Serverless 的能力落差</a></li><li><a href="#单线程-localset-与工具侧的隐性限制">单线程 LocalSet 与工具侧的隐性限制</a></li><li><a href="#何时该用这套架构-何时不必折腾">何时该用这套架构，何时不必折腾</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 12 章</div><h1>失败模式、安全边界与架构取舍</h1><div class="chapter-meta">hydro-project/infinity 快照 e1a3e4b36e5f · 约 12 分钟</div></header><div class="prose"><p>任何一套架构选型都是在用一种约束换另一种自由。只看设计文档很容易觉得无阻塞切片加堆叠沙箱无懈可击，但把源码里的防御断言、降级路径和作者亲手写下的 <code>TODO</code> 翻出来对照，才能看清它真正守住了什么、故意放弃了什么，以及哪些坑还没有填平。</p>
+<h2 id="安全边界-本地沙箱防的是误写-不是恶意代码">安全边界：本地沙箱防的是误写，不是恶意代码<a class="anchor" href="#安全边界-本地沙箱防的是误写-不是恶意代码" aria-label="链接到本节">#</a></h2>
+<p>把 <code>sandbox-local/src/backend.rs</code> 里的 macOS <code>sandbox-exec</code> 配置和 Linux <code>bwrap</code> 参数摊开看，有一条边界必须先亮明：</p>
+<ul>
+<li><strong>只限写，不限读</strong>：Linux 端是 <code>--ro-bind / /</code>，macOS 端是 <code>(allow default)</code> 再接 <code>(deny file-write*)</code>。沙箱里的子进程能正常读取整台机器上当前用户有权限读的任何文件，包括 <code>~/.ssh/</code>、<code>~/.aws/</code>、<code>.env</code> 和其他项目代码。</li>
+<li><strong>不限网络</strong>：<code>bwrap</code> 没有加 <code>--unshare-net</code>，<code>sandbox-exec</code> 也没有屏蔽网络外连。构建工具下载依赖顺畅无阻，代价是如果模型被提示词注入跑了一段恶意脚本，依然可以把本地凭据外传出去。</li>
+<li><strong>不支持平台的静默降级</strong>：在 macOS 和 Linux 之外的平台（<code>!platform_sandbox_available()</code>），<code>LocalBackend::new</code> 只打印一条 <code>tracing::warn!</code> 后直接裸跑命令。</li>
+</ul>
+<p><code>sandbox-local</code> 解决的工程问题是防止可信开发场景下的并发文件踩踏和误删宿主工作树，它不能替代 Firecracker 微虚拟机或无网隔离容器去运行不可信的第三方代码。如果要在多租户云端跑不受信仓库的任意脚本，必须在 <code>sandbox-remote</code> 之外叠加容器级或微虚机级的网络与读隔离。</p>
+<h2 id="溢出恢复的已知盲区-已提交历史本身逼近上限">溢出恢复的已知盲区：已提交历史本身逼近上限<a class="anchor" href="#溢出恢复的已知盲区-已提交历史本身逼近上限" aria-label="链接到本节">#</a></h2>
+<p>第 3 章拆解过 <code>HistoryManager</code> 的三阶段溢出恢复：只要超窗元凶在刚进来的 <code>unvalidated_items</code> 里，就能干净地替换占位符或丢弃未验证用户输入。</p>
+<p>但 <code>crates/infinity-agent-core/src/event_processor.rs</code> 第 1439 至 1443 行坦诚留了一段 <code>TODO(deferral)</code>：如果<strong>已经提交落盘的历史本身</strong>就非常接近模型上下文上限（比如本地 75% 自动压缩还没来得及跑完，或者在没有自动压缩的 Lambda 路径上持续累加），此时哪怕进来一条很短的正常消息也会触发 <code>ContextOverflow</code>。<code>recover_from_overflow</code> 只能丢掉刚进来的新输入，根本缩不动已提交历史。理想的修复是派发一个更低阈值的压缩子线程并让当前线程进入延迟等待，等压缩完成后再重放当前消息，但等待进行中的压缩子线程对应的延迟机制目前源码里尚未实现。</p>
+<h2 id="本地-vs-serverless-的能力落差">本地 vs Serverless 的能力落差<a class="anchor" href="#本地-vs-serverless-的能力落差" aria-label="链接到本节">#</a></h2>
+<p>尽管本地和云端共用同一个 <code>infinity-agent-core</code>，实际行为上仍然存在四处清晰的能力落差：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>机制</th>
+<th>本地常驻（<code>infinity-daemon</code> / <code>LocalAgentSystem</code>）</th>
+<th>无服务器云端（<code>infinity-agent-lambda</code>）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>活跃工具期间到达的合成事件</td>
+<td><code>InMemoryDeferQueue</code> 暂存，等活跃工具结算后按序排空（但进程崩溃会丢内存延迟队列）</td>
+<td>默认 <code>NoDeferral</code>，直接按中断语义给活跃工具注入中断结果</td>
+</tr>
+<tr>
+<td>上下文自动压缩</td>
+<td><code>drive_thread</code> 在 <code>total_tokens &gt; context_window * 3 / 4</code> 时自动触发</td>
+<td><code>event_handler.rs</code> 未接入自动压缩触发器，需外部显式发压缩消息</td>
+</tr>
+<tr>
+<td>模型选择</td>
+<td>支持每线程动态 <code>/model</code> 切换与外部插件供应器</td>
+<td><code>event_handler.rs</code> 第 35 行当前硬编码 <code>global.anthropic.claude-sonnet-4-6</code></td>
+</tr>
+<tr>
+<td>前端实时视图 <code>ViewUpdate</code></td>
+<td>写入 <code>{thread_id}.views.json</code> 并推给 TUI / Web 渲染 Diff</td>
+<td><code>rap-receiver</code> 直接回 <code>200 {&quot;ok&quot;:true}</code> 丢弃</td>
+</tr>
+</tbody></table></div>
+<p>如果准备把 Infinity 真正放上 AWS Lambda 跑复杂的多子线程任务，<code>NoDeferral</code> 和缺少自动压缩是最先需要补齐的两块拼图：前者可以通过在 <code>DeferQueue::push</code> 里把消息带 <code>DelaySeconds</code> 投回 SQS 中继队列来实现传输层持久化延迟；后者则可以在 <code>event_handler.rs</code> 收到 <code>StepOutcome::Completed { usage, context_window }</code> 后复用与本地相同的 75% 阈值判断并往 SQS 投递一条 <code>TaggedSyntheticKind::Compaction</code>。</p>
+<h2 id="单线程-localset-与工具侧的隐性限制">单线程 LocalSet 与工具侧的隐性限制<a class="anchor" href="#单线程-localset-与工具侧的隐性限制" aria-label="链接到本节">#</a></h2>
+<p>本地调度器选了单线程 <code>tokio::task::LocalSet</code> 换取零锁状态机、极低内存占用和无竞态的同步 <code>check_before_idle</code>。这个取舍的背面是：<strong>所有在 <code>LocalSet</code> 上直接运行的同步代码都不能做重 CPU 计算或阻塞磁盘 I/O</strong>。</p>
+<p>守护进程里的 <code>PersistentConversationStore</code> 目前用 <code>std::sync::Mutex</code> 和同步文件写入来落盘每线程 JSON；当单个线程的历史增长到几兆字节，或者几十个线程同时刷盘时，序列化 JSON 和同步 <code>fs::write</code> 会短暂卡住同一个线程里的所有其他活跃驱动。同样的，第 9 章看到的跨主机热迁移也明确划定了禁区：<code>SandboxMode::Direct</code>、<code>SandboxMode::Custom</code> 以及同一个会话里同时操作了两个以上不同 Git 仓库时，<code>migrate_inner</code> 会直接返回错误拒绝迁移。</p>
+<h2 id="何时该用这套架构-何时不必折腾">何时该用这套架构，何时不必折腾<a class="anchor" href="#何时该用这套架构-何时不必折腾" aria-label="链接到本节">#</a></h2>
+<p>回头对照全书拆过的机制，Infinity 的适用边界其实非常清楚：</p>
+<ul>
+<li><strong>适合的场景</strong>：需要同时挂载大量长周期、事件驱动 Agent（CI/CD 盯盘、PR 审查、人工审批流、定时巡检）；需要按实际推理切片缩容到零以控制云账单；或者需要在一台开发机上同时开多条并行编码线程，既要互不干扰又要能随时把会话和代码整体迁往远程算力机。</li>
+<li><strong>不必引入的场景</strong>：如果业务只是同步一问一答的短平快 RAG 机器人，所有工具调用都在几百毫秒内返回，既没有跨小时等待也没有多子线程并发编辑，直接用轻量单循环加标准 MCP 服务反而架构更薄、排障链路更短。</li>
+</ul>
+<p>理解了取舍与边界之后，最好的巩固方式是亲手跑一遍核心状态机。下一章不依赖 Rust 工具链、也不依赖任何第三方 Python 包，直接用一份四百多行的标准库 Python 教学实现把 Infinity 的五项核心不变量完整跑通并验证。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="11-clients-and-hydro-dataflow.html"><small>上一章</small><strong>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</strong></a><a class="next" href="13-mini-infinity.html"><small>下一章</small><strong>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：为什么一台树莓派能装下七万五千个 Agent</a><a href="../chapters/01-blocking-trap.html"><span>01</span>阻塞式 Agent 的死结与无阻塞切片不变量</a><a href="../chapters/02-workspace-topology.html"><span>02</span>21 个 Crate 的分层版图与类型化 ID 体系</a><a href="../chapters/03-slice-and-history.html"><span>03</span>切片执行循环与三阶段 HistoryManager</a><a href="../chapters/04-rap-protocol.html"><span>04</span>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</a><a href="../chapters/05-threading-compaction.html"><span>05</span>线程树、上下文继承与位置索引压缩</a><a href="../chapters/06-local-actor-deferral.html"><span>06</span>单线程本地调度器、延迟队列与抢占打断</a><a href="../chapters/07-provider-error-boundary.html"><span>07</span>模型供应协议、跨进程隔离与错误分类契约</a><a href="../chapters/08-stacked-sandboxes.html"><span>08</span>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</a><a href="../chapters/09-daemon-remote-migration.html"><span>09</span>本地守护进程、SSH 远程代理与跨主机热迁移</a><a href="../chapters/10-serverless-aws.html"><span>10</span>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</a><a href="../chapters/11-clients-and-hydro-dataflow.html"><span>11</span>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</a><a href="../chapters/12-tradeoffs-and-limits.html"><span>12</span>失败模式、安全边界与架构取舍</a><a href="../chapters/13-mini-infinity.html"><span>13</span>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：源码索引、实测统计与核心术语对照</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · hydro-project/infinity · 快照 e1a3e4b36e5f · 2026-11-05</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

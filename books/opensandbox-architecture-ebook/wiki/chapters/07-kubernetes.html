@@ -1,0 +1,106 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>Kubernetes 后端：BatchSandbox、预热池与 Completed 终态 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="07-kubernetes"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#三个-crd-与注解通信">三个 CRD 与注解通信</a></li><li><a href="#两级容量模型与常数时间认领">两级容量模型与常数时间认领</a></li><li><a href="#粘滞-completed-终态与并发防线">粘滞 `Completed` 终态与并发防线</a></li><li><a href="#暂停-恢复与持久化红线">暂停、恢复与持久化红线</a></li><li><a href="#怎么读池化性能对比数字">怎么读池化性能对比数字</a></li><li><a href="#源码入口">源码入口</a></li></ol></details><article class="content"><h1 id="kubernetes-后端-batchsandbox-预热池与-completed-终态">Kubernetes 后端：BatchSandbox、预热池与 Completed 终态</h1><p>在 Kubernetes 集群里直接按请求新建 Pod，创建延迟的大头不在业务代码，而在调度链路本身：写 API Server、调度器选节点、kubelet 拉镜像、初始化容器、等待探针就绪。哪怕一切顺利，拉起几十个沙箱也动辄几十秒。</p>
+<p>更隐蔽的坑出在状态收敛上。一个跑完脚本以退出码 0 正常退出的沙箱，如果控制器只认 Ready Pod 数量，就会把 <code>status.phase</code> 从 <code>Succeed</code> 退回 <code>Pending</code>，让所有调用方误以为沙箱还在运行直到 TTL 过期被删；或者陈旧的 informer 缓存刚好在续期成功后发起一次到期删除，把刚延寿的沙箱静默抹掉。</p>
+<p>OpenSandbox 的 Kubernetes 后端由三个 CRD 控制器与服务端 provider 配合运转。这一篇拆解它的池化容量模型，以及 <code>1.2.1</code> 至 <code>1.3.0-rc.2</code> 里补齐的终态机与并发防线。</p>
+<h2 id="三个-crd-与注解通信">三个 CRD 与注解通信</h2><p><code>kubernetes/</code> 下的 operator 围绕三个自定义资源运转，彼此不走私下 RPC，全靠对象注解和 Pod 内 task-executor 协作：</p>
+<table>
+<thead>
+<tr>
+<th>CRD</th>
+<th>职责</th>
+<th>关键字段</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>BatchSandbox</code></td>
+<td>描述单个或多个同构沙箱实例</td>
+<td><code>replicas</code>、<code>template</code>、<code>poolRef</code>、<code>expireTime</code>、<code>pause</code>、<code>taskTemplate</code></td>
+</tr>
+<tr>
+<td><code>Pool</code></td>
+<td>维护可瞬间认领的预热 Pod 缓冲池</td>
+<td><code>template</code>、<code>capacitySpec</code>、<code>scaleStrategy</code>、<code>recycleStrategy</code></td>
+</tr>
+<tr>
+<td><code>SandboxSnapshot</code></td>
+<td>记录暂停/恢复与公开快照的镜像提交过程</td>
+<td>目标 <code>BatchSandbox</code> 名、提交后的镜像 digest</td>
+</tr>
+</tbody></table>
+<p>Pool reconciler 把暖 Pod 认领给 <code>BatchSandbox</code> 后，把结果写进 <code>sandbox.opensandbox.io/alloc-status</code> 和 <code>sandbox.opensandbox.io/endpoints</code> 注解，并给 Pod 打上 <code>pool-name</code> 与 <code>pool-revision</code> 标签；BatchSandbox reconciler 里的 <code>TaskScheduler</code> 再把具体命令作为 task 下发给 Pod 内的 task-executor。用注解传状态虽然缺强 schema 约束，但运维直接敲 <code>kubectl describe</code> 就能看到完整现场。</p>
+<h2 id="两级容量模型与常数时间认领">两级容量模型与常数时间认领</h2><p>Pool 把容量切成两个嵌套区间：</p>
+<div class="table-wrap"><pre tabindex="0"><code class="hljs">poolMin ─────────────── poolMax        总池规模（含正在启动与已分配的 Pod）
+        bufferMin ─── bufferMax        可用缓冲区（仅限 Running + Ready 且未分配的 Pod）</code></pre></div><p>控制器持续把可用缓冲区维持在 <code>[bufferMin, bufferMax]</code> 之间。还在拉镜像或未就绪的 Pod 计入总池，绝不计入可用缓冲区，因此池子不会承诺自己交不出来的容量。每次扩缩受 <code>maxUnavailable</code>（默认 25%）节流，防止突发流量引发 Pod 雪崩。从 <code>1.3.0-rc.1</code> 起，服务端校验直接以 <code>422</code> 拒绝 <code>bufferMin &gt; bufferMax</code> 的非法规格，彻底堵住了控制器来回建删 Pod 的震荡死循环。</p>
+<p>认领一个池 Pod 是常数时间写注解操作，不经过 kube-scheduler。归还时的清理代价由 <code>recycleStrategy</code> 决定：</p>
+<table>
+<thead>
+<tr>
+<th>回收策略</th>
+<th>动作</th>
+<th>风险与权限依赖</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Delete</code>（默认）</td>
+<td>直接销毁旧 Pod、补建干净新 Pod</td>
+<td>最干净，重建成本由后台缓冲吸收</td>
+</tr>
+<tr>
+<td><code>Restart</code></td>
+<td>原地重启容器进程</td>
+<td>省掉调度开销；需 <code>pods/exec: create</code> RBAC（<code>1.3.0-rc.1</code> 修复了 Helm Chart 遗漏该权限导致重启回收 403 的缺陷）</td>
+</tr>
+<tr>
+<td><code>Noop</code></td>
+<td>原样归还</td>
+<td>最快，但文件系统与进程状态会泄漏给下一次分配，仅限沙箱自清理场景</td>
+</tr>
+</tbody></table>
+<p>池化换来毫秒级分配的同时，也锁死了三条 API 约束：请求里的 <code>entrypoint</code> 和 <code>env</code> 改走分配后的 task 下发，不会改写 Pod spec；<code>volumes</code> 与 <code>networkPolicy</code> 不能和 <code>poolRef</code> 同用，必须提前配进 Pool 模板；池模板 Pod 必须内置 task-executor、bootstrap 与 <code>execd</code>。</p>
+<p>当可用缓冲区耗尽时，控制器在 <code>BatchSandbox</code> 上写入 <code>PoolAllocationPending</code> 条件（reason <code>PoolCapacityExhausted</code>）并每 5 秒重试；服务端通过 watch 在 <code>pool_acquisition_timeout_seconds</code>（默认 30 秒）窗口内有限等待，超时后返回可重试的 <code>429</code>，既不无限排队也不盲目重读 API。</p>
+<h2 id="粘滞-completed-终态与并发防线">粘滞 <code>Completed</code> 终态与并发防线</h2><p><code>1.3.0-rc.2</code> 在控制器和服务端同步落地了三项关键状态机加固：</p>
+<p><strong>1. 粘滞 <code>Completed</code> 终态终结状态悬空</strong>。过去 <code>BatchSandbox</code> 的 <code>status.phase</code> 只有 <code>Pending</code>、<code>Succeed</code>（代表至少一个 Pod Running+Ready，属于稳态运行）、<code>Pausing</code>/<code>Paused</code>/<code>Resuming</code> 和 <code>Failed</code>。一旦主容器以退出码 0 正常退出，Pod 不再 Ready，控制器就把相位退回 <code>Pending</code>，导致上层一直把已结束的沙箱当成运行中直到 <code>expireTime</code> 删除对象。</p>
+<p>现在 CRD 新增了粘滞的 <code>Completed</code> 终态。主容器正常退出后，<code>BatchSandbox</code> 永久锁定在 <code>Completed</code>，控制器跳过 Pod 替换与任务调度，拒绝任何后续 pause/resume 意图并挂出 <code>SandboxCompleted</code> 条件；服务端 <code>batchsandbox_provider.py</code> 将 <code>Completed</code> 直接映射为公开状态 <code>Terminated</code>、原因码 <code>SANDBOX_COMPLETED</code>，附带退出详情与完成时间，对已完成沙箱调用暂停或恢复直接报错拒绝。升级集群时必须<strong>先应用新 CRD 再升级控制器</strong>，否则旧 CRD 会拒绝写入 <code>Completed</code> 相位。</p>
+<p><strong>2. 状态写入带 <code>resourceVersion</code> 前置条件</strong>。控制器更新 <code>BatchSandbox</code> 状态时携带 <code>resourceVersion</code> 乐观锁，防止陈旧的运行时视图覆盖刚写下的 <code>PauseFailed</code> 或 <code>ResumeFailed</code> 条件。此前这两个条件一旦被覆盖，服务端的暂停/恢复重试路径就会静默失效。</p>
+<p><strong>3. 到期删除带 UID 与 <code>resourceVersion</code> 校验，且删除时清净内存态</strong>。服务端执行到期删除时携带对象 UID 与 <code>resourceVersion</code> 前置条件，陈旧 informer 副本再也不可能误删刚完成续期的沙箱；同时控制器在 <code>BatchSandbox</code> 删除或同名替换时，会彻底遗忘该对象的全部内存状态（扩缩预期、Pod 恢复预算与任务调度器），避免新沙箱继承前任残留；控制器重启时也会先恢复池分配记录再执行驱逐（<code>1.2.1</code>），保护在跑沙箱 Pod 不被误杀。</p>
+<h2 id="暂停-恢复与持久化红线">暂停、恢复与持久化红线</h2><p>Kubernetes 容器后端的暂停走镜像提交路径：把单副本（<code>spec.replicas=1</code>）沙箱的容器 rootfs 通过源节点上的 commit Job 打包成 OCI 镜像推送到配置好的 registry，确认每个容器都回报了完整镜像 digest 并将内部 <code>SandboxSnapshot</code> 置为 <code>Succeed</code> 后，再释放 Pod 与池槽位。</p>
+<p>如果 commit Job 丢失或结果不完整（<code>CommitResultUnavailable</code> / <code>CommitResultIncomplete</code>），<code>1.2.1</code> 起控制器会明确保留原运行时 Pod，向 <code>BatchSandbox</code> 写入 <code>PauseFailed</code> 条件供调用方重试，绝不删掉唯一可恢复的运行现场。恢复时复用同一个 <code>BatchSandbox</code> 对象，把模板镜像替换成最新快照镜像并重建 Pod；哪怕旧 Pod 终止略晚于 <code>Paused</code>，控制器也会等旧 Pod 彻底消失再拉新 Pod。</p>
+<p>容器后端的公开快照依然只支持 <code>mode=&quot;full&quot;</code>（推送 OCI 镜像到 registry，不含内存），收到 <code>mode=&quot;rootfsOnly&quot;</code> 会在服务端预检阶段直接返回 <code>409</code>。另外，所有 Helm Chart 在 <code>1.3.0-rc.2</code> 将 Kubernetes 最低版本门槛上调至 <code>&gt;=1.22.0-0</code>（支持范围 <code>v1.22</code> 至 <code>v1.34</code>）。</p>
+<h2 id="怎么读池化性能对比数字">怎么读池化性能对比数字</h2><p>上游 <code>operator.md</code> 列出了一组交付 100 个沙箱的总耗时对照：<code>agent-sandbox</code> 在并发 1 / 10 / 50 下分别耗时 76.4 s、23.2 s、33.9 s，而启用预热池的 <code>BatchSandbox</code> 总耗时 0.92 s。</p>
+<p>这组数字量的是<strong>预热认领与现建调度</strong>之间的两个数量级落差，而不是两个社区项目的绝对优劣，因为 <code>agent-sandbox</code> 走的是标准现建 Pod 路径，而它自身也具备独立的池化机制。</p>
+<h2 id="源码入口">源码入口</h2><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>kubernetes/apis/sandbox/v1alpha1/batchsandbox_types.go</code></td>
+<td><code>BatchSandbox</code> 规格、状态与 <code>Completed</code> 相位定义</td>
+</tr>
+<tr>
+<td><code>kubernetes/apis/sandbox/v1alpha1/pool_types.go</code></td>
+<td>两级容量字段与回收策略枚举</td>
+</tr>
+<tr>
+<td><code>kubernetes/apis/sandbox/v1alpha1/sandboxsnapshot_types.go</code></td>
+<td>内部与公开快照 CRD 结构</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/k8s/batchsandbox_provider.py</code></td>
+<td><code>Completed -&gt; Terminated (SANDBOX_COMPLETED)</code> 映射、pause/resume 校验与 <code>EXECD_INIT=1</code> 注入</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/api/pool.py</code></td>
+<td><code>bufferMin &gt; bufferMax</code> 422 校验与 <code>WorkloadProvider</code> SPI 委派</td>
+</tr>
+<tr>
+<td><code>docs/architecture/control-plane/operator.md</code></td>
+<td>容量模型、回收策略与状态条件解读</td>
+</tr>
+<tr>
+<td><code>docs/getting-started/configuration.md</code></td>
+<td>创建等待超时与池耗尽等待窗口配置</td>
+</tr>
+</tbody></table>
+</article><nav class="pager" aria-label="篇章导航"><a href="06-docker.html"><small>上一篇</small>Docker 后端：单端口复用与续期竞态锁</a><a href="08-fast-sandbox.html"><small>下一篇</small>Fast Sandbox：模板、Fastlet 与 Firecracker</a></nav></main><script src="../assets/wiki.js"></script></body></html>

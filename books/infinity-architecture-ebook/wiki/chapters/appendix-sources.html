@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从无阻塞执行切片、RAP 响应式工具协议到堆叠沙箱与跨主机热迁移，解剖 hydro-project/infinity 的 Rust Agent 运行时架构"><meta name="author" content="独立源码研究">
+<title>附录：源码索引、实测统计与核心术语对照 · Infinity 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">∞</span><span>Infinity 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Appendix</div><div class="rail-title">附录：源码索引、实测统计与核心术语对照</div><ol><li><a href="#上游快照信息">上游快照信息</a></li><li><a href="#21-个-workspace-crate-规模实测">21 个 Workspace Crate 规模实测</a></li><li><a href="#关键源码定位速查">关键源码定位速查</a></li><li><a href="#核心术语对照">核心术语对照</a></li><li><a href="#本地核验命令">本地核验命令</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">附录 A</div><h1>附录：源码索引、实测统计与核心术语对照</h1><div class="chapter-meta">hydro-project/infinity 快照 e1a3e4b36e5f · 约 22 分钟</div></header><div class="prose"><p>本附录汇总全书所依据的 <code>hydro-project/infinity</code> 上游快照信息、21 个 Rust crate 实测规模、关键源码文件路径、本地配置清单以及中英文核心术语对照。</p>
+<h2 id="上游快照信息">上游快照信息<a class="anchor" href="#上游快照信息" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>仓库地址</strong>：<code>https://github.com/hydro-project/infinity</code></li>
+<li><strong>固定提交 SHA</strong>：<code>e1a3e4b36e5f6143e03a59a7ad86e1abacfd22e8</code></li>
+<li><strong>提交日期与摘要</strong>：<code>2026-11-05</code>，<code>docs: explain Linux sandbox prerequisites (#188)</code></li>
+<li><strong>上游许可证</strong>：Apache License 2.0（<code>LICENSE.txt</code>；<code>NOTICE</code> 标注版权归 Hydro Contributors 及 Amazon.com, Inc. or its affiliates）</li>
+<li><strong>采集核验日期</strong>：<code>2026-11-22</code></li>
+<li><strong>研究口径</strong>：全部架构拆解与代码引用基于静态源码与官方文档核验，教学模型与 19 项单元测试在离线环境实跑通过；关于 80,000 个空闲 Agent 占约 8.4 GB RSS（约 102 KiB/Agent）的基准数字直接引自上游 <code>crates/infinity-agent-core/examples/agent_scale.rs</code> 与 <code>docs/src/components/MemoryChart.tsx</code>，未在本书编写过程中重新搭建 AWS Lambda 或 Bedrock 生产压测环境。</li>
+</ul>
+<h2 id="21-个-workspace-crate-规模实测">21 个 Workspace Crate 规模实测<a class="anchor" href="#21-个-workspace-crate-规模实测" aria-label="链接到本节">#</a></h2>
+<p>统计范围覆盖快照 <code>e1a3e4b36e5f</code> 下 <code>crates/</code> 目录内全部 169 个 <code>.rs</code> 文件（总计 57,969 行 Rust 代码）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Crate</th>
+<th align="right"><code>.rs</code> 文件</th>
+<th align="right">总行数</th>
+<th align="right"><code>src/</code> 文件</th>
+<th align="right"><code>src/</code> 行数</th>
+<th>核心职责</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>infinity-agent-core</code></td>
+<td align="right">29</td>
+<td align="right">15,372</td>
+<td align="right">28</td>
+<td align="right">15,050</td>
+<td>切片执行循环、<code>HistoryManager</code>、本地路由器与驱动、<code>DeferQueue</code>、内置工具</td>
+</tr>
+<tr>
+<td><code>infinity-agent-cli</code></td>
+<td align="right">26</td>
+<td align="right">10,294</td>
+<td align="right">17</td>
+<td align="right">7,195</td>
+<td>内联终端 TUI、无头命令、插件安装器、<code>infinity acp</code> stdio 服务</td>
+</tr>
+<tr>
+<td><code>infinity-daemon</code></td>
+<td align="right">25</td>
+<td align="right">9,215</td>
+<td align="right">20</td>
+<td align="right">7,490</td>
+<td>常驻守护进程、Unix Socket/WS、懒加载 JSON 存储、SSH 远程代理与热迁移</td>
+</tr>
+<tr>
+<td><code>sandbox-local</code></td>
+<td align="right">22</td>
+<td align="right">4,911</td>
+<td align="right">6</td>
+<td align="right">1,066</td>
+<td><code>LocalBackend</code>、<code>LocalJjProvider</code>/<code>LocalGitProvider</code>、<code>sandbox-exec</code> 与 <code>bwrap</code></td>
+</tr>
+<tr>
+<td><code>sandbox-core</code></td>
+<td align="right">9</td>
+<td align="right">3,902</td>
+<td align="right">9</td>
+<td align="right">3,902</td>
+<td><code>SandboxBackend</code>/<code>ModeProvider</code>、Axum RAP 沙箱路由、流式命令与迁移导入导出</td>
+</tr>
+<tr>
+<td><code>infinity-slack-bot</code></td>
+<td align="right">6</td>
+<td align="right">2,371</td>
+<td align="right">5</td>
+<td align="right">2,328</td>
+<td>Slack Socket Mode / Web API 与守护进程 I/O 外壳</td>
+</tr>
+<tr>
+<td><code>infinity-agent-lambda</code></td>
+<td align="right">10</td>
+<td align="right">1,894</td>
+<td align="right">10</td>
+<td align="right">1,894</td>
+<td>SQS Lambda 入口、<code>rap-receiver</code>、DSQL/DynamoDB 存储、SQS/EventBridge 定时器</td>
+</tr>
+<tr>
+<td><code>infinity-slack-dataflow</code></td>
+<td align="right">9</td>
+<td align="right">1,817</td>
+<td align="right">7</td>
+<td align="right">1,342</td>
+<td>基于 <code>hydro_lang</code> 的 Slack 机器人分阶段数据流编排</td>
+</tr>
+<tr>
+<td><code>infinity-provider-bedrock</code></td>
+<td align="right">5</td>
+<td align="right">1,445</td>
+<td align="right">4</td>
+<td align="right">1,350</td>
+<td>AWS Bedrock ConverseStream 供应器、60s 建连超时、错误分类与细粒度工具流</td>
+</tr>
+<tr>
+<td><code>infinity-provider-protocol</code></td>
+<td align="right">5</td>
+<td align="right">1,280</td>
+<td align="right">5</td>
+<td align="right">1,280</td>
+<td><code>ModelProvider</code>、<code>ErrorClass</code>、<code>StreamChunk</code> 及 Unix Socket 跨进程协议</td>
+</tr>
+<tr>
+<td><code>infinity-mcp-bridge</code></td>
+<td align="right">1</td>
+<td align="right">797</td>
+<td align="right">1</td>
+<td align="right">797</td>
+<td>Stdio 与 Streamable HTTP MCP 懒连接传输层与工具桥接</td>
+</tr>
+<tr>
+<td><code>rap-github-event-poller</code></td>
+<td align="right">2</td>
+<td align="right">715</td>
+<td align="right">2</td>
+<td align="right">715</td>
+<td>GitHub 事件订阅轮询 RAP 服务（ETag + <code>X-Poll-Interval</code>）</td>
+</tr>
+<tr>
+<td><code>infinity-rap-bridge</code></td>
+<td align="right">2</td>
+<td align="right">704</td>
+<td align="right">2</td>
+<td align="right">704</td>
+<td>守护进程与 Lambda 共用的 <code>prepare_callback</code> 回调转换器</td>
+</tr>
+<tr>
+<td><code>infinity-protocol</code></td>
+<td align="right">1</td>
+<td align="right">613</td>
+<td align="right">1</td>
+<td align="right">613</td>
+<td><code>ClientMessage</code>/<code>DaemonMessage</code>、<code>ThreadRef</code>、<code>RemoteName</code>、256 MiB 帧编解码</td>
+</tr>
+<tr>
+<td><code>sandbox-remote</code></td>
+<td align="right">5</td>
+<td align="right">534</td>
+<td align="right">5</td>
+<td align="right">534</td>
+<td>面向 AWS Lambda 的 <code>EfsBackend</code> 裸仓沙箱与 SigV4 回调客户端</td>
+</tr>
+<tr>
+<td><code>rap-client</code></td>
+<td align="right">5</td>
+<td align="right">515</td>
+<td align="right">5</td>
+<td align="right">515</td>
+<td>RAP HTTP 客户端、工具清单加载缓存、本地回调监听与 <code>RapNotifier</code></td>
+</tr>
+<tr>
+<td><code>infinity-provider-rig</code></td>
+<td align="right">2</td>
+<td align="right">504</td>
+<td align="right">2</td>
+<td align="right">504</td>
+<td>基于 <code>rig-core</code> 的 OpenAI 兼容模型供应器与错误分类</td>
+</tr>
+<tr>
+<td><code>rap-protocol</code></td>
+<td align="right">1</td>
+<td align="right">392</td>
+<td align="right">1</td>
+<td align="right">392</td>
+<td><code>ThreadId</code>/<code>ToolCallId</code>/<code>ProviderCallId</code>/<code>ChoiceId</code>、RAP 线缆类型与 <code>CallbackClient</code></td>
+</tr>
+<tr>
+<td><code>rap-steering-server</code></td>
+<td align="right">2</td>
+<td align="right">348</td>
+<td align="right">2</td>
+<td align="right">348</td>
+<td>项目与家目录规则文件（<code>INFINITY.md</code>/<code>CLAUDE.md</code>/<code>AGENTS.md</code> 等）读取服务</td>
+</tr>
+<tr>
+<td><code>rap-test-servers</code></td>
+<td align="right">1</td>
+<td align="right">246</td>
+<td align="right">1</td>
+<td align="right">246</td>
+<td>集成测试用模拟 RAP 工具服务</td>
+</tr>
+<tr>
+<td><code>infinity-mdtests</code></td>
+<td align="right">1</td>
+<td align="right">100</td>
+<td align="right">1</td>
+<td align="right">100</td>
+<td>将 <code>docs/docs/infinity-runtime/**/*.md</code> 示例自动作为 Rust 测试执行</td>
+</tr>
+</tbody></table></div>
+<p>配套 TypeScript 子项目规模：<code>agent/</code>（18 文件、1,200 行 AWS CDK）、<code>infinity-ui/</code>（15 文件、2,193 行共享 React 组件）、<code>infinity-web/</code>（6 文件、1,373 行 Vite 桌面端）、<code>docs/</code>（51 篇 <code>.md</code>/<code>.mdx</code> 文档与 10 个交互组件共 3,036 行）。</p>
+<h2 id="关键源码定位速查">关键源码定位速查<a class="anchor" href="#关键源码定位速查" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>主题</th>
+<th>上游文件路径</th>
+<th>关键符号</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>类型化 ID 与 RAP 协议</td>
+<td><code>crates/rap-protocol/src/lib.rs</code></td>
+<td><code>ThreadId</code>, <code>ToolCallId</code>, <code>ProviderCallId</code>, <code>ChoiceId</code>, <code>RapInvocation</code>, <code>RapCallback</code>, <code>ToolsetManifest</code></td>
+</tr>
+<tr>
+<td>三阶段历史与切片循环</td>
+<td><code>crates/infinity-agent-core/src/event_processor.rs</code></td>
+<td><code>HistoryManager</code>, <code>prepare_input</code>, <code>run_completion</code>, <code>recover_from_overflow</code>, <code>match_tool_result</code>, <code>safe_spawn_point</code>, <code>find_tool_call</code></td>
+</tr>
+<tr>
+<td>同步线程派生与关闭</td>
+<td><code>crates/infinity-agent-core/src/tools/thread.rs</code></td>
+<td><code>SpawnThreadTool</code>, <code>ReportToParentTool</code>, <code>CloseThreadTool</code>, <code>SendMessageToChildTool</code></td>
+</tr>
+<tr>
+<td>本地路由、驱动与延迟</td>
+<td><code>crates/infinity-agent-core/src/system/local/{router,driver}.rs</code>, <code>system/defer.rs</code></td>
+<td><code>route_loop</code>, <code>drive_thread</code>, <code>check_before_idle</code>, <code>InFlightStep</code>, <code>DeferQueue</code>, <code>InMemoryDeferQueue</code>, <code>NoDeferral</code></td>
+</tr>
+<tr>
+<td>空闲内存扩展基准</td>
+<td><code>crates/infinity-agent-core/examples/agent_scale.rs</code></td>
+<td><code>ScriptedModel</code>, <code>RunCommand</code>, <code>rss_bytes</code>, <code>trim_allocator</code></td>
+</tr>
+<tr>
+<td>供应器错误与跨进程协议</td>
+<td><code>crates/infinity-provider-protocol/src/{completion,remote}.rs</code></td>
+<td><code>ErrorClass</code>, <code>CompletionError</code>, <code>WireError</code>, <code>serve_provider</code>, <code>RemoteModelProvider</code></td>
+</tr>
+<tr>
+<td>统一 RAP 回调转换</td>
+<td><code>crates/infinity-rap-bridge/src/callback.rs</code></td>
+<td><code>prepare_callback</code>, <code>convert_callback</code></td>
+</tr>
+<tr>
+<td>MCP 桥接</td>
+<td><code>crates/infinity-mcp-bridge/src/lib.rs</code></td>
+<td><code>McpTransport</code>, <code>StdioMcpTransport</code>, <code>HttpMcpTransport</code>, <code>McpToolSet</code></td>
+</tr>
+<tr>
+<td>堆叠沙箱与写隔离</td>
+<td><code>crates/sandbox-core/src/{sandbox,server,jj,git}.rs</code>, <code>crates/sandbox-local/src/{backend,providers}.rs</code>, <code>build.rs</code></td>
+<td><code>SandboxBackend</code>, <code>ModeProvider</code>, <code>LocalBackend</code>, <code>LocalJjProvider</code>, <code>LocalGitProvider</code>, <code>migrate_inner</code>, <code>handle_execute_command_streaming_inner</code></td>
+</tr>
+<tr>
+<td>本地守护进程与热迁移</td>
+<td><code>crates/infinity-protocol/src/lib.rs</code>, <code>crates/infinity-daemon/src/{memory_store,remote,migrate}.rs</code></td>
+<td><code>ThreadRef</code>, <code>RemoteName</code>, <code>length_delimited_codec</code>, <code>PersistentConversationStore</code>, <code>orchestrate_migration</code></td>
+</tr>
+<tr>
+<td>AWS 无服务器部署</td>
+<td><code>crates/infinity-agent-lambda/src/{event_handler,conversation_history,bin/rap-receiver,tools/sleep}.rs</code></td>
+<td><code>function_handler</code>, <code>DsqlConversationStore</code>, <code>WakeupScheduler</code>, <code>SleepTool</code>, <code>SleepUntilTool</code></td>
+</tr>
+<tr>
+<td>Slack Hydro 数据流</td>
+<td><code>crates/infinity-slack-dataflow/src/flow.rs</code></td>
+<td><code>slack_dataflow</code></td>
+</tr>
+</tbody></table></div>
+<h2 id="核心术语对照">核心术语对照<a class="anchor" href="#核心术语对照" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>英文术语</th>
+<th>本书统一译法</th>
+<th>简要说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Slice</td>
+<td>执行切片</td>
+<td>一次绝不阻塞在外部工具上的有界状态推进单元</td>
+</tr>
+<tr>
+<td>RAP (Reactive Agent Protocol)</td>
+<td>响应式工具协议（RAP）</td>
+<td>基于无状态 HTTP 触发与异步回调的 Agent 工具通信协议</td>
+</tr>
+<tr>
+<td>Turn buffer</td>
+<td>轮次缓冲</td>
+<td>流式推理期间暂存增量输出的缓冲层，提交前可整轮丢弃</td>
+</tr>
+<tr>
+<td>Unvalidated items</td>
+<td>未验证输入</td>
+<td>已入内存但模型尚未产出输出的新输入，<code>sync()</code> 跳过防毒消息落盘</td>
+</tr>
+<tr>
+<td>Stacked sandboxes</td>
+<td>堆叠沙箱</td>
+<td>子线程基于父线程书签拉出的隔离 <code>jj</code>/<code>git</code> 工作区，完成后压缩合并回父书签</td>
+</tr>
+<tr>
+<td>Passive tool</td>
+<td>被动工具</td>
+<td><code>Tool::is_passive() == true</code> 的等待型工具（如 <code>sleep</code> 家族），允许外部事件自由打断</td>
+</tr>
+<tr>
+<td>Associative subscription event</td>
+<td>内联订阅事件</td>
+<td><code>associative: true</code> 的订阅回调，跳过子线程直接注入当前线程历史</td>
+</tr>
+<tr>
+<td>ACP (Agent Client Protocol)</td>
+<td>代理客户端协议（ACP）</td>
+<td>编辑器侧栏与后端 Agent 通信的 stdio 协议，由 <code>infinity acp</code> 提供</td>
+</tr>
+</tbody></table></div>
+<h2 id="本地核验命令">本地核验命令<a class="anchor" href="#本地核验命令" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-bash"># 运行本书离线 Python 教学模型与 19 项单元测试
+python3 -m unittest discover -s examples -v
+
+# 重新生成 6 张主题自适应 SVG 架构图
+python3 scripts/make_diagrams.py
+
+# 构建完整静态阅读站、离线合订本、合并 Markdown、EPUB 3 与 PDF
+bash scripts/build.sh
+</code></pre>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="13-mini-infinity.html"><small>上一章</small><strong>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：为什么一台树莓派能装下七万五千个 Agent</a><a href="../chapters/01-blocking-trap.html"><span>01</span>阻塞式 Agent 的死结与无阻塞切片不变量</a><a href="../chapters/02-workspace-topology.html"><span>02</span>21 个 Crate 的分层版图与类型化 ID 体系</a><a href="../chapters/03-slice-and-history.html"><span>03</span>切片执行循环与三阶段 HistoryManager</a><a href="../chapters/04-rap-protocol.html"><span>04</span>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</a><a href="../chapters/05-threading-compaction.html"><span>05</span>线程树、上下文继承与位置索引压缩</a><a href="../chapters/06-local-actor-deferral.html"><span>06</span>单线程本地调度器、延迟队列与抢占打断</a><a href="../chapters/07-provider-error-boundary.html"><span>07</span>模型供应协议、跨进程隔离与错误分类契约</a><a href="../chapters/08-stacked-sandboxes.html"><span>08</span>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</a><a href="../chapters/09-daemon-remote-migration.html"><span>09</span>本地守护进程、SSH 远程代理与跨主机热迁移</a><a href="../chapters/10-serverless-aws.html"><span>10</span>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</a><a href="../chapters/11-clients-and-hydro-dataflow.html"><span>11</span>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</a><a href="../chapters/12-tradeoffs-and-limits.html"><span>12</span>失败模式、安全边界与架构取舍</a><a href="../chapters/13-mini-infinity.html"><span>13</span>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：源码索引、实测统计与核心术语对照</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · hydro-project/infinity · 快照 e1a3e4b36e5f · 2026-11-05</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

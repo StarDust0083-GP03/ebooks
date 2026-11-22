@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="源码拆解 PrimeIntellect-ai/prime-agent v0.10.5：Rust 多进程宿主、Protocol v3 Python REPL、持久信箱、递归子 Agent 与 Continual Harness"><meta name="author" content="独立源码研究">
+<title>十个 Rust Crate 与一层 Python 运行时的双层拓扑 · Prime Agent 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">PA</span><span>Prime Agent 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 02</div><div class="rail-title">十个 Rust Crate 与一层 Python 运行时的双层拓扑</div><ol><li><a href="#十个-crate-的职责与依赖边界">十个 Crate 的职责与依赖边界</a></li><li><a href="#supervisor-与-per-session-worker-为什么要拆进程">Supervisor 与 Per-Session Worker：为什么要拆进程</a></li><li><a href="#rust-宿主与-python-运行时的职责切分">Rust 宿主与 Python 运行时的职责切分</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 02 章</div><h1>十个 Rust Crate 与一层 Python 运行时的双层拓扑</h1><div class="chapter-meta">Prime Agent v0.10.5 快照 2026-11-21 · 约 18 分钟</div></header><div class="prose"><p>代码库膨胀到 50 万行以上时，最怕出现网状依赖：改一行 UI 卡片结构，结果触发整个会话引擎和 HTTP 供应商层全量重编；或者一个底层工具悄悄引用了守护进程状态，导致无守护进程的 <code>-p</code> 单次打印模式根本没法独立实例化。</p>
+<p>Prime Agent 用一条很硬的工作区规则把边界焊死了。打开根目录 <code>Cargo.toml</code> 和 <code>AGENTS.md</code>，整个 Rust 部分由 10 个以 <code>pa-</code> 为前缀的 crate 组成，只有一个共享词表 crate（<code>pa-types</code>），依赖方向严格从组合根向下单向流动，全工作区通过 <code>[workspace.lints.rust]</code> 开启 <code>unsafe_code = &quot;forbid&quot;</code>，并在 CI 中执行 <code>cargo clippy --workspace --all-targets -- -D warnings</code>。</p>
+<p>下面这张图给出了 10 个 Rust crate 的分层关系，以及运行时真正的进程边界：</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 374" width="480" height="374" role="img" aria-label="Prime Agent 十个 Rust Crate 与双层进程拓扑">
+<title>Prime Agent 十个 Rust Crate 与双层进程拓扑</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="12" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.6" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">单向依赖（上层指向下层）与进程隔离边界</text><rect x="8" y="22" width="224" height="48" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.4"/><text x="17" y="39" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">pa-cli (组合根)</text><text x="17" y="54" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">prime-agent 二进制、参数解析、模式分发</text><rect x="248" y="22" width="224" height="48" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.4"/><text x="257" y="39" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">pa-tui (终端界面)</text><text x="257" y="54" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">仅依赖 pa-types，零引擎耦合，首帧无阻塞</text><line x1="232" y1="46" x2="248" y2="46" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><rect x="8" y="88" width="464" height="128" rx="4" fill="none" stroke="var(--amber)" stroke-width="1.2" stroke-dasharray="5 3"/><text x="16" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.5" font-weight="600" fill="var(--amber)" text-anchor="start" opacity="1">pa-daemon 进程托管层（本地 Socket / 直接挂载 Ticket / ACP stdio）</text><rect x="16" y="110" width="146" height="94" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.4"/><text x="25" y="127" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Supervisor 守护进程</text><text x="25" y="142" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">监听 Unix Socket/Pipe</text><text x="25" y="155" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">管理 Worker 退避重启</text><text x="25" y="168" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">维护 RLM 账本与名册</text><text x="25" y="181" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">90s 热更新排空事务</text><rect x="176" y="110" width="142" height="94" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="185" y="127" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Worker 进程 (每会话)</text><text x="185" y="142" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">承载 pa-core 会话引擎</text><text x="185" y="155" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">append-only JSONL 落盘</text><text x="185" y="168" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">信箱 inbox.jsonl 管理</text><text x="185" y="181" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">事件流 50ms 合并广播</text><rect x="332" y="110" width="132" height="94" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.4"/><text x="341" y="127" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">CPython REPL 内核</text><text x="341" y="142" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">python -m rlm.repl</text><text x="341" y="155" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">单事件循环 + __main__</text><text x="341" y="168" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">bash/rlm/mcp/skills</text><text x="341" y="181" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">dill v2 快照恢复</text><line x1="162" y1="156" x2="176" y2="156" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><line x1="318" y1="156" x2="332" y2="156" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><line x1="120" y1="70" x2="88" y2="110" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><line x1="360" y1="70" x2="248" y2="110" stroke="var(--muted)" stroke-width="1.1" stroke-dasharray="4 3" marker-end="url(#arrow)"/><rect x="8" y="234" width="148" height="52" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="17" y="251" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">pa-core (会话引擎)</text><text x="17" y="266" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">提示词、压缩、精炼、MCP</text><text x="17" y="279" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">工具注册、内核管理、门禁</text><rect x="166" y="234" width="148" height="52" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="175" y="251" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">pa-agent + pa-ai</text><text x="175" y="266" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">Turn 循环、三层队列</text><text x="175" y="279" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">多供应商流式适配</text><rect x="324" y="234" width="148" height="52" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="333" y="251" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">pa-models + telemetry</text><text x="333" y="266" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">模型目录缓存与回退</text><text x="333" y="279" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">异步无阻塞埋点上报</text><line x1="247" y1="204" x2="82" y2="234" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><rect x="8" y="302" width="332" height="42" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="17" y="319" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">pa-types (唯一共享词表)</text><text x="17" y="334" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">线协议帧、会话条目、AI 消息、目标与信箱类型，零工作区上游依赖</text><rect x="350" y="302" width="122" height="42" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="359" y="319" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">pa-perf (仅 CI)</text><text x="359" y="334" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">PTY 基准与语料回放</text><line x1="82" y1="286" x2="120" y2="302" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><line x1="240" y1="286" x2="210" y2="302" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><line x1="398" y1="286" x2="290" y2="302" stroke="var(--muted)" stroke-width="1.1" marker-end="url(#arrow)"/><text x="8" y="362" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.5" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">注：unsafe_code = forbid 覆盖全工作区；pa-tui 只消费 pa-types 帧，不链接 pa-core。</text>
+</svg><figcaption>Prime Agent 十个 Rust Crate 与双层进程拓扑</figcaption></figure>
+<p>图里的虚线框标出了编译期依赖和运行期进程的对应关系。编译期，<code>pa-cli</code> 是唯一把各层拼装起来的组合根；运行期，一个普通交互会话至少横跨三个独立操作系统进程：前端终端界面、全局常驻的 Supervisor 守护进程、该会话专属的 Worker 进程，以及 Worker 拉起的 CPython REPL 子进程。</p>
+<h2 id="十个-crate-的职责与依赖边界">十个 Crate 的职责与依赖边界<a class="anchor" href="#十个-crate-的职责与依赖边界" aria-label="链接到本节">#</a></h2>
+<p>每个 crate 都在自己的 <code>README.md</code> 里明确划出了负责范围和非目标，防止出现无所不包的超大模块：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Crate</th>
+<th>源码规模（<code>src/</code>）</th>
+<th>直接工作区依赖</th>
+<th>核心职责与刻意排除项</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>pa-types</code></td>
+<td>44 文件 / 13,253 行</td>
+<td>无</td>
+<td>全工作区唯一共享词表：AI 消息类型、压缩配置、会话 JSONL 条目、守护进程帧与命令平面、信箱通知、平台路径与传输 trait</td>
+</tr>
+<tr>
+<td><code>pa-telemetry</code></td>
+<td>17 文件 / 4,733 行</td>
+<td>无</td>
+<td>版本化埋点事件、后台 fire-and-forget 上报、跨平台原子替换原语 <code>rename_onto</code></td>
+</tr>
+<tr>
+<td><code>pa-agent</code></td>
+<td>14 文件 / 5,646 行</td>
+<td>无</td>
+<td>与具体模型供应商无关的 Turn 循环、Claim-First 运行槽位、三层消息队列、中止信号</td>
+</tr>
+<tr>
+<td><code>pa-ai</code></td>
+<td>83 文件 / 41,483 行</td>
+<td><code>pa-types</code></td>
+<td>各大 LLM 供应商流式协议适配、OAuth 凭据刷新、内置兜底模型表 <code>models_generated.rs</code>、缓存计费</td>
+</tr>
+<tr>
+<td><code>pa-models</code></td>
+<td>11 文件 / 3,753 行</td>
+<td><code>pa-ai</code>, <code>pa-types</code></td>
+<td>在线模型目录拉取、磁盘缓存与回退链路</td>
+</tr>
+<tr>
+<td><code>pa-core</code></td>
+<td>275 文件 / 135,470 行</td>
+<td><code>pa-types</code>, <code>pa-ai</code>, <code>pa-models</code>, <code>pa-agent</code>, <code>pa-telemetry</code></td>
+<td>会话引擎 <code>SessionEngine</code>、工具注册、Python 内核生命周期、技能加载、提示词分层组装、压缩、持续精炼、MCP 宿主认证、目标与自主门禁、Cron 调度、HTML 导出</td>
+</tr>
+<tr>
+<td><code>pa-daemon</code></td>
+<td>256 文件 / 148,695 行</td>
+<td><code>pa-types</code>, <code>pa-core</code>, <code>pa-agent</code>, <code>pa-ai</code>, <code>pa-telemetry</code>, <code>pa-models</code></td>
+<td>Supervisor 监督进程、每会话 Worker 托管、重启退避、RLM Spawn 账本、信箱托管、直接挂载 Ticket、Worker 点对点通信、热更新事务、ACP stdio 服务</td>
+</tr>
+<tr>
+<td><code>pa-tui</code></td>
+<td>262 文件 / 131,748 行</td>
+<td><code>pa-types</code></td>
+<td>终端交互界面、守护进程线协议客户端、Markdown 与工具卡片渲染；不链接 <code>pa-core</code> 或 <code>pa-daemon</code></td>
+</tr>
+<tr>
+<td><code>pa-cli</code></td>
+<td>81 文件 / 35,768 行</td>
+<td><code>pa-types</code>, <code>pa-core</code>, <code>pa-ai</code>, <code>pa-agent</code>, <code>pa-daemon</code>, <code>pa-tui</code>, <code>pa-telemetry</code></td>
+<td><code>prime-agent</code> 二进制入口、手写参数解析器、把用户命令路由到 TUI、守护进程、无头打印或 ACP 模式</td>
+</tr>
+<tr>
+<td><code>pa-perf</code></td>
+<td>10 文件 / 4,242 行</td>
+<td><code>pa-types</code>, <code>pa-core</code>, <code>pa-daemon</code></td>
+<td>性能语料库与 PTY 基准测试脚手架，不随发行版发布</td>
+</tr>
+</tbody></table></div>
+<p>最关键的一条隔离线在 <code>pa-tui</code>。它有 13 万多行代码，却只依赖 <code>pa-types</code> 一个工作区 crate。TUI 进程压根不链接大模型客户端、不链接会话引擎、也不直接碰磁盘上的状态机，它只消费线协议帧并渲染。这样既保住了首帧启动速度，也让多个客户端同时挂载到同一个运行中会话成为可能。</p>
+<p>另一个容易忽略的细节是 <code>pa-cli</code> 的参数解析器（<code>crates/pa-cli/src/args.rs</code>）。它没有用常见的 <code>clap</code> 派生宏，而是纯手写实现。文件头部注释给出了原因：<code>--resume</code> 和 <code>--print</code> 这类标志允许可选地吃掉下一个参数，而且 <code>--goal</code>、<code>--autonomous-gate</code>、<code>--system-prompt</code> 后面的自由文本可能合法地以短横线或 YAML frontmatter 开头，普通派生解析器很难原样复刻既有 CLI 行为。</p>
+<h2 id="supervisor-与-per-session-worker-为什么要拆进程">Supervisor 与 Per-Session Worker：为什么要拆进程<a class="anchor" href="#supervisor-与-per-session-worker-为什么要拆进程" aria-label="链接到本节">#</a></h2>
+<p>很多 CLI Agent 把会话循环直接跑在交互进程里，或者做成一个单进程多协程的守护服务。Prime Agent 选了第三种架构：<strong>一个轻量的 Supervisor 进程，为每个活跃会话各拉起一个独立的 Worker 进程</strong>。</p>
+<p>在 <code>crates/pa-daemon/README.md</code> 和 <code>crates/pa-daemon/src/supervisor/</code> 中，这套模型的运转方式非常清晰：</p>
+<p><strong>故障隔离与退避重启</strong>，单个会话如果因为极端输出、内核异常或底层崩溃挂掉，只影响对应的 Worker，不会连累正在后台跑测试的其他十几个会话或子 Agent。Supervisor 监控每个 Worker 进程，异常退出后按退避策略拉起，新 Worker 带 <code>--resume &lt;sessionFile&gt;</code> 从磁盘上的 append-only JSONL 恢复分支历史与队列日志。</p>
+<p><strong>Supervisor 重启不丢会话身份</strong>，哪怕守护进程自己重启或升级，存活的 Worker 也会带着自身会话身份反向退避重连，把名册（Roster）重新注册回来。终端断开只是断掉一条客户端连接，后台 Worker 和里面的 Python REPL、定时心跳、子 Agent 全都继续推进，随时可以用 <code>prime-agent attach &lt;agent&gt;</code> 重新接上。</p>
+<p><strong>直接挂载（Direct Attach）减轻中转压力</strong>，流式生成时每个 Token 都会产生增量更新事件。如果所有客户端都经由 Supervisor 转发每个字节，Supervisor 就会变成性能瓶颈。<code>pa-daemon</code> 的做法是让 Supervisor 充当控制面与鉴权者：客户端请求挂载时，Supervisor 签发一张有效期 10 秒的一次性票据（Single-use Ticket），Worker 验票即焚，之后高频的 <code>message_update</code> 令牌流直接走客户端与 Worker 之间的点对点连接（Worker 内部还配有 50 毫秒单槽合并刷盘器），Supervisor 自身保持无载荷转发。</p>
+<p><strong>父死子灭的生命周期回收</strong>，<code>crates/pa-daemon/src/supervisor_parent_death.rs</code> 专门处理一种棘手场景：如果某个父会话的 Worker 意外退出（例如遭遇 <code>SIGKILL</code> 没来得及走优雅清理），Supervisor 会依据创建记录里的 <code>parentActiveSessionId</code> 找到其名下所有常驻 RLM 子会话并执行关闭，防止产生无人认领的孤儿计费会话。</p>
+<h2 id="rust-宿主与-python-运行时的职责切分">Rust 宿主与 Python 运行时的职责切分<a class="anchor" href="#rust-宿主与-python-运行时的职责切分" aria-label="链接到本节">#</a></h2>
+<p>Rust 层负责高并发、持久化、进程托管、网络流和终端渲染，而 <code>prime-agent-runtime</code> 负责模型直接编写和调用的编程环境。两层之间没有 FFI，也没有把 CPython 静态链接进 Rust 二进制，而是通过标准输入输出的 JSON 行协议隔开。</p>
+<p>这样切分后，两边的职责一目了然：</p>
+<p>Rust 宿主（<code>pa-core</code> + <code>pa-daemon</code>）掌握所有需要强一致、跨进程或涉及用户凭据的能力。比如模型凭据与 OAuth 令牌存储、JSONL 会话与信箱日志落盘、RLM 深度校验与子进程派生、上下文 Token 估算与压缩调度、以及 TUI 卡片的增量渲染。</p>
+<p>Python 运行时（<code>prime-agent-runtime/src/rlm/</code>，共 9 个核心模块约 1.37 万行源码）运行在 <code>uv</code> 管理的独立虚拟环境中，专注做好一件事：提供一个支持顶层 <code>await</code> 的持久 <code>__main__</code> 命名空间，让模型用原生 Python 语法读写文件、跑 <code>bash()</code>、调 <code>mcp.call_tool()</code>、操作 <code>rlm.harness</code>、驱动 <code>rlm.factory</code> 状态机，并通过 <code>await rlm.repl.host_request(...)</code> 向 Rust 宿主发起带类型的控制请求。</p>
+<p>顺带一提，发布构建也体现出这支团队的工程克制。根目录 <code>Cargo.toml</code> 的 <code>[profile.release]</code> 使用 <code>lto = &quot;thin&quot;</code>、<code>codegen-units = 4</code> 和 <code>debug = &quot;line-tables-only&quot;</code>，但不在链接期剥离符号，而是由发布脚本 <code>scripts/release/split_debug.py</code> 对同一份链接产物分别产出裁剪后的发行二进制和独立的调试解码侧车文件。注释里专门说明了原因：他们实测过，如果在链接期直接 strip，<code>.text</code> 段布局会发生变化，导致离线堆栈还原地址对不上。</p>
+<p>摸清了静态 crate 分层和动态进程拓扑之后，下一章我们直接钻进最核心的执行心脏：<code>pa-agent</code> 的 Turn 循环怎样协调并发抢占与三层消息队列。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="01-why-rlm.html"><small>上一章</small><strong>为什么传统工具调用在长程任务上会失速</strong></a><a class="next" href="03-agent-loop.html"><small>下一章</small><strong>Turn 循环、Claim-First 抢占与三层消息队列</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：把长程自主编程收进一个持久 Python REPL</a><a href="../chapters/01-why-rlm.html"><span>01</span>为什么传统工具调用在长程任务上会失速</a><a href="../chapters/02-workspace-topology.html"><span>02</span>十个 Rust Crate 与一层 Python 运行时的双层拓扑</a><a href="../chapters/03-agent-loop.html"><span>03</span>Turn 循环、Claim-First 抢占与三层消息队列</a><a href="../chapters/04-python-repl.html"><span>04</span>Protocol v3 内核：<code>python_repl</code> 如何把状态、输出和中断管稳</a><a href="../chapters/05-bash-edit-skills.html"><span>05</span>单工具收口下的程序化工具链：<code>bash</code>、<code>edit</code> 与可执行技能</a><a href="../chapters/06-subagents-delegation.html"><span>06</span>递归子 Agent 树、Spawn 账本与状态机工厂</a><a href="../chapters/07-agent-inbox.html"><span>07</span>持久信箱 <code>rlm.inbox</code> 与跨进程消息投递</a><a href="../chapters/08-session-search-acp.html"><span>08</span>会话生命周期、流式全文搜索与 ACP 外部协议</a><a href="../chapters/09-prompt-continual-harness.html"><span>09</span>分层系统提示词与 Continual Harness 自我改进</a><a href="../chapters/10-context-compaction-autonomy.html"><span>10</span>自动压缩、目标驱动与有界自主运行</a><a href="../chapters/11-mcp-bridge.html"><span>11</span>宿主管认证、内核跑协议的 MCP 桥接层</a><a href="../chapters/12-tui-observability.html"><span>12</span>把渲染留在关键路径上：TUI 卡片、延迟护栏与可观测性</a><a href="../chapters/13-security-cost-mini-model.html"><span>13</span>安全边界、成本账本与可运行教学模型</a><a href="../chapters/appendix-sources.html"><span>A</span>源码索引、关键常量表、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Prime Agent v0.10.5 · 快照 783acb5d72a9 · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

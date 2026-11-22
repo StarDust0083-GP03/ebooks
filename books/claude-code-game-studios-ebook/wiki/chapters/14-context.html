@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从需求、配置、角色到 Hook 与验收，解剖 Claude Code Game Studios 的工作流"><meta name="author" content="独立源码研究">
+<title>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口 · Claude Code 游戏工作室</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">G</span><span>Claude Code 游戏工作室</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 14</div><div class="rail-title">上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</div><ol><li><a href="#场景-聊了两小时刚拍板-上下文爆了怎么办">场景：聊了两小时刚拍板，上下文爆了怎么办</a></li><li><a href="#active-md-给机器看-25-行-给人看叙述区">active.md：给机器看 25 行，给人看叙述区</a></li><li><a href="#什么时候必须刷检查点-包括翻车的时候">什么时候必须刷检查点（包括翻车的时候）</a></li><li><a href="#增量落盘-把-4-万-token-的讨论压成-4-千">增量落盘：把 4 万 token 的讨论压成 4 千</a></li><li><a href="#主动压缩与子代理隔离">主动压缩与子代理隔离</a></li><li><a href="#再回头看-claude-md-另一条承重墙">再回头看 CLAUDE.md 另一条承重墙</a></li><li><a href="#怎么验证你的恢复机制不是纸上谈兵">怎么验证你的恢复机制不是纸上谈兵</a></li><li><a href="#常见误解">常见误解</a></li><li><a href="#练习">练习</a></li><li><a href="#答案提示">答案提示</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 14 章</div><h1>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</h1><div class="chapter-meta">CCGS v1.3.0 快照 2026-11-09 · 约 16 分钟</div></header><div class="prose"><h2 id="场景-聊了两小时刚拍板-上下文爆了怎么办">场景：聊了两小时刚拍板，上下文爆了怎么办<a class="anchor" href="#场景-聊了两小时刚拍板-上下文爆了怎么办" aria-label="链接到本节">#</a></h2>
+<p>你和 Claude 磨了两个小时，刚把战斗系统的第三节设计敲定，它正准备落盘，会话突然触发了上下文压缩（或者终端意外断掉）。重开一个会话，刚才你为什么毙掉方案 B、哪几个文件写了一半、下一步该跑哪条验证命令，它全忘了个精光。</p>
+<p>把所有状态都寄托在脆弱的聊天记忆里，长会话必翻车。CCGS 处理这件事的核心思路特别硬：<strong>聊天窗口只是临时草稿纸，硬盘上的文件才是唯一的真实记忆。</strong></p>
+<h2 id="active-md-给机器看-25-行-给人看叙述区"><code>active.md</code>：给机器看 25 行，给人看叙述区<a class="anchor" href="#active-md-给机器看-25-行-给人看叙述区" aria-label="链接到本节">#</a></h2>
+<p><code>production/session-state/active.md</code> 就是整个工作室的断点续传文件（被 <code>.gitignore</code> 忽略，不污染仓库历史）。打开 <code>.claude/docs/templates/session-state.md</code>，它被切成了清清楚楚的三块：</p>
+<pre><code class="language-markdown">&lt;!-- STATUS --&gt;
+Epic:
+Feature:
+Task:
+&lt;!-- /STATUS --&gt;
+
+&lt;!-- CHECKPOINT --&gt;
+**Updated:** [YYYY-MM-DD]
+**Branch:** `[branch]`
+**Current task:** ...
+**Next step:** ...
+**Blocked on:** ...
+**Files in progress:** ...
+**Run result:** ...
+**Same-seed run:** ...
+**Own calls:** ...
+**Open questions:** ...
+&lt;!-- /CHECKPOINT --&gt;
+
+（下面是自由生长的叙述区）
+</code></pre>
+<p>拆成三块是为了解决“越写越长、谁都找不到重点”的老毛病：</p>
+<ul>
+<li><strong><code>STATUS</code> 块</strong>：喂给 <code>.claude/statusline.sh</code> 状态栏用，在底部实时拼出 <code>史诗 &gt; 功能 &gt; 任务</code> 面包屑。</li>
+<li><strong><code>CHECKPOINT</code> 块（硬限制约 25 行，永远覆盖，绝不追加）</strong>：每次开新会话时，<code>session-start.sh</code> 会把它原样亮在屏幕上；<code>/dev-story</code> 和 <code>/story-done</code> 之间传递的 <code>Run result:</code>、<code>Same-seed run:</code>、<code>Own calls:</code> 也全靠这里交接。因为永远覆盖重写，体积恒定，绝不会越滚越大。顺手一提，如果这个检查点是在另一个 git 分支上写的，<code>session-start.sh</code> 预览时还会专门提醒你分支变了，防你张冠李戴。</li>
+<li><strong>叙述区（<code>/CHECKPOINT</code> 下面）</strong>：给人看、也给需要查背景的代理按需读，没有任何 Hook 会自动把它塞进开场上下文。超过大约 200 行时，用 <code>rotate-session-state.sh</code> 归档到 <code>production/session-logs/</code>，保持 <code>active.md</code> 苗条。</li>
+</ul>
+<h3 id="v1-3-0-修掉的一个惨痛数据丢失-bug-158">v1.3.0 修掉的一个惨痛数据丢失 Bug（#158）<a class="anchor" href="#v1-3-0-修掉的一个惨痛数据丢失-bug-158" aria-label="链接到本节">#</a></h3>
+<p>以前 <code>rotate-session-state.sh</code> 归档叙述区时有个隐藏地雷：如果当天目标日志路径写不进去（比如 <code>production/session-logs/</code> 位置碰巧占了个同名文件，或者目标位置是个目录），旧脚本竟然还是照常把 <code>active.md</code> 替换刷新了——<strong>唯一一份工作笔记当场灰飞烟灭</strong>。</p>
+<p>v1.3.0 把它改成了标准原子写流程：先把归档内容写进临时文件、验明写成功再 <code>mv</code> 到位，<strong>确认归档落袋之后才动 <code>active.md</code></strong>；前面任何一步失败，直接停下并大声告诉你 <code>active.md</code> 纹丝未动。自己写轮转或清理脚本时，这条“先验备份落盘再清原文件”绝对不能省。</p>
+<h2 id="什么时候必须刷检查点-包括翻车的时候">什么时候必须刷检查点（包括翻车的时候）<a class="anchor" href="#什么时候必须刷检查点-包括翻车的时候" aria-label="链接到本节">#</a></h2>
+<p><code>.claude/docs/context-management.md</code> 钉死了几个必须更新检查点的节点：设计小节刚批准落盘、刚敲定一个 ADR、达到实施里程碑、拿到测试结果。</p>
+<p>更重要的是：<code>/dev-story</code> 和 <code>/story-done</code> <strong>不管成功还是失败（<code>BLOCKED</code>、<code>INCOMPLETE</code>、<code>NOT ASSESSED</code>），收尾一律覆写检查点</strong>。干成了一步要记账，半路卡死了更要记账——把卡在哪一步、缺什么输入、当前改到哪几个文件写清楚，下一轮冷启动的读者才接得住。</p>
+<p>所以检查点里的 <code>Next step</code> 有条很实在的检验标准：**把聊天窗口关掉，换一个完全失忆的新会话只读这 25 行，能不能立刻动手干下一件事？**写“继续开发战斗系统”是不合格的，写“在 <code>src/combat/parry.gd</code> 补完 <code>can_parry()</code> 并跑 <code>godot --headless --path . --import</code>”才算合格。</p>
+<h2 id="增量落盘-把-4-万-token-的讨论压成-4-千">增量落盘：把 4 万 token 的讨论压成 4 千<a class="anchor" href="#增量落盘-把-4-万-token-的讨论压成-4-千" aria-label="链接到本节">#</a></h2>
+<p>写长篇 GDD 或架构文档时，如果等全部 8 个章节都在聊天里反复拉扯完再一次性写入文件，上下文早就被三五万 token 的讨论历史塞爆了，模型写到后面自己跟前面打架。</p>
+<p><code>context-management.md</code> 推的是一套“骨架先行、一节一落盘”的节奏：</p>
+<ol>
+<li>先征得同意建好带空标题骨架的文件；</li>
+<li>聊天里只讨论和起草当前这一节；</li>
+<li>你一点头，<strong>立刻写进硬盘</strong>，顺手更新检查点；</li>
+<li>写完这一节，前面围绕它的扯皮就可以放心压缩掉。</li>
+</ol>
+<p>对话永远只当临时工作台，硬盘才是持久层，单次上下文占用立马从几万压到几千。</p>
+<h2 id="主动压缩与子代理隔离">主动压缩与子代理隔离<a class="anchor" href="#主动压缩与子代理隔离" aria-label="链接到本节">#</a></h2>
+<p>文档里给的操作经验非常直白：</p>
+<ul>
+<li><strong>别等撞墙再压缩</strong>：状态栏看到上下文用到 <strong>60%–70%</strong> 就主动压缩；换完全不相关的任务、或者连续两次纠正模型它还是听不懂时，干脆直接 <code>/clear</code> 重来，比在污染的上下文里死磕省事得多。</li>
+<li><strong>压缩后第一件事</strong>：先读 <code>active.md</code> 和正在改的文件（记住，压缩摘要肯定会丢细节，所以别赌模型“压缩时会记得保留”，决定一旦拍板立刻落盘最靠谱）。</li>
+<li><strong>什么时候派只读子代理省上下文</strong>：文档给了粗略预算——轻量阅读约 3k token、实现功能约 8k、多系统重构约 15k。如果明确知道就看一两个文件，主会话直接读最快；一旦需要跨十几个文件大海捞针（预计吞掉 5k 以上 token），扔给子代理去翻，让它只带回来路径和几行结论，主上下文就能一直保持干净。</li>
+</ul>
+<h2 id="再回头看-claude-md-另一条承重墙">再回头看 <code>CLAUDE.md</code> 另一条承重墙<a class="anchor" href="#再回头看-claude-md-另一条承重墙" aria-label="链接到本节">#</a></h2>
+<p>把“文件当记忆”和另一条承重墙——<strong>“<code>.claude/scripts/</code> 里的辅助脚本只输出观察，不输出判决”</strong>——摆在一起看，整套设计思路就串通了：</p>
+<ul>
+<li>易变、耗算力的<strong>判断</strong>留在能看到全局配置和上下文的技能与人手里；</li>
+<li>确定性、可复现的<strong>事实和状态</strong>交给脚本读、交给硬盘文件存。</li>
+</ul>
+<p>脚本报“文件存在”、“哈希变了”、“注册表有 3 条重复”，这些客观事实永远不会过时；要是脚本自作聪明替你打个 <code>PASS</code>，它压根不知道你今天开了 <code>full</code> 档还是单系统覆盖，迟早跟上层流程打架。</p>
+<h2 id="怎么验证你的恢复机制不是纸上谈兵">怎么验证你的恢复机制不是纸上谈兵<a class="anchor" href="#怎么验证你的恢复机制不是纸上谈兵" aria-label="链接到本节">#</a></h2>
+<p>恢复能力不演练一次，等于不存在。拿手头项目做个 3 分钟演习：</p>
+<ol>
+<li>跑完半个故事，确认 <code>active.md</code> 里的 <code>CHECKPOINT</code> 块已经刷成最新；</li>
+<li>直接 <code>/clear</code> 或关终端重开；</li>
+<li>看 <code>session-start.sh</code> 吐出来的预览信息，只凭这 25 行不翻旧聊天记录，试着让 Claude 接着干下一步。</li>
+</ol>
+<p>如果新会话问了一堆你刚才明明拍过板的问题，说明你的检查点写得太虚，或者决策忘了及时落盘。</p>
+<h2 id="常见误解">常见误解<a class="anchor" href="#常见误解" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>误解一：关掉 <code>features.session_state: off</code> 没啥影响，反正 Claude 会记得上下文。</strong> 关掉确实能在每次开会话省下最多约 750 token，但你失去的是崩溃恢复检查点、会话日志归档和子代理调用记录。这也是源码里把默认设成 <code>on</code> 的原因。</li>
+<li><strong>误解二：检查点写得越详细越好。</strong> 超过 25 行就会挤占开场上下文或被截断；细枝末节放叙述区和归档日志，检查点只留“冷启动立刻能接着干”的最小闭环信息。</li>
+<li><strong>误解三：有了 <code>PreCompact</code> Hook，压缩前会自动帮我把一切保存好。</strong> <code>pre-compact.sh</code> 只记一条压缩日志（Claude Code 也不把它的输出送回模型），真正靠得住的只有你在每个里程碑就落好盘的文件。</li>
+</ul>
+<h2 id="练习">练习<a class="anchor" href="#练习" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>按模板手写一份 <code>active.md</code> 的 <code>CHECKPOINT</code> 块，描述一个做到一半且被上游依赖卡住的故事，保证一个完全没看过之前对话的新会话读完就能准确接手。</li>
+<li>对比 <code>rotate-session-state.sh</code> 修复前后的写法，说说“先写临时文件再 <code>mv</code>、成功后才更新原文件”防住了哪两类故障。</li>
+<li>为什么 <code>session-stop.sh</code> 在 <code>.claude/settings.json</code> 里专门标了 <code>&quot;async&quot;: true</code>？</li>
+</ol>
+<h2 id="答案提示">答案提示<a class="anchor" href="#答案提示" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>必须包含具体文件路径（故事路径、改动中的代码文件）、明确的 <code>Blocked on:</code>（具体依赖故事路径和缺失状态）、可执行的 <code>Next step:</code>（先去完成哪个依赖或跑哪条命令），总行数压在 25 行以内。</li>
+<li>一是防目标路径不可写（权限不足、路径被同名文件占用）时原文件已经先被覆写导致数据永久丢失；二是防写入中途崩溃留下半截损坏的归档文件。</li>
+<li>因为 <code>Stop</code> 事件在模型每次回复结束时都会触发，如果同步执行归档和 git 状态记录，每聊一句都要多卡几百毫秒甚至几秒；标成 <code>async: true</code> 丢进后台静默跑，既不拖慢交互体验，又能照常记账。</li>
+</ol>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="13-engine.html"><small>上一章</small><strong>引擎与品类适配：统一引擎表、Web 一等公民与品类库</strong></a><a class="next" href="15-security.html"><small>下一章</small><strong>安全边界：能聊天、有 Hook，不等于有沙箱</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：先看清这东西到底是怎么跑起来的</a><a href="../chapters/01-requirements.html"><span>01</span>需求：一个人写游戏，为什么还要套规矩</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：一个会话，四种约束</a><a href="../chapters/03-onboarding.html"><span>03</span>入门：先玩一把（<code>/prototype</code>）与 Studio Mode（<code>/start</code>）双轨入口</a><a href="../chapters/04-config.html"><span>04</span>配置求值：一个 <code>rigor</code> 如何长出六个设置</a><a href="../chapters/05-agents.html"><span>05</span>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</a><a href="../chapters/06-skill-protocol.html"><span>06</span>Skill 协议：一条斜杠命令怎么从解析走到交接</a><a href="../chapters/07-artifacts.html"><span>07</span>产物模型：一页简报与故事、需求、ADR 三张网</a><a href="../chapters/08-dev-story.html"><span>08</span>实施链路：<code>/dev-story</code> 怎么把故事变成代码</a><a href="../chapters/09-story-done.html"><span>09</span>验收：<code>/story-done</code> 如何堵死“基本完成”</a><a href="../chapters/10-hooks.html"><span>10</span>Hook：十五个检查点里，到底谁真的能拦住</a><a href="../chapters/11-registries.html"><span>11</span>注册表：跨文档事实怎么管才不漂移</a><a href="../chapters/12-teams.html"><span>12</span>协作：团队流水线、默认塌缩与“透镜折叠”</a><a href="../chapters/13-engine.html"><span>13</span>引擎与品类适配：统一引擎表、Web 一等公民与品类库</a><a href="../chapters/14-context.html"><span>14</span>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</a><a href="../chapters/15-security.html"><span>15</span>安全边界：能聊天、有 Hook，不等于有沙箱</a><a href="../chapters/16-verification.html"><span>16</span>验证与演进：Markdown 写的框架，怎么证明自己没改坏</a><a href="../chapters/17-mini-studio.html"><span>17</span>最小实验：用两百行 Python 亲手跑通四条核心约束</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.3.0 源码索引、实测数据、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · CCGS v1.3.0 · 快照 abc0de79d6ce · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

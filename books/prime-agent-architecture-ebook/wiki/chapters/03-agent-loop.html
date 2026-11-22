@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="源码拆解 PrimeIntellect-ai/prime-agent v0.10.5：Rust 多进程宿主、Protocol v3 Python REPL、持久信箱、递归子 Agent 与 Continual Harness"><meta name="author" content="独立源码研究">
+<title>Turn 循环、Claim-First 抢占与三层消息队列 · Prime Agent 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">PA</span><span>Prime Agent 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 03</div><div class="rail-title">Turn 循环、Claim-First 抢占与三层消息队列</div><ol><li><a href="#claim-first-先拿到运行凭证-再动队列">Claim-First：先拿到运行凭证，再动队列</a></li><li><a href="#三层消息队列与-turn-循环优先级">三层消息队列与 Turn 循环优先级</a></li><li><a href="#rlm-end-turn-如何让模型体面地结束回合">rlm.end_turn() 如何让模型体面地结束回合</a></li><li><a href="#队列暂停与恢复闸门">队列暂停与恢复闸门</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 03 章</div><h1>Turn 循环、Claim-First 抢占与三层消息队列</h1><div class="chapter-meta">Prime Agent v0.10.5 快照 2026-11-21 · 约 16 分钟</div></header><div class="prose"><p>当一个编程 Agent 既允许用户在生成中途插话纠偏，又允许后台命令完成、定时心跳触发、子 Agent 回信、目标驱动自动续跑同时往同一个会话里投递消息时，最容易出两类隐蔽故障。</p>
+<p>第一类是<strong>竞态丢消息</strong>：后台队列里刚躺进一条 <code>[bash-done]</code> 通知，准备唤醒空闲会话；恰在几毫秒前，用户敲了回车启动新一轮对话。如果队列先弹出了消息、再尝试抢占执行权，抢占失败时那条通知就已经从队列里消失了。</p>
+<p>第二类是<strong>死锁占位</strong>：某次回合中途因为网络断开或任务被取消而异常退出，如果执行状态的锁或标志位没有通过 RAII 守卫释放，这个会话就会永远卡在忙碌态，之后用户的每一句话都会收到冰冷的报错：<code>Agent is already processing.</code>。</p>
+<p><code>crates/pa-agent</code> 虽然只有 14 个源文件、5,646 行代码，却是整个系统的节奏控制器。它用极小的接口面把上面两类并发陷阱都堵死了。</p>
+<h2 id="claim-first-先拿到运行凭证-再动队列">Claim-First：先拿到运行凭证，再动队列<a class="anchor" href="#claim-first-先拿到运行凭证-再动队列" aria-label="链接到本节">#</a></h2>
+<p>翻开 <code>crates/pa-agent/src/agent.rs</code> 第 648 行的 <code>claim_run()</code>，以及 <code>.changes/agent-queue-claim-first.md</code> 和 <code>.changes/fix-remove-parked-seat.md</code>，能看清这套并发契约的核心。</p>
+<p>任何想推动 Agent 运转的路径，不管是用户发新提示词，还是队列泵消费积压消息，都必须先调用 <code>claim_run()</code> 换取一个具名的所有权凭证 <code>RunClaim</code>。具体步骤严格串行：</p>
+<ol>
+<li>获取异步互斥锁 <code>admission</code>，防止两个启动流程交错读取配置。</li>
+<li>一次性拍下当前的 <code>model_override</code> 快照，保证这次运行里使用的模型身份和请求参数完全一致，不会被并发的 <code>/model</code> 切换撕裂。</li>
+<li>锁住 <code>run</code> 槽位。如果槽位已被占用，立刻返回带错误码 <code>AgentContinueErrorCode::Busy</code> 的类型化错误，上层按错误码分支，不再靠匹配字符串判断。</li>
+<li>槽位为空时，创建新的 <code>AbortController</code> 和 <code>watch::channel(false)</code> 空闲通知通道，把 <code>ActiveRun</code> 装进槽位，释放 <code>admission</code> 锁并返回 <code>RunClaim</code>。</li>
+</ol>
+<p>真正进入执行体的是 <code>run_with_lifecycle()</code>（第 691 行）。它一进门就在栈上构造了一个 <code>RunEndGuard</code>，无论后面的异步流是正常结束、返回错误，还是在 Tokio 任务里被外部直接 drop，守卫都会确保清理 <code>is_streaming</code> 标记、清空 <code>run</code> 槽位并向 <code>idle_tx</code> 广播 <code>true</code>。这就是 <code>.changes/fix-remove-parked-seat.md</code> 修复“会话崩溃后永久卡死”问题的根基。</p>
+<p>有了 Claim-First，队列消费顺序也就顺了：队列里的消息先留在队列里，等拿到 <code>RunClaim</code> 之后，或者等正在运行的 <code>run_loop</code> 走到合法的轮询检查点时，才执行 <code>drain()</code>。抢不到运行权时，队列纹丝不动，消息绝不会凭空蒸发。</p>
+<h2 id="三层消息队列与-turn-循环优先级">三层消息队列与 Turn 循环优先级<a class="anchor" href="#三层消息队列与-turn-循环优先级" aria-label="链接到本节">#</a></h2>
+<p>拿稳了运行权，控制流进入 <code>crates/pa-agent/src/agent_loop/run.rs</code> 的 <code>run_loop()</code>。这个函数是一个双层循环，把所有输入按紧急程度切成了三层，优先级从高到低依次是：<strong>Steering（转向插话）</strong>、<strong>Follow-Up（后续排队）</strong> 和 <strong>Continuation（宿主续跑）</strong>。</p>
+<p>整个状态机的流转逻辑可以直接对照源码读下来：</p>
+<pre><code class="language-text">进入 run_loop()
+  ├─ 首次轮询 Steering 队列（可按 skip_initial_steering_poll 跳过）
+  └─ 外层循环（处理后续队列与续跑钩子）
+       ├─ 内层循环：只要 has_more_tool_calls 或 pending_messages 非空
+       │    1. 把 pending_messages 逐条写入上下文并发射 MessageStart/MessageEnd
+       │    2. 调用 stream_assistant_response() 流式拉取模型回复
+       │    3. 若 stop_reason 为 Error 或 Aborted，发 TurnEnd + AgentEnd 立即退出
+       │    4. 若模型发出 tool_calls，调用 execute_tool_calls() 顺序执行整批工具
+       │       -&gt; 若批内有调用标记 terminate（例如 rlm.end_turn()），则 has_more_tool_calls = false
+       │    5. 发射 TurnEnd，若 AbortSignal 已触发则立刻退出
+       │    6. 评估 should_stop_after_turn 与 should_stop_before_turn 钩子
+       │    7. 轮询 Steering 队列；若有新插话，装入 pending_messages 继续内层循环
+       ├─ 内层循环结束，轮询 Follow-Up 队列 -&gt; 若非空，装入 pending_messages 回到外层循环
+       ├─ Follow-Up 为空，调用 get_continuation_messages 钩子 -&gt; 若非空，回到外层循环
+       └─ 全部为空 -&gt; 发射 AgentEnd，正常退出
+</code></pre>
+<p>把输入拆成三层，对应三种截然不同的交互时机：</p>
+<p><strong>Steering 队列</strong>用于立刻生效的中途插话。用户在模型连续调工具的中途发来纠偏指令、ACP 客户端调用 <code>_session/steering</code>、或者紧急心跳按 <code>delivery_mode=&quot;steer&quot;</code> 触发时，消息走 Steering 队列。它在每一次工具批结算完后就被检查，不用等模型彻底停下来。</p>
+<p><strong>Follow-Up 队列</strong>用于当前任务彻底收尾后再接手的待办。例如用户提前排好下一项任务、或者某些非抢占式通知，会等到内层工具循环和 Steering 全部消化完毕，才会从 Follow-Up 队列里拉出来开启新的一轮。</p>
+<p><strong>Continuation 钩子</strong>由上层引擎通过异步回调 <code>get_continuation_messages</code> 注入，没有固定内存队列。只有当模型自然停下、且用户和外部都没有排任何 Steering 或 Follow-Up 消息时，它才会被调用。Prime Agent 的 <code>/goal</code> 持久目标续跑和 <code>/autonomous</code> 质量门禁驱动，全部挂载在这个最底优先级的钩子上。只要用户发来任何指令，用户意图永远压过自动续跑。</p>
+<h2 id="rlm-end-turn-如何让模型体面地结束回合"><code>rlm.end_turn()</code> 如何让模型体面地结束回合<a class="anchor" href="#rlm-end-turn-如何让模型体面地结束回合" aria-label="链接到本节">#</a></h2>
+<p>在一个能后台跑 <code>bash()</code>、能 <code>rlm.spawn()</code> 一堆子 Agent 的系统里，经常出现一种尴尬局面：模型刚刚在 <code>python_repl</code> 里拉起了三个后台构建任务，此时不需要再做任何事，只需要把控制权还给用户，等任务完成后通过信箱通知回来即可。</p>
+<p>如果单靠工具循环的默认规则，工具调用返回结果后，模型被迫还得再多调一次 LLM，只为了输出一句“我已经启动后台任务，正在等待”。既白烧一次带完整上下文的输入 Token，又多等几秒延迟。</p>
+<p>Prime Agent 在 <code>python_repl</code> 里提供了一个受宿主认可的终结原语：<code>await rlm.end_turn()</code>。它的流转横跨三层源码：</p>
+<ol>
+<li>Python 侧（<code>prime-agent-runtime/src/rlm/__init__.py</code> 第 229 行）向宿主发送类型为 <code>rlm.end_turn</code> 的 <code>host_request</code>。如果跑在不支持该请求的外部宿主机上，它会直接抛异常，绝不静默吞掉。</li>
+<li>Rust 内核管理器收到后，给当前执行中的单元格打上 <code>ended_turn = true</code> 标记。<code>crates/pa-core/src/tools/ipython.rs</code> 第 385 行和第 473 行在拼装工具返回时，往结果文本末尾追加简短的 <code>turn ended</code> 记录以便会话回放，同时在 <code>ToolExecutionResult</code> 中返回 <code>terminate: Some(true)</code>。</li>
+<li>回到 <code>pa-agent</code> 的 <code>run_loop()</code> 第 104 行：<code>has_more_tool_calls = !executed_tool_batch.terminate</code>。注意它的批处理语义：如果同一条助手消息里包含多个工具调用，批内其余调用依然会按顺序跑完，只要批内任意一次 <code>rlm.end_turn()</code> 成功，整批结束后 <code>has_more_tool_calls</code> 就置为 <code>false</code>，不再触发下一次模型推理，直接把回合交还给用户，同时后台进程与子 Agent 继续在 Worker 和内核里运行。</li>
+</ol>
+<h2 id="队列暂停与恢复闸门">队列暂停与恢复闸门<a class="anchor" href="#队列暂停与恢复闸门" aria-label="链接到本节">#</a></h2>
+<p>还有一个容易踩坑的边界是用户按下中止键（Abort）或手动触发 <code>/compact</code> 之后，排队里的消息该怎么办。</p>
+<p>按照 <code>crates/pa-daemon/README.md</code> 记录的队列暂停规则（对应 <code>#227</code>/<code>#233</code> 决策），当 Worker 收到 <code>abort</code>、<code>abort_and_clear_queue</code> 或手动 <code>compact</code> 时，不只是掐断当前网络请求，还会把队列输入泵设为无限期暂停状态。在暂停期间，普通的 <code>prompt</code> 请求会被直接拒绝，队列里的待办项安全停放，不会被误自动触发。</p>
+<p>直到出现明确的恢复动作，暂停闸门才会重新打开：用户发出显式带 <code>streamingBehavior</code> 的提示、显式发 <code>steer</code>/<code>follow_up</code>、调用 <code>resume_queue</code>、修改排队消息 <code>mutate_queued_message</code>、定时心跳触发，或者在存在活跃目标的情况下完成了一次成功的压缩。这样一来，用户在打断失控 Agent 后，就有充足时间检查和修改队列，不用担心刚按完 Ctrl+C，排在后面的消息又把系统带飞。</p>
+<p>此外，在 <code>crates/pa-daemon/src/worker/</code> 的队列投影里，系统还会用 Rust 原生的类型化字段 <code>rlmChildStatus</code> 和 <code>inboxNotice</code> 标记出哪些排队行是守护进程内部生成的机器通知。渲染层据此把机器唤醒行折叠进计数条里，绝不把系统通知伪装成用户输入，也不会让用户输入的相似文本误触折叠逻辑。</p>
+<p>Turn 循环解决了“什么时候调用模型、什么时候执行工具、怎么安全打断”的问题。接下来，我们沿着 <code>execute_tool_calls</code> 往下走，拆开 Prime Agent 最核心的唯一工具：<code>python_repl</code> 内核和它的 Protocol v3 线协议。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="02-workspace-topology.html"><small>上一章</small><strong>十个 Rust Crate 与一层 Python 运行时的双层拓扑</strong></a><a class="next" href="04-python-repl.html"><small>下一章</small><strong>Protocol v3 内核：python_repl 如何把状态、输出和中断管稳</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：把长程自主编程收进一个持久 Python REPL</a><a href="../chapters/01-why-rlm.html"><span>01</span>为什么传统工具调用在长程任务上会失速</a><a href="../chapters/02-workspace-topology.html"><span>02</span>十个 Rust Crate 与一层 Python 运行时的双层拓扑</a><a href="../chapters/03-agent-loop.html"><span>03</span>Turn 循环、Claim-First 抢占与三层消息队列</a><a href="../chapters/04-python-repl.html"><span>04</span>Protocol v3 内核：<code>python_repl</code> 如何把状态、输出和中断管稳</a><a href="../chapters/05-bash-edit-skills.html"><span>05</span>单工具收口下的程序化工具链：<code>bash</code>、<code>edit</code> 与可执行技能</a><a href="../chapters/06-subagents-delegation.html"><span>06</span>递归子 Agent 树、Spawn 账本与状态机工厂</a><a href="../chapters/07-agent-inbox.html"><span>07</span>持久信箱 <code>rlm.inbox</code> 与跨进程消息投递</a><a href="../chapters/08-session-search-acp.html"><span>08</span>会话生命周期、流式全文搜索与 ACP 外部协议</a><a href="../chapters/09-prompt-continual-harness.html"><span>09</span>分层系统提示词与 Continual Harness 自我改进</a><a href="../chapters/10-context-compaction-autonomy.html"><span>10</span>自动压缩、目标驱动与有界自主运行</a><a href="../chapters/11-mcp-bridge.html"><span>11</span>宿主管认证、内核跑协议的 MCP 桥接层</a><a href="../chapters/12-tui-observability.html"><span>12</span>把渲染留在关键路径上：TUI 卡片、延迟护栏与可观测性</a><a href="../chapters/13-security-cost-mini-model.html"><span>13</span>安全边界、成本账本与可运行教学模型</a><a href="../chapters/appendix-sources.html"><span>A</span>源码索引、关键常量表、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Prime Agent v0.10.5 · 快照 783acb5d72a9 · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

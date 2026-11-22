@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从文档解析、切分、混合检索到纠错、图谱、评估与上线边界的 RAG 工程实战指南"><meta name="author" content="独立源码研究">
+<title>附录 B：源码快照、论文范围、术语与研究边界 · RAG 工程实战</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">RAG</span><span>RAG 工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Appendix</div><div class="rail-title">附录 B：源码快照、论文范围、术语与研究边界</div><ol><li><a href="#上游源码快照与增量审计">上游源码快照与增量审计</a></li><li><a href="#原始论文核对范围">原始论文核对范围</a></li><li><a href="#核心术语对照表">核心术语对照表</a></li><li><a href="#实验口径与研究边界">实验口径与研究边界</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">附录 B</div><h1>附录 B：源码快照、论文范围、术语与研究边界</h1><div class="chapter-meta">RAG_Techniques 快照 2026-11-02 · 约 12 分钟</div></header><div class="prose"><h2 id="上游源码快照与增量审计">上游源码快照与增量审计<a class="anchor" href="#上游源码快照与增量审计" aria-label="链接到本节">#</a></h2>
+<ul>
+<li>上游仓库：<a href="https://github.com/NirDiamant/RAG_Techniques">NirDiamant/RAG_Techniques</a></li>
+<li>固定提交：<code>2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6</code></li>
+<li>上游提交时间：2026-11-02</li>
+<li>本地核对日期：2026-11-22</li>
+<li>上游许可：<a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/LICENSE">Custom License Agreement</a>（非商业使用并要求署名，商业使用受许可材料需原作者事先书面授权）</li>
+</ul>
+<p>本书正文、架构图与零依赖 Python 教学实现均独立编写，仅保留上游路径索引与静态源码分析，不分发上游源码全包、Notebook 输出或图片，也不对第三方材料重新授权。</p>
+<p>相比上一核对快照（<code>8e9febb8</code>，2026-10-27），<code>2fd7bd0f</code> 引入的关键变化已并入对应章节：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>上游变更</th>
+<th>涉及文件</th>
+<th>本书落点</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Mistral OCR 4 升级至 OCR 4.1（#214）</td>
+<td><code>all_rag_techniques/document_parsing_with_mistral_ocr.ipynb</code></td>
+<td>第 3 章、第 4 章</td>
+</tr>
+<tr>
+<td>LangChain 1.x 与 LlamaIndex 0.14 迁移（#212）</td>
+<td>全仓 Notebook、<code>helper_functions.py</code>、21 份脚本</td>
+<td>第 5 章、第 6 章、第 14 章</td>
+</tr>
+<tr>
+<td>停服模型升级与 DeepEval <code>GEval</code> logprobs 行为（#211）</td>
+<td>33 处 <code>gpt-5.4-mini</code>、6 处 <code>gpt-5.4</code>、<code>evaluation/evaluation_deep_eval.ipynb</code></td>
+<td>第 5 章、第 9 章、第 14 章</td>
+</tr>
+<tr>
+<td>HyPE 逗号语法修复与无密钥 CI 烟雾检查（#211、#209）</td>
+<td><code>HyPE_Hypothetical_Prompt_Embeddings.ipynb</code>、<code>.github/workflows/notebook-smoke.yml</code></td>
+<td>第 7 章、第 9 章</td>
+</tr>
+</tbody></table></div>
+<p>静态逐 cell 重点核对的 Notebook 包括：Simple RAG（LangChain / LlamaIndex）、Document Parsing with Mistral OCR 4.1、Choose Chunk Size、Fusion Retrieval（LangChain / LlamaIndex）、Reranking、Contextual Chunk Headers、HyPE、Context Enrichment Window、Self-RAG、CRAG、LightRAG、MemoRAG、DeepEval，以及 <code>helper_functions.py</code>、<code>tests/</code> 和 <code>.github/workflows/</code>。其余 Notebook 作为路径索引和概念对照。</p>
+<h2 id="原始论文核对范围">原始论文核对范围<a class="anchor" href="#原始论文核对范围" aria-label="链接到本节">#</a></h2>
+<p>下列 8 篇论文直接核对了 arXiv 标题与摘要，用以校验核心定位与方法边界，不引用未复现的论文实验榜单数值：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>主题</th>
+<th>原始论文</th>
+<th>本书参考边界</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>RAG</td>
+<td><a href="https://arxiv.org/abs/2005.11401">Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks</a></td>
+<td>参数知识与外部非参数检索协同定位</td>
+</tr>
+<tr>
+<td>HyDE</td>
+<td><a href="https://arxiv.org/abs/2212.10496">Precise Zero-Shot Dense Retrieval without Relevance Labels</a></td>
+<td>查询时假设文档向量检索原文</td>
+</tr>
+<tr>
+<td>Self-RAG</td>
+<td><a href="https://arxiv.org/abs/2310.11511">Learning to Retrieve, Generate, and Critique through Self-Reflection</a></td>
+<td>按需检索与微调反思 token，区别于多轮提示演示</td>
+</tr>
+<tr>
+<td>CRAG</td>
+<td><a href="https://arxiv.org/abs/2401.15884">Corrective Retrieval Augmented Generation</a></td>
+<td>检索质量三态评估与纠错分流</td>
+</tr>
+<tr>
+<td>RAPTOR</td>
+<td><a href="https://arxiv.org/abs/2401.18059">Recursive Abstractive Processing for Tree-Organized Retrieval</a></td>
+<td>递归聚类摘要树与跨层检索</td>
+</tr>
+<tr>
+<td>GraphRAG</td>
+<td><a href="https://arxiv.org/abs/2404.16130">From Local to Global</a></td>
+<td>实体图、社区摘要与全语料全局问答</td>
+</tr>
+<tr>
+<td>LightRAG</td>
+<td><a href="https://arxiv.org/abs/2410.05779">Simple and Fast Retrieval-Augmented Generation</a></td>
+<td>低层具体实体与高层主题双层检索</td>
+</tr>
+<tr>
+<td>MemoRAG</td>
+<td><a href="https://arxiv.org/abs/2409.05591">Global Memory-Enhanced Retrieval Augmentation</a></td>
+<td>全局记忆生成检索线索回溯原文</td>
+</tr>
+</tbody></table></div>
+<h2 id="核心术语对照表">核心术语对照表<a class="anchor" href="#核心术语对照表" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>术语</th>
+<th>本书口径</th>
+<th>常见混淆点</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Chunk</td>
+<td>带全局 ID、版本、位置与来源的检索单元</td>
+<td>整篇文档或检索名次</td>
+</tr>
+<tr>
+<td>Embedding</td>
+<td>稠密编码模型输出的连续语义向量</td>
+<td>本书离线实验中的词频向量</td>
+</tr>
+<tr>
+<td>BM25</td>
+<td>综合词频饱和、逆文档频率与长度归一的词面评分</td>
+<td>简单子串匹配</td>
+</tr>
+<tr>
+<td>RRF</td>
+<td>按稳定文档 ID 汇总多路名次倒数 <code>1 / (c + rank)</code></td>
+<td>原始分数归一化加权</td>
+</tr>
+<tr>
+<td>Reranking</td>
+<td>对有限候选池做精细二次打分重排</td>
+<td>从全库补回漏召回片段</td>
+</tr>
+<tr>
+<td>Grounding</td>
+<td>生成结论与实际注入原文之间存在可验证支持关系</td>
+<td>答案读起来通顺合理</td>
+</tr>
+<tr>
+<td>Citation</td>
+<td>指向 <code>injected_ids</code> 内具体片段的可核对编号</td>
+<td>编号存在即代表推论正确</td>
+</tr>
+<tr>
+<td>HyDE</td>
+<td>查询时生成假设文档供向量召回</td>
+<td>将假设文本直接当作证据</td>
+</tr>
+<tr>
+<td>HyPE</td>
+<td>入库时为片段预生成代理问题并回映射父片段 ID</td>
+<td>查询时直接生成回答</td>
+</tr>
+<tr>
+<td>CRAG</td>
+<td>按检索质量走直出、受控重试或拒答的三态纠错路由</td>
+<td>无条件上网搜索补齐内部规范</td>
+</tr>
+<tr>
+<td>ACL</td>
+<td>召回前及所有旁路必须执行的访问控制边界</td>
+<td>靠相关性分数或提示词过滤</td>
+</tr>
+<tr>
+<td>Recall / Complete</td>
+<td>必要证据的命中比例 / 全部必要证据同时交付的布尔率</td>
+<td>只看首位命中的 MRR</td>
+</tr>
+</tbody></table></div>
+<h2 id="实验口径与研究边界">实验口径与研究边界<a class="anchor" href="#实验口径与研究边界" aria-label="链接到本节">#</a></h2>
+<p>全书配套语料（<code>examples/documents.jsonl</code>）、6 题评估脚本（<code>examples/evaluate.py</code>）和 20 项单元测试（<code>examples/test_mini_rag.py</code>）均为本地零依赖教学实现，运行过程不调用远程大语言模型、语义 embedding 服务、OCR 接口或外部图数据库。书中手写的示范回答均已显式标明，静态代码观察、离线实测结果与生产架构建议互不混写。本地小题集与单元测试用于验证系统不变量和排障方法，不构成真实生产环境的准确率、延迟或安全认证承诺。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="appendix-map.html"><small>上一章</small><strong>附录 A：上游 47 份 Notebook 与 21 份脚本阅读地图</strong></a><a class="next" href="appendix-code.html"><small>下一章</small><strong>附录 C：配套教学实现与样例数据</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-opening.html"><span>00</span>开篇：文档都在库里，助手为什么还会答错</a><a href="../chapters/01-requirements.html"><span>01</span>需求篇：先框住哪些问题必须答对</a><a href="../chapters/02-architecture.html"><span>02</span>技术方案：从需求推导一条可追踪的链路</a><a href="../chapters/03-ingestion.html"><span>03</span>资料入库：先把文档读对，再谈检索</a><a href="../chapters/04-chunking.html"><span>04</span>文档切分：验签和幂等，为什么总只召回一半</a><a href="../chapters/05-baseline.html"><span>05</span>基础检索：先交付一条能复现的离线链路</a><a href="../chapters/06-fusion-reranking.html"><span>06</span>混合检索与重排：把不同候选放进同一张账</a><a href="../chapters/07-query-enhancement.html"><span>07</span>查询增强：用户不一定会说出幂等这个词</a><a href="../chapters/08-context.html"><span>08</span>证据组装：检索到了，还要让模型完整读到</a><a href="../chapters/09-evaluation.html"><span>09</span>评估：两条高分结果，未必够答完一个问题</a><a href="../chapters/10-corrective.html"><span>10</span>纠错检索：找不到以后，系统走哪一条路</a><a href="../chapters/11-hierarchy-memory.html"><span>11</span>层次索引与记忆：问题开始面向整份资料</a><a href="../chapters/12-graph.html"><span>12</span>图谱检索：从模块一路查到技术负责人</a><a href="../chapters/13-multimodal-agent.html"><span>13</span>多模态与 Agent：处理图表文档与多步任务</a><a href="../chapters/14-production.html"><span>14</span>上线边界：权限、快照、停服与故障不能靠提示词兜底</a><a href="../chapters/15-wrap-up.html"><span>15</span>完结篇：用一次请求串起整套设计</a><a href="../chapters/appendix-map.html"><span>A</span>附录 A：上游 47 份 Notebook 与 21 份脚本阅读地图</a><a href="../chapters/appendix-sources.html"><span>B</span>附录 B：源码快照、论文范围、术语与研究边界</a><a href="../chapters/appendix-code.html"><span>C</span>附录 C：配套教学实现与样例数据</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · RAG_Techniques 2fd7bd0ffe5b（2026-11-02）· 核对 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

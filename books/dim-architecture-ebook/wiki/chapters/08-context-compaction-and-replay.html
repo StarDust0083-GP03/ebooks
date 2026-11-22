@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从时间总线、分支路由、rutis 跨语言数据面到权限与压缩重放，源码级解剖 arcships/dim Agent v4 架构"><meta name="author" content="独立源码研究">
+<title>上下文投影、压缩与历史渲染边界 · Dim 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">D</span><span>Dim 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 08</div><div class="rail-title">上下文投影、压缩与历史渲染边界</div><ol><li><a href="#两条窄门-什么能进入模型上下文">两条窄门：什么能进入模型上下文</a></li><li><a href="#一次模型请求是怎么准备出来的">一次模型请求是怎么准备出来的</a></li><li><a href="#不可变摘要事实-vs-可丢弃恢复快照">不可变摘要事实 vs 可丢弃恢复快照</a></li><li><a href="#内存驻留与冷读收敛">内存驻留与冷读收敛</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 08 章</div><h1>上下文投影、压缩与历史渲染边界</h1><div class="chapter-meta">arcships/dim v0.1.0-alpha.27 · 快照 2026-11-22 · 约 16 分钟</div></header><div class="prose"><p>一个持续跑了 2000 步、经历过七八次上下文压缩的长会话，每次发新请求前到底要从数据库里读多少字节？如果每次准备模型请求都把整条分支历史从第 1 条事件全量反序列化进内存，长会话很快就会把守护进程的内存拖爆；反过来，如果把压缩后的消息数组当成唯一真相写死在缓存里，一旦缓存版本升级、校验损坏或者用户把分支切回到更早的历史点，整个会话的上下文就会永久失真。</p>
+<p>Dim 在 <code>ContextPreparation</code>、<code>ContextUsage</code>、<code>HistoryRenderer</code> 和 <code>TimelineStore</code> 之间划出了一道非常干净的边界：<strong>事件事实管真相，恢复快照只管加速，上下文入口只留两条窄门。</strong></p>
+<h2 id="两条窄门-什么能进入模型上下文">两条窄门：什么能进入模型上下文<a class="anchor" href="#两条窄门-什么能进入模型上下文" aria-label="链接到本节">#</a></h2>
+<p>在 <code>AGENTS.md</code> 规则 10 和 <code>principles.md</code> §4 规则 6 里，Dim 明确禁止各个业务插件绕开统一路径往模型上下文里塞文字。一条事件能不能变成模型看到的 <code>messages</code>，只有两条合法通道：</p>
+<ol>
+<li><strong>已采用的输入</strong>（经过 <code>InputQueue</code> 交接并由 <code>Loop</code> 消费的 <code>input/consumed</code>，以及由 <code>Prompt</code> 发布的 <code>context/configured</code>）。未经过交接的草稿、被撤回的 <code>input/deleted</code>、被 Hook 拦下的提交、控制类事件（如 <code>approval/*</code>、<code>stop/interrupt</code>、<code>branch/default</code>）天然不会进入模型消息，渲染器不需要到处写黑名单去补漏。</li>
+<li><strong>工具执行结果</strong>（<code>step/tool-result</code> 里的 <code>ToolResult.content</code>）。这里还有一条容易被忽略的约定：<code>ToolResult.content</code> 是模型唯一能读到的文本，而 <code>structuredContent</code> 只留给持久化、客户端 UI 和内部状态机使用。凡是模型后续还需要用到的句柄、任务 id 或分页游标，工具作者必须显式写进 <code>content</code>。</li>
+</ol>
+<p>另外，所有运行时注入（例如技能文本、Hook 附加说明、分支身份块 <code>&lt;dim-branch-line&gt;</code>、分支名册 <code>&lt;dim-branch-roster&gt;</code>、父线进展提示 <code>&lt;dim-branch-parent&gt;</code>）一律包装成带标记的原始块 <code>InputBlock::Raw</code> 通过输入通道写入历史，绝不靠“针对某业务的特殊历史渲染器”在读历史时凭空拼装。这样模型实际看到的输入、客户端回放的记录、以及分支继承的前缀始终来自同一份事实。</p>
+<h2 id="一次模型请求是怎么准备出来的">一次模型请求是怎么准备出来的<a class="anchor" href="#一次模型请求是怎么准备出来的" aria-label="链接到本节">#</a></h2>
+<p>当 <code>Loop</code> 准备发起一轮模型调用时，它会先向分支时间线写入 <code>context/prepare</code>，把本次请求的固定截点 <code>through</code> 与一个单次请求局部的投影交接给 <code>ContextPreparation</code>（<code>crates/dim-agent-capabilities/src/context_preparation.rs</code> 与 <code>context_policy.rs</code>）。</p>
+<p>整个准备过程保持单飞（single-flight），同一时间一条分支最多只有一个进行中的准备任务，随时可以被 <code>stop/interrupt</code> 或新的 <code>steer</code> 取消。准备阶段先结合 <code>ContextUsage</code> 记录的累计用量和已知投影边界做数值预算估算：</p>
+<ul>
+<li>如果估算没有超过上下文输入预算，且配置和投影边界没有变化，直接复用数值估算并发布 <code>model/call</code>，不需要对历史做第二次重读或全量投影，也不加载历次旧的模型请求正文。</li>
+<li>如果估算超出了输入预算，或者用户手动触发压缩，<code>ContextPreparation</code> 就在准备流程内部调用绑定的压缩策略宿主 <code>CompactionStrategyHost</code>（在提交 <code>context/compaction-start</code> 与 <code>context/compaction</code> 之间执行），成功后直接采用已提交的压缩事实构建新的 <code>model/call</code>，不会向外发布虚假的“模型调用失败”事件。如果压缩后依然装不下本次请求，则直接按终态失败结束，绝不陷入死循环重试。</li>
+</ul>
+<p>需要注意一个在 <code>event-driven-flows.md</code> §5 里写明的细节：如果在自动压缩正在跑的时候来了新的 <code>steer</code> 输入，<code>ContextPreparation</code> 会等这次压缩把结果落完盘，再替换请求，避免刚刚算好的摘要白白作废。此外，如果宿主没有绑定 <code>CompactionStrategyHost</code>，<code>ContextPreparation</code> 连 <code>dim-digest</code> 的提示词指引条目都不会注册，避免在没有压缩能力的配置里误导模型。</p>
+<h2 id="不可变摘要事实-vs-可丢弃恢复快照">不可变摘要事实 vs 可丢弃恢复快照<a class="anchor" href="#不可变摘要事实-vs-可丢弃恢复快照" aria-label="链接到本节">#</a></h2>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 268" width="420" height="268" role="img" aria-label="上下文压缩、SHA-256 恢复快照与回退重放">
+<title>上下文压缩、SHA-256 恢复快照与回退重放</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="12" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">持久摘要事实与可丢弃快照分离：加速失败永不丢失已完成摘要</text><rect x="8" y="24" width="192" height="56" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="16" y="39.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">1. context/prepare</text><text x="16" y="53.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">固定本次 through 截点与历史前缀</text><text x="16" y="65.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">预算超限时在准备内触发压缩</text><text x="16" y="78.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">单飞追踪，支持 stop/steer 取消</text><line x1="200" y1="52" x2="220" y2="52" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="220" y="24" width="192" height="56" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="228" y="39.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">2. context/compaction（权威）</text><text x="228" y="53.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">随原子批次落盘并发布</text><text x="228" y="65.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">含 cursor、summary 与基线</text><text x="228" y="78.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">不可变事实，不内嵌恢复快照</text><line x1="316" y1="80" x2="316" y2="102" stroke="var(--forest)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="102" width="404" height="56" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="16" y="117.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">3. RecoverySnapshot（可丢弃派生缓存 · timeline_snapshots）</text><text x="16" y="131.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">解释器 dim/context-projection/v4 编码 ProjectionCheckpoint + SHA-256 摘要</text><text x="16" y="143.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">锚定已发布的 completed 压缩事件，记录 resume 事件位置与此前折叠状态</text><text x="16" y="156.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">构建或保存失败只打告警，不回滚摘要事实，也不重跑模型压缩</text><line x1="110" y1="158" x2="110" y2="182" stroke="var(--forest)" stroke-width="1.05" marker-end="url(#arrow)"/><line x1="310" y1="158" x2="310" y2="182" stroke="var(--amber)" stroke-width="1.05" stroke-dasharray="4 3" marker-end="url(#arrow)"/><rect x="8" y="182" width="194" height="58" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="16" y="197.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">校验通过：增量续读</text><text x="16" y="211.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">验证锚点、摘要与 resume 位置</text><text x="16" y="223.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">从 resume 起分页折叠后续事实</text><text x="16" y="236.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">跳过压缩前大段历史与请求正文</text><rect x="218" y="182" width="194" height="58" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="226" y="197.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">缺失 / 损坏 / 越界：安全回退</text><text x="226" y="211.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">自动忽略异常快照，不吞存储错误</text><text x="226" y="223.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">从祖先链起点完整重放事实</text><text x="226" y="236.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">仍采用已提交的 compaction 摘要</text><text x="8" y="256" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.1" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">上下文输入只有两条合法通道：已采用的输入（input/consumed）与工具结果。</text>
+</svg><figcaption>上下文压缩、SHA-256 恢复快照与回退重放</figcaption></figure>
+<p>上面这张图展示了 Dim 解决“长会话低内存”与“历史绝对可重放”矛盾的核心设计，对应 <code>timeline-storage.md</code> 的压缩检查点规范：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>持久化对象</th>
+<th>性质与表位置</th>
+<th>存储内容</th>
+<th>损坏或失败时的后果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>context/compaction</code>（<code>Completed</code>）</td>
+<td>不可变历史事实，随原子批次写入 <code>timeline</code></td>
+<td>来源 <code>through</code>、截断游标 <code>cursor</code>、摘要文本 <code>summary</code>、<code>context_baseline</code> 与诊断信息，<strong>绝对不内嵌快照</strong></td>
+<td>若已提交的 <code>cursor</code> 无法投影到固定历史，准备明确报错失败，不跳过该事实，也不静默重做摘要</td>
+</tr>
+<tr>
+<td><code>RecoverySnapshot</code></td>
+<td>可丢弃的派生缓存，独立存于 <code>timeline_snapshots</code></td>
+<td><code>{ sequence, event_id, interpreter, state }</code>，锚定已发布的 <code>Completed</code> 压缩事件</td>
+<td>构建、编码或保存失败只打告警；读取时若缺失、损坏、校验和不符或越界，静默忽略并回退到完整事实重放，同时完整保留 <code>summary</code></td>
+</tr>
+</tbody></table></div>
+<p>默认的投影解释器标识为 <code>dim/context-projection/v4</code>（位于 <code>HistoryRenderer</code>），它把 <code>ProjectionCheckpoint</code> 编码成带 <strong>SHA-256 摘要</strong>的 <code>state</code>：</p>
+<ul>
+<li><code>resume</code> 记录祖先链上的续读定位三元组 <code>(branch_id, sequence, event_id)</code>，指向压缩游标之后产生第一条保留历史条目的那条事件（且不晚于该次准备的 <code>through</code>）。</li>
+<li><code>state</code> 记录在 <code>resume</code> 之前已经折叠好的全部投影状态：保留起点锚点 <code>retain_from</code>、当前生效的提示词条目与修订号、已投递的上下文基线、已提交但尚未采用的排队输入、最新 <code>context/configured</code>、以及尚未闭合的输出和工具调用。</li>
+</ul>
+<p>读取路径的自我校验非常严格。<code>Timeline::checkpoint</code> 先按解释器版本挑出 <code>sequence &lt;= through</code> 的最新快照，然后去查单个锚点事件（在热窗口里就直接取，不扫描区间），依次验证锚点 <code>event_id</code>、序号、状态是否为 <code>Completed</code>、游标是否匹配、SHA-256 摘要是否一致，再按 <code>resume.event_id</code> 确认续读位置落在当前固定祖先链与 <code>through</code> 范围内。v2 编解码器会自动绕过旧版没有摘要保护的 v1 缓存。只要任何一项检查不通过，系统立刻丢弃这个快照，从祖先链起点按 <code>HistoryRenderer::replay_context</code> 重新分页折叠所有带上下文标志的事实，依然应用已提交的 <code>context/compaction</code> 摘要，产出与快照完全等价的消息列表。</p>
+<p>把键控状态块（第 5 章的 <code>branch:line</code>、<code>branch:roster</code>、<code>branch:parent</code> 以及 <code>Goal</code> 的 <code>goal:state</code>）放进这套机制里看，就会明白它们的配合有多严丝合缝：压缩抹掉了旧对话轮次，但每个活跃键（未设置 <code>retire: true</code>）的最新一块都会被投影状态保留并在压缩后重放，所以分支压缩完既不会忘记自己是谁，也不会忘记自己开过哪几条活跃子线。</p>
+<h2 id="内存驻留与冷读收敛">内存驻留与冷读收敛<a class="anchor" href="#内存驻留与冷读收敛" aria-label="链接到本节">#</a></h2>
+<p>为了防止 2000 步的长会话把常驻内存撑大，Dim 把内存生命周期绑死在操作边界上：</p>
+<ul>
+<li>热窗口只保存尚未发布和尚未分发完毕的事件，一旦 <code>Dispatcher</code> 分发完成就移出热窗口，进程内不留已分发事件的全量副本。</li>
+<li><code>HistoryRenderer::rendered_stream</code> 采用分页流式投影，消费完一页就释放该页事件对象；一次读取（<code>read_segments</code> / <code>read_page</code>）内部共享一个解码内容缓存，上限 64 MiB，超限先清空，单次读取结束立刻释放。</li>
+<li><code>ContextPreparation</code> 完成后只保留一个弱引用和数值证据，不跨调用缓存完整的 <code>ModelRequest</code>。</li>
+<li>仓库甚至在 <code>xtask</code> 里专门提供了 <code>context-replay</code>、<code>restore-replay</code> 和 <code>context-breakdown</code> 三个测量子命令，用来直接量化 100 轮模拟会话或真实 SQLite 数据库在恢复、读取、投影和组装请求四个阶段各自申请了多少字节。</li>
+</ul>
+<p>当上下文投影和压缩把对话主链路的资源账算清楚之后，另一块同样棘手的地盘就浮出了水面：脱离当前回合继续跑的后台工作、工具审批竞态，以及从 ADR 003 演进到 ADR 018 的整套权限边界。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="07-self-evolving-plugins.html"><small>上一章</small><strong>在会话里给自己写插件与热重载自演化</strong></a><a class="next" href="09-detached-work-and-permissions.html"><small>下一章</small><strong>脱离工作、工具审批与权限边界</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言与全景导读</a><a href="../chapters/01-why-not-a-chat-loop.html"><span>01</span>为什么不用普通对话循环</a><a href="../chapters/02-workspace-and-scopes.html"><span>02</span>28 个 Crate 与三层作用域</a><a href="../chapters/03-time-bus.html"><span>03</span>时间总线与只认序号的事实流</a><a href="../chapters/04-event-driven-contracts.html"><span>04</span>事件驱动契约：Dispatcher、before 与重启重建</a><a href="../chapters/05-timeline-branches.html"><span>05</span>分支时间线：默认分支、父子通信与配额路由</a><a href="../chapters/06-rutis-and-data-faces.html"><span>06</span>rutis 插件引擎与跨语言数据面</a><a href="../chapters/07-self-evolving-plugins.html"><span>07</span>在会话里给自己写插件与热重载自演化</a><a href="../chapters/08-context-compaction-and-replay.html"><span>08</span>上下文投影、压缩与历史渲染边界</a><a href="../chapters/09-detached-work-and-permissions.html"><span>09</span>脱离工作、工具审批与权限边界</a><a href="../chapters/10-codemode-and-aimux.html"><span>10</span>Code Mode 与 Aimux 模型宿主</a><a href="../chapters/11-server-cli-web-and-protocols.html"><span>11</span>App Server、CLI、Web 与 ACP / MCP 网关</a><a href="../chapters/12-tradeoffs-and-boundaries.html"><span>12</span>架构权衡与工程边界</a><a href="../chapters/13-teaching-model.html"><span>13</span>零依赖 Python 教学模型与 18 个单元测试</a><a href="../chapters/appendix-sources.html"><span>A</span>附录 A：源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · arcships/dim v0.1.0-alpha.27 · 快照 88a3df366940 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从无阻塞执行切片、RAP 响应式工具协议到堆叠沙箱与跨主机热迁移，解剖 hydro-project/infinity 的 Rust Agent 运行时架构"><meta name="author" content="独立源码研究">
+<title>前言：为什么一台树莓派能装下七万五千个 Agent · Infinity 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">∞</span><span>Infinity 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 00</div><div class="rail-title">前言：为什么一台树莓派能装下七万五千个 Agent</div><ol><li><a href="#本书依据的源码快照与研究边界">本书依据的源码快照与研究边界</a></li><li><a href="#怎么读这本书">怎么读这本书</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 00 章</div><h1>前言：为什么一台树莓派能装下七万五千个 Agent</h1><div class="chapter-meta">hydro-project/infinity 快照 e1a3e4b36e5f · 约 10 分钟</div></header><div class="prose"><p>线上跑过长周期 Coding Agent 或运维 Agent 的人，大概率撞过同一堵墙：模型只花了三秒钟决定触发一次 CI 构建，或者发出一条等待人工审批的工单，接下来的二十分钟甚至三天里，整个 Agent 进程却只能挂在那里干等。stdio 管道不能关，HTTP 会话不能断，协程栈和内存上下文不能放，扔进 AWS Lambda 还会撞上十五分钟执行上限。把并发量拉到几百个，内存和闲置算力账单立刻失控；如果再让多个子 Agent 同时改同一个代码仓库，工作目录里很快就会出现互相覆盖的脏文件。</p>
+<p>UC Berkeley Hydro 团队开源的 <code>hydro-project/infinity</code> 从头拆解了这套阻塞假设。它把异步运行时的思想搬进了 Agent 系统：单次执行切片（slice）绝不阻塞在外部工具上。模型一旦吐出异步工具调用，运行时先把这一轮对话刷进持久化存储，发出一次即发即忘（fire-and-forget）的 HTTP POST，随后立刻退出当前切片。两轮之间，一个等待中的 Agent 在系统里只剩几行历史记录，没有驻留任务，没有调用栈，也没有打开的网络连接。等几分钟或几天后工具把结果推回回调地址，运行时再按线程 ID 重新加载历史、继续推理。</p>
+<p>沿着这条主线，<code>infinity</code> 在同一个 Rust 工作区里搭出了三层互相咬合的工程组件：</p>
+<ul>
+<li><strong>Infinity Runtime</strong>（<code>infinity-agent-core</code> 与 <code>infinity-agent-lambda</code>），负责切片执行、三阶段历史缓冲、去重、线程树、位置索引压缩，以及同一套核心逻辑在本地常驻进程与 AWS Lambda 无服务器环境之间的复用。</li>
+<li><strong>Reactive Agent Protocol（RAP）</strong>（<code>rap-protocol</code>、<code>rap-client</code>、<code>infinity-rap-bridge</code> 与 <code>infinity-mcp-bridge</code>），用无状态 HTTP 触发加异步回调取代长连接会话，原生支持长耗时工具、事件订阅、OAuth 授权、人工确认弹窗、前端视图更新与跨机迁移，同时通过桥接层兼容现有 MCP 服务。</li>
+<li><strong>Infinity Code 与堆叠沙箱</strong>（<code>infinity-daemon</code>、<code>infinity-agent-cli</code>、<code>sandbox-core</code>、<code>sandbox-local</code>、<code>sandbox-remote</code>），面向本地与远程机器的并发编码代理。每个线程拿到独立的 Jujutsu 工作区或 Git worktree，并通过 macOS <code>sandbox-exec</code> 或 Linux Bubblewrap 限制写权限，并行干活后再把子沙箱压缩合回父书签，宿主工作目录始终保持干净。</li>
+</ul>
+<h2 id="本书依据的源码快照与研究边界">本书依据的源码快照与研究边界<a class="anchor" href="#本书依据的源码快照与研究边界" aria-label="链接到本节">#</a></h2>
+<p>全书所有模块路径、类型签名、协议字段、常数与设计取舍，全部直接核验自上游仓库的固定快照：</p>
+<ul>
+<li>仓库：<code>https://github.com/hydro-project/infinity</code>（Apache-2.0 许可证）</li>
+<li>提交 SHA：<code>e1a3e4b36e5f6143e03a59a7ad86e1abacfd22e8</code>（<code>2026-11-05</code>，<code>docs: explain Linux sandbox prerequisites (#188)</code>）</li>
+<li>规模实测：21 个 Rust workspace crate，169 个 <code>.rs</code> 文件（57,969 行 Rust 代码），配套 <code>agent/</code>（AWS CDK）、<code>infinity-ui/</code>、<code>infinity-web/</code> 前端代码与 51 篇官方文档。</li>
+</ul>
+<p>本书属于独立源码架构分析，不是官方文档。凡涉及性能数字（比如 80,000 个空闲 Agent 占约 8.4 GB RSS），均明确标注其来自上游基准代码 <code>crates/infinity-agent-core/examples/agent_scale.rs</code> 与文档图表 <code>docs/src/components/MemoryChart.tsx</code> 的记录，作者未在真实 AWS Bedrock 或生产 Lambda 集群上重新跑压测。第 13 章附带的零依赖 Python 教学实现与 19 个单元测试则在本地离线实际运行并通过，用来验证核心不变量而非替代生产运行时。</p>
+<h2 id="怎么读这本书">怎么读这本书<a class="anchor" href="#怎么读这本书" aria-label="链接到本节">#</a></h2>
+<p>如果你关心高并发 Agent 为什么能压低空闲内存并无缝缩容到零，先读第 1 到第 3 章，把无阻塞切片、<code>HistoryManager</code> 的三阶段缓冲和落盘屏障看透。</p>
+<p>如果你想设计异步工具协议、对接外部 Webhook 或改造现有 MCP 服务，重点看第 4、第 5 与第 7 章，里面拆解了 RAP 回调、事件子线程、位置索引压缩和供应器错误分类契约。</p>
+<p>如果你想把多 Agent 并发改代码落到本机或远程开发机，直接看第 6、第 8、第 9 章，对照本地单线程路由器、<code>jj</code>/<code>git</code> 堆叠沙箱、Linux <code>bwrap</code> 写边界和跨机热迁移的完整实现。第 12 章集中列出源码中已经暴露的边界和未完成项，第 13 章提供可以直接单步调试的 Python 教学模型。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a class="next" href="01-blocking-trap.html"><small>下一章</small><strong>阻塞式 Agent 的死结与无阻塞切片不变量</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：为什么一台树莓派能装下七万五千个 Agent</a><a href="../chapters/01-blocking-trap.html"><span>01</span>阻塞式 Agent 的死结与无阻塞切片不变量</a><a href="../chapters/02-workspace-topology.html"><span>02</span>21 个 Crate 的分层版图与类型化 ID 体系</a><a href="../chapters/03-slice-and-history.html"><span>03</span>切片执行循环与三阶段 HistoryManager</a><a href="../chapters/04-rap-protocol.html"><span>04</span>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</a><a href="../chapters/05-threading-compaction.html"><span>05</span>线程树、上下文继承与位置索引压缩</a><a href="../chapters/06-local-actor-deferral.html"><span>06</span>单线程本地调度器、延迟队列与抢占打断</a><a href="../chapters/07-provider-error-boundary.html"><span>07</span>模型供应协议、跨进程隔离与错误分类契约</a><a href="../chapters/08-stacked-sandboxes.html"><span>08</span>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</a><a href="../chapters/09-daemon-remote-migration.html"><span>09</span>本地守护进程、SSH 远程代理与跨主机热迁移</a><a href="../chapters/10-serverless-aws.html"><span>10</span>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</a><a href="../chapters/11-clients-and-hydro-dataflow.html"><span>11</span>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</a><a href="../chapters/12-tradeoffs-and-limits.html"><span>12</span>失败模式、安全边界与架构取舍</a><a href="../chapters/13-mini-infinity.html"><span>13</span>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：源码索引、实测统计与核心术语对照</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · hydro-project/infinity · 快照 e1a3e4b36e5f · 2026-11-05</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

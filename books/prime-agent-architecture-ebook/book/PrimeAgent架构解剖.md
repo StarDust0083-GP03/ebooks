@@ -1,0 +1,982 @@
+# Prime Agent 架构解剖：Rust 宿主与自改进 RLM 运行时
+
+快照 783acb5d72a9b23f97fa4a793a67d421b3ec402d · Prime Agent v0.10.5（2026-11-18）· 采集于 2026-11-21
+
+# 前言：把长程自主编程收进一个持久 Python REPL
+
+跑过超过两小时的编程 Agent 会话的人，大概率都见过同一种退化过程：前二十分钟干脆利落，读几个文件、跑一轮测试、改两处函数都没毛病。等到上下文逼近窗口上限，几十条原始终端日志和重复读入的代码块把消息历史撑满，压缩一次之后模型开始忘记刚才查过的路径、反复重跑同一条命令，终端断连或子任务报错还能把整个会话卡在半路。
+
+`PrimeIntellect-ai/prime-agent` 给出的解法和主流多工具脚手架走的是另一条路。翻开 `crates/pa-core/src/prompts/layers/core.md` 和 `crates/pa-core/src/tools/mod.rs`，注册给大模型的 JSON 工具表面上只有一个：`python_repl`。文件编辑、后台命令、子 Agent 派生、MCP 调用、上下文压缩、周期心跳和持续改进，全部收进持久 CPython 进程里，以 Python 异步函数的方式被模型按需编排。
+
+为了撑住这套跑在长时间跨度里的设计，项目在 0.10.x 阶段把宿主从 TypeScript 重写进了 10 个 Rust crate 组成的工作区（`Cargo.toml` 标注版本 `0.10.5`，共计 1,053 个 `.rs` 源文件、524,791 行 Rust 代码），下面接一层约 3.3 万行代码的 Python RLM 运行时（`prime-agent-runtime/`）以及 14 个内置技能包（`skills/`）。它没有把所有会话塞进单一进程，而是用守护进程 Supervisor 托管独立的 per-session Worker，再由 Worker 管一个带快照能力的 Python 内核。
+
+## 这本书怎么读
+
+全书围绕 Prime Agent 解决的四类工程问题展开：
+
+第 1 至 4 章拆解最底层的执行模型。为什么传统 JSON 工具调用在长程任务里容易失速，10 个 Rust crate 如何维持单向依赖与进程隔离，Turn 循环怎样用 Claim-First 机制挡住并发抢占，`python_repl` 内核如何通过 Protocol v3 把标准流、原始文件描述符、中断信号和 `dill` 快照管稳。
+
+第 5 至 8 章看编排、通信与持久状态。`bash` 与 `edit` 怎样作为程序化工具运行，递归子 Agent 树怎么受限于深度上限与 Spawn 账本，为什么机器通知必须先落进持久信箱 `rlm.inbox` 而不是直接往上下文里灌，以及会话 JSONL 树、流式全文搜索、热更新事务和 ACP 外部协议如何配合。
+
+第 9 至 12 章转向长期运行的稳定性与人机界面。静态可缓存提示词如何与可演化的 Continual Harness 解耦，自动压缩如何计算双底线阈值并保留 REPL 内存，MCP 认证与协议执行为什么要在宿主和内核之间劈开，以及 TUI 如何用首帧零网络规则和卡片折叠守住交互延迟。
+
+第 13 章集中讨论安全边界、成本账本和本书附带的零依赖 Python 教学模型（`examples/mini_prime_agent.py`）。附录 A 汇总全部源码路径、核心常量表、术语对照和本地核验命令。
+
+## 研究口径与边界
+
+本书属于独立源码架构研究，不是 Prime Intellect 官方文档。所有模块边界、数据结构、常量取值、线协议字段和行为描述，均直接核验自固定快照：
+
+| 项 | 核验值 |
+| --- | --- |
+| 上游仓库 | `https://github.com/PrimeIntellect-ai/prime-agent` |
+| 固定提交 | `783acb5d72a9b23f97fa4a793a67d421b3ec402d` |
+| 提交标题 | `feat(inbox): show what rlm.inbox.read returned in the python_repl card (#4123)` |
+| 工作区版本 | `0.10.5`（对应最近正式标签 `v0.10.5`，发布于 `2026-11-18T19:15:02Z`） |
+| 快照采集日期 | `2026-11-21` |
+
+书中的代码行为来自静态源码阅读与仓库内测试用例核对；第 13 章及 `examples/` 中的 Python 教学模型用于离线复现关键不变量，仅使用 Python 标准库，已在本地通过全部单元测试。本书没有在真实计费大模型 API 或生产多租户集群上执行端到端压测，涉及模型表现或安全声明的地方，一律标明来自上游文档、论文引用还是源码中的显式防御逻辑。
+
+
+# 为什么传统工具调用在长程任务上会失速
+
+假设你在修一个跨 40 个文件的编译器回归。传统编程 Agent 的工作方式很固定：调用 `grep` 拿到 600 行匹配结果，全部塞进一条 `toolResult` 消息；再调 8 次 `read_file` 把几个大文件原文贴进对话历史；再调 `bash` 跑测试，2,000 行堆栈又进了一遍历史。才过了 12 轮，上下文里 85% 的 Token 都已经变成过期日志，模型每推理一个字都要重新扫一遍这些早就看过的数据。
+
+更麻烦的是组合动作。想同时查三个子目录、按错误码分组统计再批量生成补丁，传统 JSON 工具调用只能一轮出一批工具调用、等宿主执行完把文本拼回来，下一轮模型自己用自然语言去数数。每多一次中间汇总，就多一次昂贵的模型往返和一笔无法回收的上下文账单。
+
+Prime Agent 试图从根上改掉这套数据流。它在 `README.md` 里点出两条核心抽象：**递归语言模型（RLM，Recursive Language Model）** 与 **持续脚手架（Continual Harness）**。这两件事分别对应两种常见失速：上下文被原始数据撑爆，以及跨回合、跨会话的经验无法沉淀。
+
+## 把提示词和中间数据降格成变量
+
+RLM 在代码层面的落点很直接：不要让模型用聊天记录当内存。
+
+在 `crates/pa-core/src/prompts/layers/core.md` 第 3 行，基础系统提示词开门见山写着：Prime Agent 脚手架只暴露一个工具 `python_repl`，其余所有能力都是运行在持久 CPython 进程里的程序化工具（Programmatic Tool Calling，PTC），默认异步且支持全局顶层 `await`。
+
+这条约束彻底改变了数据走向：
+
+1. **读文件与检索不再把原文倒进上下文**。`usage.md` 明确要求模型用 Python 读文件、搜索、过滤，并把中间结果赋给命名变量。模型要找某个符号，只需在 REPL 里把文件读入变量 `src`，切片打印出最关键的 20 行；后续还要改这几行时，直接从 `src` 里截取精确片段传给 `await edit(...)`，不需要把整份文件在对话历史里保存十几个回合。
+2. **控制流交给解释器，不再消耗推理轮次**。循环、条件分支、正则提取、并发等待多个命令或子任务，在一次 `python_repl` 调用里就能写完。模型不必为每个子步骤各发一次网络请求。
+3. **上下文压缩与工作内存脱钩**。传统 Agent 一做压缩，之前读过的文件内容、统计表和中间变量全被压成几段含糊文字。在 Prime Agent 里，压缩折叠的是对话消息历史，持久 Python 内核照常活着，内存里的变量、导入模块和辅助函数全部留存，只有序列化超过 `16 MiB` 的单个巨型变量会在压缩时被定向清理（`DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES`）。
+
+| 维度 | 传统多工具 JSON 脚手架 | Prime Agent（单工具 RLM + PTC） |
+| --- | --- | --- |
+| 模型工具面 | `read`、`write`、`grep`、`bash`、子任务等十余个 JSON Schema | 仅注册 `python_repl` 一个工具，其余均为 REPL 内可调用函数 |
+| 大数据存放位置 | 直接以 `toolResult` 文本写入消息历史 | 绑定为 CPython `__main__` 命名变量，仅回传切片或 Head-Tail 摘要 |
+| 编排逻辑执行者 | 模型逐轮串联工具调用 | Python 解释器在单次单元内完成循环、过滤与并发调度 |
+| 压缩后状态保留 | 依赖摘要文本，易丢细节 | 对话压缩与内核状态分离，小中型变量跨压缩存活 |
+| 后台并发处理 | 往往阻塞等待或反复轮询 | `bash()` 与 `rlm.spawn()` 立即返回句柄，异步结果进入持久信箱 |
+
+## 单工具收口带来的新工程债
+
+把几十个工具收口进一个持久 Python REPL 听起来很清爽，但代价立刻会冒出来。如果你只在 Toy Demo 里 `exec()` 一段代码，很快会撞上五道墙：
+
+第一道墙是**协议帧污染**。如果模型写的代码调了 C 扩展、`os.write(1, ...)` 或子进程直接往文件描述符 1 写字节，就会把宿主和内核之间的 JSON 通信流搅碎。为此 `prime-agent-runtime/src/rlm/repl.py` 必须把原始 `fd 1` 复制成私有协议通道，再把公开的 `fd 1` 和 `fd 2` 重定向进带围栏令牌的独立管道线程。
+
+第二道墙是**长输出与死循环拖死会话**。一条无限循环的 Python 单元或者吐出 50 MB 日志的构建脚本，瞬间就能把模型上下文或进程内存打穿。宿主 `crates/pa-core/src/kernel/manager/requests.rs` 专门写了 `HeadTailBuffer`，按 3 比 1 切分头部和滚动尾部，默认把单次输出卡死在 `65,536` 字符以内，并配了默认 `60` 秒（模型可申请最高 `180` 秒）的中断与强杀重启路径。
+
+第三道墙是**异步通知风暴**。后台命令、子 Agent、状态机工厂、定时心跳都能在主会话忙着的时候产出事件。如果每个事件都把完整日志塞进用户输入队列，模型刚腾出来的上下文又会被机器消息淹没。因此 v0.10.5 引入了持久信箱 `rlm.inbox`，把 6 类机器通知先写进 `inbox.jsonl`，只往主队列投递一行合并后的短计数唤醒提示。
+
+第四道墙是**进程存活与断连恢复**。跑研究评测或长程重构时，SSH 断掉、终端关闭、软件热更新都是常态。如果会话引擎和 Python 内核绑在前端 TUI 进程里，终端一关全盘归零。所以 `pa-daemon` 把架构拆成了 Supervisor 加 per-session Worker，前端 TUI 只通过 Socket 挂载，随时断开重连。
+
+第五道墙是**经验沉淀与缓存破坏的矛盾**。想让 Agent 在长程任务里越跑越顺，就得允许它修改补充提示、记忆、技能和子 Agent 模板。可一旦直接改写系统提示词，大模型供应商的前缀缓存（Prompt Caching）立刻失效，成本飙升。Prime Agent 的解法是把系统提示词拆成字节级稳定的静态前缀和动态尾部，把可演化的 Continual Harness 放进独立的 `[harness-digest]` 用户消息里，按指纹变化追加，不动基础提示词。
+
+## 从 TypeScript 原型到 Rust 工作区的演进痕迹
+
+读源码时很容易发现一个事实：现在的 Rust 仓库保留了大量 TypeScript 时代的契约注释。比如 `Cargo.toml` 里给 `serde_json` 开了 `preserve_order` 特性，注释写得很直白：如果不保序，`serde_json::Map` 默认是按字母排序的 `BTreeMap`，序列化出来的线协议帧和磁盘 JSONL 就会和旧版 TS 守护进程的字节序对不上。`AGENTS.md` 的品牌规范里也明文写着一条例外：线协议标识符（例如 `PI_PACKAGE_DIR`、`prime-inference`、`ai.primeintellect.prime-agent`）一律保持原样，因为兼容性优先于表层改名。
+
+理解这层背景后，再看后面十几章里的很多设计，就不会觉得奇怪。比如 `rlm.spawn()` 在线协议里发出的请求类型仍然叫 `rlm.run`；比如 `crates/pa-daemon/src/update_restore.rs` 里专门保留了对旧版 TypeScript 更新清单的父先于子重建逻辑；比如 `pa-tui` 为了抢出首帧渲染速度，甚至自己打了一个 `vendor/crossterm` 补丁。
+
+搞清楚了 Prime Agent 为什么要押注持久 REPL、为什么被迫长出这一整套进程与协议设施，下一步就可以打开工作区，看清这 10 个 Rust crate 和 Python 运行时是怎么切分地盘的。
+
+
+# 十个 Rust Crate 与一层 Python 运行时的双层拓扑
+
+代码库膨胀到 50 万行以上时，最怕出现网状依赖：改一行 UI 卡片结构，结果触发整个会话引擎和 HTTP 供应商层全量重编；或者一个底层工具悄悄引用了守护进程状态，导致无守护进程的 `-p` 单次打印模式根本没法独立实例化。
+
+Prime Agent 用一条很硬的工作区规则把边界焊死了。打开根目录 `Cargo.toml` 和 `AGENTS.md`，整个 Rust 部分由 10 个以 `pa-` 为前缀的 crate 组成，只有一个共享词表 crate（`pa-types`），依赖方向严格从组合根向下单向流动，全工作区通过 `[workspace.lints.rust]` 开启 `unsafe_code = "forbid"`，并在 CI 中执行 `cargo clippy --workspace --all-targets -- -D warnings`。
+
+下面这张图给出了 10 个 Rust crate 的分层关系，以及运行时真正的进程边界：
+
+![Prime Agent 十个 Rust Crate 与双层进程拓扑](../wiki/assets/diagrams/dual-layer-topology.svg)
+
+图里的虚线框标出了编译期依赖和运行期进程的对应关系。编译期，`pa-cli` 是唯一把各层拼装起来的组合根；运行期，一个普通交互会话至少横跨三个独立操作系统进程：前端终端界面、全局常驻的 Supervisor 守护进程、该会话专属的 Worker 进程，以及 Worker 拉起的 CPython REPL 子进程。
+
+## 十个 Crate 的职责与依赖边界
+
+每个 crate 都在自己的 `README.md` 里明确划出了负责范围和非目标，防止出现无所不包的超大模块：
+
+| Crate | 源码规模（`src/`） | 直接工作区依赖 | 核心职责与刻意排除项 |
+| --- | --- | --- | --- |
+| `pa-types` | 44 文件 / 13,253 行 | 无 | 全工作区唯一共享词表：AI 消息类型、压缩配置、会话 JSONL 条目、守护进程帧与命令平面、信箱通知、平台路径与传输 trait |
+| `pa-telemetry` | 17 文件 / 4,733 行 | 无 | 版本化埋点事件、后台 fire-and-forget 上报、跨平台原子替换原语 `rename_onto` |
+| `pa-agent` | 14 文件 / 5,646 行 | 无 | 与具体模型供应商无关的 Turn 循环、Claim-First 运行槽位、三层消息队列、中止信号 |
+| `pa-ai` | 83 文件 / 41,483 行 | `pa-types` | 各大 LLM 供应商流式协议适配、OAuth 凭据刷新、内置兜底模型表 `models_generated.rs`、缓存计费 |
+| `pa-models` | 11 文件 / 3,753 行 | `pa-ai`, `pa-types` | 在线模型目录拉取、磁盘缓存与回退链路 |
+| `pa-core` | 275 文件 / 135,470 行 | `pa-types`, `pa-ai`, `pa-models`, `pa-agent`, `pa-telemetry` | 会话引擎 `SessionEngine`、工具注册、Python 内核生命周期、技能加载、提示词分层组装、压缩、持续精炼、MCP 宿主认证、目标与自主门禁、Cron 调度、HTML 导出 |
+| `pa-daemon` | 256 文件 / 148,695 行 | `pa-types`, `pa-core`, `pa-agent`, `pa-ai`, `pa-telemetry`, `pa-models` | Supervisor 监督进程、每会话 Worker 托管、重启退避、RLM Spawn 账本、信箱托管、直接挂载 Ticket、Worker 点对点通信、热更新事务、ACP stdio 服务 |
+| `pa-tui` | 262 文件 / 131,748 行 | `pa-types` | 终端交互界面、守护进程线协议客户端、Markdown 与工具卡片渲染；不链接 `pa-core` 或 `pa-daemon` |
+| `pa-cli` | 81 文件 / 35,768 行 | `pa-types`, `pa-core`, `pa-ai`, `pa-agent`, `pa-daemon`, `pa-tui`, `pa-telemetry` | `prime-agent` 二进制入口、手写参数解析器、把用户命令路由到 TUI、守护进程、无头打印或 ACP 模式 |
+| `pa-perf` | 10 文件 / 4,242 行 | `pa-types`, `pa-core`, `pa-daemon` | 性能语料库与 PTY 基准测试脚手架，不随发行版发布 |
+
+最关键的一条隔离线在 `pa-tui`。它有 13 万多行代码，却只依赖 `pa-types` 一个工作区 crate。TUI 进程压根不链接大模型客户端、不链接会话引擎、也不直接碰磁盘上的状态机，它只消费线协议帧并渲染。这样既保住了首帧启动速度，也让多个客户端同时挂载到同一个运行中会话成为可能。
+
+另一个容易忽略的细节是 `pa-cli` 的参数解析器（`crates/pa-cli/src/args.rs`）。它没有用常见的 `clap` 派生宏，而是纯手写实现。文件头部注释给出了原因：`--resume` 和 `--print` 这类标志允许可选地吃掉下一个参数，而且 `--goal`、`--autonomous-gate`、`--system-prompt` 后面的自由文本可能合法地以短横线或 YAML frontmatter 开头，普通派生解析器很难原样复刻既有 CLI 行为。
+
+## Supervisor 与 Per-Session Worker：为什么要拆进程
+
+很多 CLI Agent 把会话循环直接跑在交互进程里，或者做成一个单进程多协程的守护服务。Prime Agent 选了第三种架构：**一个轻量的 Supervisor 进程，为每个活跃会话各拉起一个独立的 Worker 进程**。
+
+在 `crates/pa-daemon/README.md` 和 `crates/pa-daemon/src/supervisor/` 中，这套模型的运转方式非常清晰：
+
+**故障隔离与退避重启**，单个会话如果因为极端输出、内核异常或底层崩溃挂掉，只影响对应的 Worker，不会连累正在后台跑测试的其他十几个会话或子 Agent。Supervisor 监控每个 Worker 进程，异常退出后按退避策略拉起，新 Worker 带 `--resume <sessionFile>` 从磁盘上的 append-only JSONL 恢复分支历史与队列日志。
+
+**Supervisor 重启不丢会话身份**，哪怕守护进程自己重启或升级，存活的 Worker 也会带着自身会话身份反向退避重连，把名册（Roster）重新注册回来。终端断开只是断掉一条客户端连接，后台 Worker 和里面的 Python REPL、定时心跳、子 Agent 全都继续推进，随时可以用 `prime-agent attach <agent>` 重新接上。
+
+**直接挂载（Direct Attach）减轻中转压力**，流式生成时每个 Token 都会产生增量更新事件。如果所有客户端都经由 Supervisor 转发每个字节，Supervisor 就会变成性能瓶颈。`pa-daemon` 的做法是让 Supervisor 充当控制面与鉴权者：客户端请求挂载时，Supervisor 签发一张有效期 10 秒的一次性票据（Single-use Ticket），Worker 验票即焚，之后高频的 `message_update` 令牌流直接走客户端与 Worker 之间的点对点连接（Worker 内部还配有 50 毫秒单槽合并刷盘器），Supervisor 自身保持无载荷转发。
+
+**父死子灭的生命周期回收**，`crates/pa-daemon/src/supervisor_parent_death.rs` 专门处理一种棘手场景：如果某个父会话的 Worker 意外退出（例如遭遇 `SIGKILL` 没来得及走优雅清理），Supervisor 会依据创建记录里的 `parentActiveSessionId` 找到其名下所有常驻 RLM 子会话并执行关闭，防止产生无人认领的孤儿计费会话。
+
+## Rust 宿主与 Python 运行时的职责切分
+
+Rust 层负责高并发、持久化、进程托管、网络流和终端渲染，而 `prime-agent-runtime` 负责模型直接编写和调用的编程环境。两层之间没有 FFI，也没有把 CPython 静态链接进 Rust 二进制，而是通过标准输入输出的 JSON 行协议隔开。
+
+这样切分后，两边的职责一目了然：
+
+Rust 宿主（`pa-core` + `pa-daemon`）掌握所有需要强一致、跨进程或涉及用户凭据的能力。比如模型凭据与 OAuth 令牌存储、JSONL 会话与信箱日志落盘、RLM 深度校验与子进程派生、上下文 Token 估算与压缩调度、以及 TUI 卡片的增量渲染。
+
+Python 运行时（`prime-agent-runtime/src/rlm/`，共 9 个核心模块约 1.37 万行源码）运行在 `uv` 管理的独立虚拟环境中，专注做好一件事：提供一个支持顶层 `await` 的持久 `__main__` 命名空间，让模型用原生 Python 语法读写文件、跑 `bash()`、调 `mcp.call_tool()`、操作 `rlm.harness`、驱动 `rlm.factory` 状态机，并通过 `await rlm.repl.host_request(...)` 向 Rust 宿主发起带类型的控制请求。
+
+顺带一提，发布构建也体现出这支团队的工程克制。根目录 `Cargo.toml` 的 `[profile.release]` 使用 `lto = "thin"`、`codegen-units = 4` 和 `debug = "line-tables-only"`，但不在链接期剥离符号，而是由发布脚本 `scripts/release/split_debug.py` 对同一份链接产物分别产出裁剪后的发行二进制和独立的调试解码侧车文件。注释里专门说明了原因：他们实测过，如果在链接期直接 strip，`.text` 段布局会发生变化，导致离线堆栈还原地址对不上。
+
+摸清了静态 crate 分层和动态进程拓扑之后，下一章我们直接钻进最核心的执行心脏：`pa-agent` 的 Turn 循环怎样协调并发抢占与三层消息队列。
+
+
+# Turn 循环、Claim-First 抢占与三层消息队列
+
+当一个编程 Agent 既允许用户在生成中途插话纠偏，又允许后台命令完成、定时心跳触发、子 Agent 回信、目标驱动自动续跑同时往同一个会话里投递消息时，最容易出两类隐蔽故障。
+
+第一类是**竞态丢消息**：后台队列里刚躺进一条 `[bash-done]` 通知，准备唤醒空闲会话；恰在几毫秒前，用户敲了回车启动新一轮对话。如果队列先弹出了消息、再尝试抢占执行权，抢占失败时那条通知就已经从队列里消失了。
+
+第二类是**死锁占位**：某次回合中途因为网络断开或任务被取消而异常退出，如果执行状态的锁或标志位没有通过 RAII 守卫释放，这个会话就会永远卡在忙碌态，之后用户的每一句话都会收到冰冷的报错：`Agent is already processing.`。
+
+`crates/pa-agent` 虽然只有 14 个源文件、5,646 行代码，却是整个系统的节奏控制器。它用极小的接口面把上面两类并发陷阱都堵死了。
+
+## Claim-First：先拿到运行凭证，再动队列
+
+翻开 `crates/pa-agent/src/agent.rs` 第 648 行的 `claim_run()`，以及 `.changes/agent-queue-claim-first.md` 和 `.changes/fix-remove-parked-seat.md`，能看清这套并发契约的核心。
+
+任何想推动 Agent 运转的路径，不管是用户发新提示词，还是队列泵消费积压消息，都必须先调用 `claim_run()` 换取一个具名的所有权凭证 `RunClaim`。具体步骤严格串行：
+
+1. 获取异步互斥锁 `admission`，防止两个启动流程交错读取配置。
+2. 一次性拍下当前的 `model_override` 快照，保证这次运行里使用的模型身份和请求参数完全一致，不会被并发的 `/model` 切换撕裂。
+3. 锁住 `run` 槽位。如果槽位已被占用，立刻返回带错误码 `AgentContinueErrorCode::Busy` 的类型化错误，上层按错误码分支，不再靠匹配字符串判断。
+4. 槽位为空时，创建新的 `AbortController` 和 `watch::channel(false)` 空闲通知通道，把 `ActiveRun` 装进槽位，释放 `admission` 锁并返回 `RunClaim`。
+
+真正进入执行体的是 `run_with_lifecycle()`（第 691 行）。它一进门就在栈上构造了一个 `RunEndGuard`，无论后面的异步流是正常结束、返回错误，还是在 Tokio 任务里被外部直接 drop，守卫都会确保清理 `is_streaming` 标记、清空 `run` 槽位并向 `idle_tx` 广播 `true`。这就是 `.changes/fix-remove-parked-seat.md` 修复“会话崩溃后永久卡死”问题的根基。
+
+有了 Claim-First，队列消费顺序也就顺了：队列里的消息先留在队列里，等拿到 `RunClaim` 之后，或者等正在运行的 `run_loop` 走到合法的轮询检查点时，才执行 `drain()`。抢不到运行权时，队列纹丝不动，消息绝不会凭空蒸发。
+
+## 三层消息队列与 Turn 循环优先级
+
+拿稳了运行权，控制流进入 `crates/pa-agent/src/agent_loop/run.rs` 的 `run_loop()`。这个函数是一个双层循环，把所有输入按紧急程度切成了三层，优先级从高到低依次是：**Steering（转向插话）**、**Follow-Up（后续排队）** 和 **Continuation（宿主续跑）**。
+
+整个状态机的流转逻辑可以直接对照源码读下来：
+
+```text
+进入 run_loop()
+  ├─ 首次轮询 Steering 队列（可按 skip_initial_steering_poll 跳过）
+  └─ 外层循环（处理后续队列与续跑钩子）
+       ├─ 内层循环：只要 has_more_tool_calls 或 pending_messages 非空
+       │    1. 把 pending_messages 逐条写入上下文并发射 MessageStart/MessageEnd
+       │    2. 调用 stream_assistant_response() 流式拉取模型回复
+       │    3. 若 stop_reason 为 Error 或 Aborted，发 TurnEnd + AgentEnd 立即退出
+       │    4. 若模型发出 tool_calls，调用 execute_tool_calls() 顺序执行整批工具
+       │       -> 若批内有调用标记 terminate（例如 rlm.end_turn()），则 has_more_tool_calls = false
+       │    5. 发射 TurnEnd，若 AbortSignal 已触发则立刻退出
+       │    6. 评估 should_stop_after_turn 与 should_stop_before_turn 钩子
+       │    7. 轮询 Steering 队列；若有新插话，装入 pending_messages 继续内层循环
+       ├─ 内层循环结束，轮询 Follow-Up 队列 -> 若非空，装入 pending_messages 回到外层循环
+       ├─ Follow-Up 为空，调用 get_continuation_messages 钩子 -> 若非空，回到外层循环
+       └─ 全部为空 -> 发射 AgentEnd，正常退出
+```
+
+把输入拆成三层，对应三种截然不同的交互时机：
+
+**Steering 队列**用于立刻生效的中途插话。用户在模型连续调工具的中途发来纠偏指令、ACP 客户端调用 `_session/steering`、或者紧急心跳按 `delivery_mode="steer"` 触发时，消息走 Steering 队列。它在每一次工具批结算完后就被检查，不用等模型彻底停下来。
+
+**Follow-Up 队列**用于当前任务彻底收尾后再接手的待办。例如用户提前排好下一项任务、或者某些非抢占式通知，会等到内层工具循环和 Steering 全部消化完毕，才会从 Follow-Up 队列里拉出来开启新的一轮。
+
+**Continuation 钩子**由上层引擎通过异步回调 `get_continuation_messages` 注入，没有固定内存队列。只有当模型自然停下、且用户和外部都没有排任何 Steering 或 Follow-Up 消息时，它才会被调用。Prime Agent 的 `/goal` 持久目标续跑和 `/autonomous` 质量门禁驱动，全部挂载在这个最底优先级的钩子上。只要用户发来任何指令，用户意图永远压过自动续跑。
+
+## `rlm.end_turn()` 如何让模型体面地结束回合
+
+在一个能后台跑 `bash()`、能 `rlm.spawn()` 一堆子 Agent 的系统里，经常出现一种尴尬局面：模型刚刚在 `python_repl` 里拉起了三个后台构建任务，此时不需要再做任何事，只需要把控制权还给用户，等任务完成后通过信箱通知回来即可。
+
+如果单靠工具循环的默认规则，工具调用返回结果后，模型被迫还得再多调一次 LLM，只为了输出一句“我已经启动后台任务，正在等待”。既白烧一次带完整上下文的输入 Token，又多等几秒延迟。
+
+Prime Agent 在 `python_repl` 里提供了一个受宿主认可的终结原语：`await rlm.end_turn()`。它的流转横跨三层源码：
+
+1. Python 侧（`prime-agent-runtime/src/rlm/__init__.py` 第 229 行）向宿主发送类型为 `rlm.end_turn` 的 `host_request`。如果跑在不支持该请求的外部宿主机上，它会直接抛异常，绝不静默吞掉。
+2. Rust 内核管理器收到后，给当前执行中的单元格打上 `ended_turn = true` 标记。`crates/pa-core/src/tools/ipython.rs` 第 385 行和第 473 行在拼装工具返回时，往结果文本末尾追加简短的 `turn ended` 记录以便会话回放，同时在 `ToolExecutionResult` 中返回 `terminate: Some(true)`。
+3. 回到 `pa-agent` 的 `run_loop()` 第 104 行：`has_more_tool_calls = !executed_tool_batch.terminate`。注意它的批处理语义：如果同一条助手消息里包含多个工具调用，批内其余调用依然会按顺序跑完，只要批内任意一次 `rlm.end_turn()` 成功，整批结束后 `has_more_tool_calls` 就置为 `false`，不再触发下一次模型推理，直接把回合交还给用户，同时后台进程与子 Agent 继续在 Worker 和内核里运行。
+
+## 队列暂停与恢复闸门
+
+还有一个容易踩坑的边界是用户按下中止键（Abort）或手动触发 `/compact` 之后，排队里的消息该怎么办。
+
+按照 `crates/pa-daemon/README.md` 记录的队列暂停规则（对应 `#227`/`#233` 决策），当 Worker 收到 `abort`、`abort_and_clear_queue` 或手动 `compact` 时，不只是掐断当前网络请求，还会把队列输入泵设为无限期暂停状态。在暂停期间，普通的 `prompt` 请求会被直接拒绝，队列里的待办项安全停放，不会被误自动触发。
+
+直到出现明确的恢复动作，暂停闸门才会重新打开：用户发出显式带 `streamingBehavior` 的提示、显式发 `steer`/`follow_up`、调用 `resume_queue`、修改排队消息 `mutate_queued_message`、定时心跳触发，或者在存在活跃目标的情况下完成了一次成功的压缩。这样一来，用户在打断失控 Agent 后，就有充足时间检查和修改队列，不用担心刚按完 Ctrl+C，排在后面的消息又把系统带飞。
+
+此外，在 `crates/pa-daemon/src/worker/` 的队列投影里，系统还会用 Rust 原生的类型化字段 `rlmChildStatus` 和 `inboxNotice` 标记出哪些排队行是守护进程内部生成的机器通知。渲染层据此把机器唤醒行折叠进计数条里，绝不把系统通知伪装成用户输入，也不会让用户输入的相似文本误触折叠逻辑。
+
+Turn 循环解决了“什么时候调用模型、什么时候执行工具、怎么安全打断”的问题。接下来，我们沿着 `execute_tool_calls` 往下走，拆开 Prime Agent 最核心的唯一工具：`python_repl` 内核和它的 Protocol v3 线协议。
+
+
+# Protocol v3 内核：`python_repl` 如何把状态、输出和中断管稳
+
+自己动手写过基于子进程的 Python REPL 封装的人，多半都被同一堆脏活折磨过：在子进程里用标准输入输出走 JSON 协议，模型代码一个 `print()` 或 C 扩展往 `fd 1` 写一行调试信息，JSON 解析直接崩盘；单元格里起了个后台 `asyncio` 任务，结果它的日志张冠李戴算到下一个单元格头上；模型写了 `while True: pass` 或者调了阻塞 C 函数，Ctrl+C 发过去根本停不下来；更别提程序重启后怎么把内存里的变量尽量救回来，还不把刚打开的写模式文件重新截断成零字节。
+
+`prime-agent-runtime/src/rlm/repl.py`（1,789 行）与对应的协议规范 `repl.md`，加上 Rust 侧的 `crates/pa-core/src/kernel/`，把这些坑一个不漏地拆开了。整个内核不依赖 Jupyter 或 ZeroMQ，而是直接启动 `python -m rlm.repl`，在单一 `asyncio` 事件循环和持久化 `__main__` 命名空间里运行，使用换行分隔的 UTF-8 JSON 协议（当前协议版本 `3`，启动后首帧发出 `{"event":"ready","protocol":3,"python":"..."}`）。
+
+![Protocol v3 Python REPL 双通道与状态循环](../wiki/assets/diagrams/rlm-repl-cycle.svg)
+
+这张图展示的是宿主 `KernelManager` 与 CPython 进程之间的四股数据流。让这套协议在长程任务里跑稳的关键在于五个细节处理：文件描述符双通道隔离、顶层异步编译、带外控制帧、3:1 头尾截断缓冲，以及 `dill` v2 原子快照。
+
+## 双通道隔离与排空围栏
+
+内核进程启动后做的第一件事就是重构标准文件描述符：
+
+**私有协议通道**，先用 `os.dup(1)` 复制出原始标准输出句柄存进 `_protocol_fd`，同时保存原始 `_host_stderr_fd` 用来在协议写出失败时上报异常。此后所有协议事件都经由 `_send()` 持 `_write_lock` 一次性写完，确保多线程并发发送事件时绝不发生半帧交错。
+
+**屏蔽用户输入**，请求读取线程接管 `fd 0` 后，立刻把进程级 `fd 0` 重定向到 `/dev/null`。这样就算模型代码不小心调了 `input()`，也只会立刻拿到 EOF，绝不会去偷吃宿主发来的 JSON 请求帧。
+
+**Python 层输出按单元格精确归属**，运行时用 `_TaggedWriter` 替换 `sys.stdout` 和 `sys.stderr`。每个正在执行的单元格都会设置 `contextvars.ContextVar` 变量 `_current_cell`。Python 层的 `print()` 写入会被拦截、打上当前单元格 ID，并按每帧最多 `64 Ki` 字符（`_STREAM_FRAME_TEXT_CAP`）直接推送到协议流。因为 `asyncio` 任务创建时会自动复制上下文，一个单元格派生的后台协程，即使在单元格结束后才打印，依然带着原单元格的上下文；而用户新开的普通线程因为没有继承该上下文，归属 ID 为 `null`。
+
+**原始文件描述符独立泵出**，如果代码绕过 `sys.stdout`，直接调 `os.write(1, ...)`、写入 `sys.stdout.buffer`、或者由 C 扩展和子进程往 `fd 1`/`fd 2` 输出怎么办？运行时在启动时把真正的 `fd 1` 和 `fd 2` 重定向进操作系统管道，由两个后台守护线程 `_Pump` 每次最多读 64 KiB 字节，增量 UTF-8 解码后统一发成 `id: null` 的流事件。源码注释写得很清楚：原始 fd 字节没有可证明的所有者，宁可标成未归属的后台输出，也绝不胡乱算到某个单元格头上。
+
+这就带来一个同步问题：单元格同步代码刚通过 `os.write(1, ...)` 写完几行字，怎么保证在发出 `done` 事件之前，`_Pump` 线程已经把管道里的字节全搬完了？`repl.py` 第 227 行的 `_Pump.drain()` 写得非常干净：通过一个私有复制的管道写端 `_token_fd`（防止用户代码关闭或复用 `fd 1/2` 劫持标记），往管道里注入一段带随机 UUID 的二进制围栏令牌 `b"\xff<drain:<uuid>>\xff"`，然后阻塞等待泵线程在字节流中读到该令牌并触发事件。等两根管道都过了围栏，再发送 `done` 事件，既不漏字节，又不用靠 `sleep` 赌运气。
+
+## 顶层 `await`、带外通道与严格载荷上限
+
+在 `python_repl` 里，模型可以直接写 `msgs = await rlm.inbox.read()` 而不用自己套 `asyncio.run()`。运行时把每个单元格源码用 `PyCF_ALLOW_TOP_LEVEL_AWAIT` 标志编译成协程任务，放进持久事件循环执行，并把源码按 `<cell-N>` 注册进 Python 标准库 `linecache`。这样抛出异常时，堆栈回溯会剥离运行时自身帧，只保留单元格代码与三方库帧，并且精准印出出错的那一行源码。如果单元格最后一条语句是表达式且求值不为 `None`，运行时把结果绑定到命名空间的 `_` 变量，同时发回 `result` 事件。
+
+正常请求（`execute`、`snapshot`、`restore`、`list_names`、`shutdown`）严格排成单队列，一次只跑一个；但有四类请求必须绕过执行队列走带外通道，否则整个系统会自己把自己锁死：
+
+1. `host_reply`：当运行中的单元格调用 `await rlm.repl.host_request(data)` 请求宿主（例如派生子 Agent、读信箱、发消息）时，单元格自己正占着执行队列。因此读线程收到 `host_reply` 后必须直接通过 `loop.call_soon_threadsafe` 唤醒对应的 `Future`，不能去排执行队列。
+2. `interrupt`：读线程收到中断请求后直接投递中断。如果目标单元格还没排到，中断会被暂存，等到该单元格一激活立刻生效，避免连续发送 `execute` 加 `interrupt` 时把中断丢掉。
+3. `bash_activity`：允许前端或宿主在单元格仍在运行时，带外查询后台 `bash()` 列表、拉取最多 200 行尾部日志（上限 16 KiB）或按不透明 ID 强杀进程，绝不接受裸 PID 以免误杀。
+4. `mcp_status`：交给独立的后台任务集合 `_mcp_status_tasks` 并发查询，防止某个卡死的 MCP 服务把用户的代码执行队列一起拖住。
+
+为防止失控单元格把宿主内存撑爆，协议对三个出口都上了硬帽：
+
+- 单个 `result`、`evalue` 或 `traceback` 条目在 Python 侧先卡死在 `1,048,576` 字符（`_RESULT_TEXT_CAP`），超出就截断并附带标记。
+- `emit(data)` 展示事件与 `host_request(data)` 宿主请求在发送前都经过 `_check_payload()` 校验：先用 `json.dumps(data, allow_nan=False)` 严格检查（防止 `NaN`/`Infinity` 生成非标准 JSON 破坏 Rust 解析器），再确认编码长度不超过 `16 MiB`（`_PAYLOAD_CAP`），超限直接向单元格抛 `ValueError`。
+
+## `HeadTailBuffer`：为什么 3:1 头尾截断比简单切尾更实用
+
+进入 Rust 宿主（`crates/pa-core/src/kernel/manager/requests.rs`）后，标准输出和标准错误还要再过一层上下文保护：`HeadTailBuffer`。默认上限是 `DEFAULT_MAX_OUTPUT_CHARS = 65_536` 字符，但没有一刀切地只留前 64 Ki 字符，而是按固定比例切分：
+
+```rust
+fn split_cap(max_chars: usize) -> (usize, usize) {
+    let tail_cap = max_chars / 4;
+    (max_chars - tail_cap, tail_cap)
+}
+```
+
+头部保留 49,152 字符，尾部维护一个 16,384 字符的滚动窗口。推送流式文本时，先填满头部；头部满后，后续字符滚入尾部，当尾部缓存超过两倍 `tail_cap` 时一次性从前端裁剪掉多余部分，并把丢弃字符数累加进 `omitted`，平摊时间复杂度为线性且内存严格有界。结束时如果有省略，输出拼接为头部、`\n[... N chars omitted ...]\n` 标记和滚动尾部。
+
+这个细节在真实编程场景里很救命。跑 `cargo test` 或 `pytest` 输出十万行日志时，前面往往是编译配置和前几个用例，真正的失败摘要和错误堆栈永远在最后几十行。简单截断头部会把报错全扔掉，3:1 头尾保留则既让模型看到开头上下文，又保住最后的失败结论。
+
+此外，单元格默认执行超时为 `60` 秒（`DEFAULT_PYTHON_CELL_TIMEOUT_MS = 60_000`），模型可在调用工具时通过 `timeout` 参数显式申请，宿主会把它钳制在 `1` 到 `180` 秒之间（`PYTHON_REPL_TIMEOUT_MAX_S`）。如果单元格超时，宿主先发 `interrupt`；Unix 上读线程会向主线程发 `SIGINT`（若当前正是该单元格在跑同步字节码或阻塞系统调用，直接抛出 `KeyboardInterrupt`；若单元格正挂在 `await` 上，或者是一个后台协程卡死了事件循环，则取消活动单元格任务，并对阻塞主线程的后台协程同样注入 `KeyboardInterrupt` 以解开事件循环）。如果单元格连中断也不理会，宿主在 `crates/pa-core/src/tools/ipython.rs` 第 274 行果断调用 `provisioner.kill()` 强杀并重启内核，同时给模型返回 `<ipython_kernel_reset>` 提示，明确告知之前内存里的变量和任务已经清空，请重新创建。
+
+## `dill` v2 快照：怎么跨重启保留状态而不踩雷
+
+当会话休眠、Worker 升级重启、或准备执行上下文压缩时，宿主会向内核发送 `snapshot` 请求。内核懒加载 `dill`（recurse 模式），逐个变量序列化写入带魔数头 `PRIME-AGENT-KERNEL-SNAPSHOT-V2\n` 的二进制文件。
+
+快照机制里有四条刻意设计的护栏：
+
+1. **固定跳过集合**。所有下划线开头的私有变量，以及 `{rlm, mcp, bash, asyncio, In, Out, get_ipython, exit, quit, open}` 这些由启动引导重建的对象，永不写入快照。
+2. **双层容量上限与定向裁剪**。单个变量序列化后超过 `16 MiB`（`DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES`），或累计大小超过 `256 MiB`（`DEFAULT_SNAPSHOT_MAX_BYTES`）都会跳过并记入清单。当宿主传入 `prune_oversized: true`（例如上下文压缩阶段），只有**超过单变量 16 MiB 上限**的变量会被从内存命名空间里删除并记入 `pruned`；因总容量 256 MiB 跳过的小变量依然留在内存里。而且删除动作严格发生在临时文件 `os.replace` 原子落盘和 JSON 清单写完之后，如果写清单失败，绝不提前删内存变量。
+3. **不重开文件句柄**。`repl.md` 第 68 行记录了一个极其老道的工程决策：如果命名空间里残留着被 `dill` 序列化的已打开文件句柄，恢复时绝不会按原模式重新 `open()`。因为用 `"w"` 或 `"w+"` 重开会直接把用户磁盘上的文件清空，用 `"x"` 重开会在文件已存在时报错。所以按路径保存的句柄恢复成一个已关闭的存根对象，保留 `name` 和 `mode` 属性，一旦读写就按正常已关闭文件抛出 `ValueError`；按裸 fd 保存的句柄则直接记入该变量恢复失败。
+4. **宿主失联兜底**。只有在本次进程已经至少成功提交过一次快照后，运行时才会记住 `_last_snapshot_target`；如果此时宿主异常崩溃导致 `stdin` 出现 EOF，内核退出前还能抢着把最新命名空间刷回快照文件。而在首次快照前遭遇 EOF 时绝不落盘，避免用未确认状态覆盖磁盘上的旧快照。
+
+把 `python_repl` 的隔离、截断、中断和快照全部理顺之后，我们再往上走一层，看看跑在这个内核里的第一批主力工具：`bash`、`edit` 和 14 个内置技能包是怎么协作的。
+
+
+# 单工具收口下的程序化工具链：`bash`、`edit` 与可执行技能
+
+如果只看模型工具列表里唯一的 `python_repl`，很容易误以为 Prime Agent 让模型天天在 Python 里自己调 `subprocess.run()` 和 `open().write()`。真这么干的话，两分钟就能遇到一堆麻烦：一个阻塞的 `subprocess.run(["cargo", "test"])` 会把整个 CPython 事件循环卡死，终端界面看不到任何实时进度，用户按中断也停不掉孤儿进程；整文件覆写则动不动把几百行无关代码改丢，连最小 diff 都展示不出来。
+
+Prime Agent 在 `crates/pa-core/src/prompts/layers/usage.md` 里明令禁止模型直接用 `subprocess` 或 `os.system`，同时把日常高频操作做成了两层程序化工具：由运行时直接内建的 `bash()`，以及作为可执行 Python 技能预导入内核的 `edit` 与其余 13 个内置技能。
+
+## `bash()`：默认异步、1 秒有界等待与跨重启接管
+
+`prime-agent-runtime/src/rlm/bash.py`（1,843 行）是整个 Python 运行时里最贴近操作系统细节的模块。调用 `bash("cargo test")` 时，它是同步函数，立刻派生子进程并返回 `BashHandle`，不阻塞当前语句。每次 `bash()` 都是全新进程，壳层变量不会跨调用保留，但因为遵循 POSIX 进程继承，模型在 Python 里做的 `os.chdir(...)` 和 `os.environ[...]` 都会自然传给后续的 `bash()` 子进程（反之不行）。
+
+这套封装在三个地方做得非常克制且扎实：
+
+**1 秒有界等待自动降级**，很多模型习惯顺手写 `r = await bash("pytest")`。如果在有守护进程的会话里跑一个耗时 10 分钟的构建，一直 `await` 会直接撞上 60 秒单元格超时。`bash.py` 第 66 行的处理方式很巧：内核引导阶段会检查宿主是否注册了 `bash.completed` 处理器，只要注册了，就把 `_completion_notices_wired` 置为 `True`。此后 `await bash(...)` 走 `_bounded_wait(..., bound=1.0)`（`_YIELD_AFTER_SECONDS = 1.0`）。快命令 1 秒内跑完直接返回 `BashResult`；超过 1 秒还没结束时，它绝不取消底层命令，而是立刻返回一个实时快照对象（`r.running` 为 `True`、`r.output` 带着当前已收集输出、`r.handle` 指向活句柄），并在前 3 次降级时往 `stderr` 打一行教学提示（`_MAX_DEGRADE_HINTS = 3`），提醒模型可以结束本回合，等命令跑完后的 `[bash-done]` 通知再回来。如果运行在没有通知机制的无守护进程模式里，等待保持无界，防止模型结束回合后再也没人唤醒它。
+
+**兼容保守 POSIX Shell 的底层信道**，`bash.py` 第 41 行把子进程输出和完成状态通道固定在单数字文件描述符 `_OUTPUT_FD = 8` 和 `_STATUS_FD = 9`，源码注释点明了原因：`dash` 等 POSIX 壳层只在语法上保证支持单数字 fd 重定向。同时单次命令输出有独立缓冲上限（头部 `_HEAD_CAP = 512 KiB`，尾部 `_TAIL_CAP = 1.5 MiB`），完成标记使用 `\x1eprime-agent-complete:` 与 `\x1f` 包裹；取消等待时先发 `SIGTERM` 给进程组，留 0.5 秒宽限再发 `SIGKILL`（Windows 侧借助 `_winjob.py` 的 Job Object 与 `taskkill /T` 清理进程树）。每次调用还会通过 `application/vnd.prime-agent.bash-command+json` MIME 帧向宿主上报命令摘要，供 TUI 工具卡片展示。
+
+**`persistent=True` 跨重启持久进程**，对于开发服务器、长时间训练脚本这类必须活过内核、Worker 甚至守护进程重启的任务，`bash(cmd, persistent=True)`（仅限 POSIX 下的已保存会话）把进程挂到独立持久化目录里。即便会话重启甚至被归档删除，该进程依然继续运行，直到自己退出或显式被 `kill()`。重启后的新内核调用 `from rlm import persistent_shells; persistent_shells()` 就能把句柄重新认领回来；在离线期间已经跑完的持久进程会被列出一次已完成状态，而重新接管后的运行中进程通过轮询检测结束，因此结果通知约有 1 秒延迟。
+
+## `edit`：精确唯一匹配与原生 Diff 回传
+
+在 `skills/edit/SKILL.md` 和 `crates/pa-core/src/prompts/layers/usage.md` 里，修改已有文件的唯一推荐入口是 `await edit(path=..., old_str=..., new_str=...)`（`edit` 模块经由 `rlm/skill.py` 包装为可直接调用的异步对象，等价于 `edit.run(...)`）。
+
+它的设计哲学和许多基于行号打补丁的编辑器截然不同，只抓两条铁律：
+
+1. **精确唯一匹配**：`old_str` 在目标文件里必须不多不少刚好出现一次。匹配不到或者命中多处，直接抛出异常要求模型扩大上下文切片，绝不做模糊猜测，从根源上避免改错同名函数。
+2. **结构化 Diff 事件直达界面**：改动落盘后，`edit` 技能不是只返回一句字符串，还会调用 `rlm.emit()` 发出 MIME 类型为 `application/vnd.prime-agent.diff+json` 的显示载荷（定义见 `crates/pa-core/src/kernel/shared.rs` 第 61 行）。Rust 宿主收集这些载荷，通过 `crates/pa-core/src/tools/ipython/diff/` 计算带 4 行上下文的统一差异，写进 `ToolResult` 的 `details.diffs`，TUI 和 HTML 导出器就能直接渲染彩色行级 Diff，而不是让用户在纯文本里人眼找改动。
+
+因为模型身处 Python REPL，`edit` 还能和变量天然配合：先在 Python 里读入文件并定位起止切片赋给 `old`，用字符串操作构造 `new`，再调 `await edit(path=..., old_str=old, new_str=new)`。如果代码片段里本身包含三双引号，直接用三单引号变量规避转义灾难。
+
+## 14 个内置技能与用户/仓库信任边界
+
+在仓库的 `skills/` 目录下，v0.10.5 一共随行打包了 14 个技能包，覆盖文件编辑、媒体加载、多 Agent 协作、长程调度和自我改进：
+
+| 技能目录 | 形态 | 核心用途 |
+| --- | --- | --- |
+| `edit` | 可执行 Python 技能 | 精确唯一字符串替换并推送 diff 载荷 |
+| `attach-image` | 可执行 Python 技能 | 校验视觉模型能力并把 JPEG/PNG/GIF/WebP 载入上下文 |
+| `attach-video` | 可执行 Python 技能 | 载入单文件上限 7.5 MB 的 MP4/WebM 视频片段（面向声明 `video` 输入的 OpenAI 兼容接口） |
+| `agent-message` | 可执行 Python 技能 | 核家族内点对点发消息或广播（`agent_message.send`） |
+| `agent-observe` | 可执行 Python 技能 | 查看家族名册、单节点状态与最近消息预览 |
+| `compact` | 可执行 Python 技能 | 查询上下文占用并预约在回合边界执行压缩 |
+| `goal` | 可执行 Python 技能 | 创建、查询和完结当前会话的持久目标 |
+| `refine` | 可执行 Python 技能 | 预约在回合结束时执行 Continual Harness 精炼 |
+| `rlm-heartbeat` | 可执行 Python 技能 | 创建、暂停、恢复和删除周期性自唤醒心跳 |
+| `websearch` | 可执行 Python 技能 | 借助宿主管理的 API Key 发起网页检索 |
+| `factory` | Markdown 技能 | 指导使用 `rlm.factory` 状态机编排 |
+| `mcp` | Markdown 技能 | 指导发现与调用 MCP 工具服务 |
+| `prime-intellect` | Markdown 技能 + 参考文档 | Prime Intellect 算力、环境、推理与沙箱文档索引 |
+| `skill-creator` | Markdown 技能 + Python 技能规范 | 指导编写和打包新的自定义技能 |
+
+这 14 个技能里藏着一条非常硬的安全边界。打开 `crates/pa-core/src/skills/mod.rs` 第 142 行的 `get_python_skill_runtime_info()`：
+
+```rust
+pub fn get_python_skill_runtime_info(skills: &[Skill]) -> Vec<PythonSkillRuntimeInfo> {
+    skills
+        .iter()
+        .filter(|skill| skill.is_python() && skill.source_info.scope != SourceScope::Project)
+        ...
+}
+```
+
+这一行过滤器明确划出了一条红线：只有内置技能和用户主动安装进个人配置目录的 Python 技能，才会在内核引导时自动安装并预导入进 REPL；任何来自当前代码仓库（`SourceScope::Project`）的技能，哪怕目录里放了 `pyproject.toml` 和 Python 源码，宿主也**绝不会自动导入内核执行**，只把它的 `SKILL.md` 当成普通文档路径放进提示词清单。这样当你 `cd` 进一个陌生开源仓库启动 `prime-agent` 时，恶意仓库无法借技能发现机制在第一回合前偷偷注入启动代码。
+
+另外，资源解析系统（`crates/pa-core/src/packages/`）还支持通过 `npm`、`git` 或本地路径安装外部技能包，并按明确优先级完成资源覆盖合并。至于模型怎么知道每个技能的接口签名？预导入的技能模块可以直接在 REPL 里用 `help(<skill>)`、`dir(<skill>)` 或 `inspect.signature(...)` 自省，不需要把几十页 API 文档全硬塞进系统提示词里占 Token。
+
+单会话里的命令、编辑和技能都已齐备，但遇到大型调研或并行改造时，单个上下文窗口仍然太窄。下一章我们看 Prime Agent 怎样把一个会话裂变成一棵受控的递归子 Agent 树。
+
+
+# 递归子 Agent 树、Spawn 账本与状态机工厂
+
+让一个 Agent 把重活分派给子 Agent，在纸面上非常简单；真跑进大型代码库，立刻会冒出四个运维噩梦：子 Agent 自己又无限套娃，十分钟烧光整个团队的 API 预算；父会话强制退出或者被 `SIGKILL` 干掉，十几个子进程还在后台空转烧钱；重启一次守护进程，之前派出去的孩子全从列表里消失，账单和进度对不上号；或者父节点为了等孩子跑完，在循环里疯狂 `time.sleep()` 轮询，把自己的单元格和上下文全堵死。
+
+Prime Agent 对多 Agent 编排的定位很克制：每一个子 Agent 都是一个由 Supervisor 托管的独立持久化会话，整棵会话树受深度上限、唯一命名、核家族通信边界和仅追加账本约束；如果任务需要更复杂的多阶段依赖与重试，还可以在开启开关后交给内建的状态机工厂 `rlm.factory` 驱动。
+
+## 深度上限、持久子会话与 `RlmSubagentHost` 契约
+
+递归控制边界定义在 `crates/pa-core/src/session_engine/rlm_host.rs`。核心默认常量是 `DEFAULT_RLM_MAX_DEPTH = 2`：根会话位于深度 `0`，它可以派生深度 `1` 的子 Agent，深度 `1` 的子 Agent 还可以再派生深度 `2` 的叶子节点，再往下就会触发深度上限错误，挡住失控递归。
+
+`pa-core` 本身不直接起进程，而是定义了对象安全的 `RlmSubagentHost` trait，暴露 `spawn`、`create_session`、`list_subagents`、`delete_subagent`、`collect`、`rename` 和 `session_messages` 七个异步方法。不同运行模式各自注入实现：
+
+- 守护进程 Worker（`pa-daemon`）提供 `SupervisorChildSessions`：每次 `rlm.spawn()` 经由与 Supervisor 的连接创建一个真正独立的受托管子 Worker 进程，并把 `rlmDepth`、`rlmMaxDepth`、`parentSessionPath`、`thinking` 一并写进创建配置，保证子 Worker 崩溃重启后依然记得自己的递归深度。
+- 无头单次打印模式（`pa-cli`）提供进程内子会话宿主。
+- 未接入子会话宿主的纯引擎实例则回退到 `NoRlmChildren`，所有子列表查询诚实返回空列表，派生请求显式报错，绝不默默假装成功。
+
+从 Python 侧看（`prime-agent-runtime/src/rlm/__init__.py`），有两个容易混淆的创建接口：
+
+1. `await rlm.spawn(prompt, *, name, model=None, thinking=None, cwd=None)`：派生深度加 1 的直接子 Agent，**立即返回** `RLMSpawnHandle`，不等待子任务结束。`name` 必须在同级兄弟中唯一且不超过 64 字符；`model` 和 `thinking` 默认继承父节点，若显式指定的思考等级与目标模型不兼容，在准入阶段直接拒绝；`cwd` 允许让子 Agent 在指定子目录启动并加载该目录的项目上下文。注意一个小历史痕迹：它的线协议请求名仍是 `rlm.run`，用于保持跨版本内核和宿主的兼容。
+2. `await rlm.create_session(...)`：只能由守护进程托管的深度 `0` 根会话调用，创建一个平级的新深度 `0` 常驻会话（相当于兄弟会话，而不是子节点），等首条提示词发出后返回 `RLMCreateSessionHandle`。
+
+## 非阻塞回收 `collect` 与节流进度条 `progress_note`
+
+为了让父节点不必傻等或瞎轮询，Prime Agent 把状态观测拆成了两种低干扰机制。
+
+一种是父主动拉取：`await rlm.collect(targets=None, *, timeout_ms=0)`。传入 `timeout_ms=0` 时，宿主立刻返回目标子 Agent 的类型化快照 `RLMChildResult`（包含 `status`、`settled`、`answer_preview`、`answer_text`、`error`、`duration_ms`、`tool_use_count` 等字段），绝不会去打断或转向父会话，也不会唤醒子会话。传入正数 `timeout_ms` 时，只阻塞当前这一个内核调用直到目标结算或超时，超时同样返回当前快照而不是抛异常。而且已完成子 Agent 的最终答案会一直保留到被显式删除，哪怕 Worker 刚吐完最终回答就崩溃，`.changes/spawn-replacement-answer-capture.md` 也修补了答案捕获路径，保证 `list_subagents()` 和父通知里依然能拿到完整结论。
+
+另一种是子主动汇报：`await rlm.progress_note(message)`。子 Agent 在长程执行途中可以把简短进展推送到父节点的名册视图里，而不给父节点发聊天消息、也不要求父节点回复。为防刷屏，Rust 和 Python 两侧共同执行双约束：长度不得超过 `512` 个 UTF-16 码元（`RLM_PROGRESS_NOTE_MAX_LENGTH = 512`，Python 侧特意按 `utf-16-le` 长度计量，防止表情符号等辅助平面字符在 Python 算 1 个字、到宿主算 2 个码元引发误判），发送频率限制为每 10 秒最多一条（`RLM_PROGRESS_NOTE_MIN_INTERVAL_MS = 10_000`），被限流时返回 `RLMProgressNoteResult(accepted=False, retry_after_ms=...)` 而不是抛异常。
+
+至于跨 Agent 通信权限，系统强制限定在**核家族（Nuclear Family）**以内：任何 Agent 只能观测和联系它的唯一父节点（深度 0 无父节点）、同父的兄弟节点（所有根会话互为兄弟）以及它的直接子节点，不允许越级直接给孙节点或陌生会话树的节点发消息。
+
+## `rlm_ledger`：为什么家族拓扑不能靠扫会话文件反推
+
+如果一个会话目录里攒了几百个已保存的历史会话和几千个子任务目录，每次打开 `prime-agent agents` 或重启后重建名册都去全盘扫一遍每个 JSONL 文件，IO 开销会非常难看，而且已休眠（Passivated）的子会话在进程表里根本不存在。
+
+`crates/pa-daemon/src/rlm_ledger.rs` 专门维护了一本守护进程自有的**仅追加 Spawn 账本**，存放在 `<agent-dir>/rlm-ledger/` 下，每个会话目录对应一个 JSONL 文件。
+
+每当 Supervisor 受理派生（`spawn`）、重命名（`rename`）或删除（`delete`）时，用单次小包 `O_APPEND` 写入一条记录；读取时先做文件 `stat` 校验再重放，同一个 `(childId, child)` 键遵循后写覆盖，单行损坏记录只记日志跳过，不拖垮整本账本。为防止异常账本撑爆内存，读取设了明确的失败闭合上限：文件最大 `32 MiB`（`RLM_LEDGER_MAX_BYTES`）、最多 `100,000` 条记录（`RLM_LEDGER_MAX_RECORDS`），超限直接报错。
+
+账本里有两个很实用的设计细节：
+
+1. **墓碑留账（Deleted Usage）**。删除一个子 Agent 时，墓碑记录的 `RlmLedgerDeleteReason` 区分 `user`、`parent-teardown`、`revoked` 和 `gc` 四种原因，并把该子会话截至删除前的 Token 消耗和按模型拆分的用量一并封进 `deleted_usage` 与 `deleted_usage_by_model`。这样即使子会话已经清理，整棵任务树的真实花费依然完整可核算。
+2. **休眠子代可见性**。订阅实时名册或执行 `list --all` 时，`supervisor_roster.rs` 和 `rlm_roster.rs` 会以常驻与已保存会话为根，沿着账本向下遍历把所有已休眠的后代节点补回名册视图，同时绝不覆盖已有的活跃行。
+
+## `rlm.factory`：把多阶段编排收进声明式状态机
+
+当团队反复执行固定模式的多 Agent 流水线（例如先并行扫代码审查、再汇总打分、不通过就回退修复重审）时，每次靠主模型手写 `rlm.spawn()` 和 `if/else` 容易漏掉重试上限或并发控制。
+
+`prime-agent-runtime/src/rlm/factory.py`（5,759 行）提供了一套可选开启的状态机工厂。它默认处于关闭状态，由全局 `settings.json` 里的 `factory.enabled` 控制（运行 `/factory on` 开启）；未开启时，除了 `rlm.factory.help()` 返回内嵌指南外，所有调用和写入都按失败闭合原则拒绝，返回宿主与内核字节级一致的提示语 `the factory is disabled; run /factory on to enable it`。
+
+开启后，一份工厂规格既可以直接写成带守卫转换与有界重入（`max_entries`）的声明式状态机（`arguments["machine"]`），也可以写成更简洁的 DAG 语法糖（`arguments["dag"]`），由写入期校验器自动编译为规范状态机，把一个节点的所有前置依赖合成为单条汇合（Join）转换，避免只等完一个父节点就误触发下游。
+
+为防配置失控，校验器在写入期就把硬上限卡死了：最多 `1,024` 个状态节点（`MAX_STATES`）、单次运行并发度限制在 `1` 到 `64`（默认 `8`）、`foreach` 扇出上限 `256`、重试上限 `10` 次、单次运行子 Agent 上限默认 `10,000`（硬帽 `1,000,000`），失败策略支持 `fail_fast`、`continue` 和 `escalate` 三种，并自带 `builder`、`pr-manager` 和 `review-sweep` 三个内置模板（位于 `prime-agent-runtime/src/rlm/machines/`）。
+
+工厂执行器自己运行在内核的 `asyncio` 后台任务里，但底层派生、回收和取消全部复用既有的 `rlm.spawn`、`rlm.collect` 和 `rlm.delete_subagent`。需要看清它的持久性边界：工厂运行态本身只存在内核内存里，内核重启后运行器不自动续跑，但已经派生出去的子 Agent 归 Supervisor 所有，重启后照常存活并可通过 `rlm.list_subagents()` 看到。模型和 `/factory` 视图还可以随时调用 `graph()` 和带超时的 `watch(run_id, timeout)` 拿到结构与实时状态融合的快照，直接渲染成 ASCII 或 Mermaid 图。
+
+当后台同时跑着好几个 `bash()`、几台子 Agent 甚至一条状态机工厂时，新的麻烦马上来了：这么多异步完成事件和跨 Agent 消息涌回来，如果不加节流直接往主会话上下文里灌，主会话很快就会被通知冲垮。下一章我们就来看 v0.10.5 新落地的核心基础设施：持久信箱 `rlm.inbox`。
+
+
+# 持久信箱 `rlm.inbox` 与跨进程消息投递
+
+把后台命令、子 Agent 和定时心跳全接进同一个会话后，很快会出现一种经典的“通知洪水”：主 Agent 刚在后台一口气派出去 6 个测试脚本和 4 个子 Agent，然后安心结束回合去等结果。三分钟后它们扎堆跑完，如果宿主把 10 条完整的 `[bash-done]` 输出和子 Agent 长篇回复全部当成 Steering 用户消息直接灌进主会话上下文，不仅一口气吃掉几万 Token，还会把原本有序的对话历史打成一锅粥，甚至把用户真正想插进来的纠偏指令淹没在机器噪音里。
+
+Prime Agent 在 v0.10.5 这一轮里做了一项影响全局的重构（对应 `.changes/agent-inbox.md`、`.changes/inbox-tui-cards.md`、`.changes/inbox-agentmsg-semantics.md` 及本次固定提交 `#4123`）：引入守护进程托管的**持久会话信箱（Agent Inbox）**，把机器通知的“存储”和“唤醒”彻底劈开。
+
+![持久信箱 rlm.inbox 与核家族消息投递链路](../wiki/assets/diagrams/inbox-subagent-flow.svg)
+
+这张图概括了信箱的完整生命周期：六类异步事件不再把正文直接塞进上下文，而是先落盘进会话专属的 `inbox.jsonl`，再往队列里放一条合并后的极短计数唤醒行；等模型主动调用 `rlm.inbox.read()` 按需消费后，唤醒行自动撤回，同时每条被读出的消息借由专有 MIME 帧直接渲染在 `python_repl` 卡片上。
+
+## 六类通知收口与断写可恢复的 `inbox.jsonl`
+
+信箱的核心存储和过滤逻辑位于 `crates/pa-core/src/session_engine/inbox.rs`（2,127 行），守护进程侧的槽位管理、身份校验和周期提醒位于 `crates/pa-daemon/src/agent_inbox.rs`。
+
+所有走信箱的机器通知被严格归纳为 6 个固定类别（`inbox_class`），每类都有确定的 `sender` 语义：
+
+| `inbox_class` | 来源 | `sender` 字段含义 | 特殊规则 |
+| --- | --- | --- | --- |
+| `bash-done` | 后台 `bash()` 命令结束 | 命令文本 | 附加 `exitClass`（`success`/`failure`）；若内核已通过句柄回收结果（`bash.consumed`），自动撤回对应未读信件 |
+| `factory-progress` | 状态机工厂里程碑 | `runId` | 记录运行态关键进展与异常升级 |
+| `agent-message` | 核家族 `agent_message.send` | 发送方 Agent 名称 | 走信箱后不再受旧版未读数量硬上限（too many pending messages）拦截 |
+| `child-exited` | 子 Agent 正常完成 | 子会话名称 | 由守护进程内部保留类型投影，防客户端伪造 |
+| `child-failed` | 子 Agent 异常失败 | 子会话名称 | 携带子会话 ID 与失败详情 |
+| `heartbeat` | 定时心跳触发 | `job_id` | 同一个心跳任务在信箱里最多只留 1 封最新信件，新触发自动替换旧未读，暂停或删除任务时立刻撤回残留 |
+
+每当新消息进入，都会追加写入 `<session-artifacts>/<id>/inbox.jsonl`。日志重放器专门针对崩溃场景做了加固：如果进程恰好在写盘中途断电留下半截残破 JSON 行，重启打开信箱时会跳过残缺记录、完整恢复前面的所有推入与消费记录，并保持消息 ID 单调递增，绝不复用旧 ID。
+
+更难得的是它对**写盘失败**的态度。如果磁盘满或权限异常导致 `append_journal` 失败，`SessionInbox` 不会默默吞错，而是把错误信息记进 `persistence_error` 槽位，并在后续发给模型的唤醒行里显式附上一句警告：`(inbox persistence failed; messages are memory-only)`（常量 `INBOX_PERSISTENCE_ERROR_CLAUSE`），直到一次完整的日志重写成功把待读集合安全落盘，这个降级标记才会清除。
+
+在 Worker 会话替换或恢复期间，还有一个微妙的并发竞态：旧会话实例正在退休，新会话实例准备打开同一个 `inbox.jsonl` 重放，如果此时有异步投递误写进旧实例，两边就会互相踩踏。`crates/pa-daemon/src/agent_inbox.rs` 第 118 行的 `push_to_live_inbox()` 用槽位互斥锁 + `Arc::ptr_eq` 指针身份双重检查化解了这个问题：要么追加抢在退休清理之前落盘，新会话重放自然能看到它；要么退休先完成，本次追加返回 `None`，调用方重试投递给新实例。
+
+## 合并唤醒行、防伪造边界与严格过滤读取
+
+消息进了信箱，怎么让空闲或忙碌中的模型知道自己有新邮件？
+
+守护进程只往队列放两类轻量级通知行：
+
+**到达合并行（`inbox:arrival`）**，同一波并发涌入的 3 条后台完成通知，不会被拆成 3 条消息，而是合并成一行极短的计数提示，例如 `3 new bash-done messages` 或 `3 new messages`，附带操作指引 `Read them with msgs = await rlm.inbox.read().`。
+
+**周期提醒行（`inbox:reminder`）**，如果模型读完唤醒后忘了处理或者只消费了一部分，后台提醒任务会按 `agentInbox.reminderIntervalMs` 定期重发一条纯计数提醒（设为 `0` 时关闭周期提醒，但仍每 60 秒轮询一次设置以便热开启）。如果全局配置了 `agentInbox.enabled: false`，整套信箱退回旧模式，新通知直接走直插行，但信箱里已有的未读消息依然可读，不会平白丢失。另外，无守护进程的 `-p` 单次打印模式不启用信箱。
+
+这里有一条很细的安全校验（见 `crates/pa-daemon/README.md`）：`inbox_notice` 自定义行类型没有任何外部客户端接入路由，只能由 Worker 内部直插；如果外部客户端在恢复队列或发消息时，试图伪造一个自定义行冒充 `inbox_notice`、`rlm_child_terminal_notice` 或占用 `inbox:arrival`/`inbox:reminder` 合并键，校验器会直接报错拒收。否则一条伪造的用户消息可能在下一次清空信箱时被误删，或者反过来伪装成系统通知误导折叠渲染。
+
+在读取侧，`rlm.inbox.read()` 支持四个可组合（逻辑 AND）的过滤参数：`sender`、`inbox_class`（线协议键 `class`）、`since_ms`（包含下界）和 `before_ms`（排除上界）。注意 Rust 侧 `InboxReadFilter`（`crates/pa-core/src/session_engine/inbox.rs` 第 93 行）结构体上加了 `#[serde(rename_all = "camelCase", default, deny_unknown_fields)]`。为什么要加 `deny_unknown_fields`？因为 `rlm.inbox.read()` 是**消费即清空**语义（只移除命中的消息，未命中的留在信箱）。如果模型把字段名拼错成 `sendr`，宽容反序列化会把它当成一个全空过滤器，直接把整个信箱误清空！严格拒绝未知字段（同时在处理器里剥离外层路由键 `type`）确保拼错参数立刻报错，一封消息都不会丢。
+
+读完之后还有两件自动联动的收尾事：一是执行 Worker 注册的 `InboxReadHook`，立刻撤回已经清空的唤醒行或按剩余数量重绘提醒行；二是 Python 侧 `inbox_read()` 对返回的每一条消息调用 `emit({"application/vnd.prime-agent.inbox-message+json": entry})`（即固定提交 `#4123` 刚合入的新特性），让 TUI 的 `python_repl` 工具卡片直接把读出来的每封信箱消息按原始行样式渲染出来，操作者不用翻代码输出也能一眼看清 Agent 刚收到了什么。
+
+## `agent_message`：核家族直连投递与状态语义
+
+最后看看 Agent 之间是怎么互相发信的。模型在内核里调用：
+
+```python
+receipt = await agent_message.send(
+    "Please inspect the latest result.",
+    receiver_role="child",
+    receiver_name=child.session_name,
+)
+```
+
+也可以用 `agent_message.send("all", text)` 向整个核家族广播。消息发送方身份完全由守护进程根据当前会话自动派生，模型传任何 `from` 字段都无法伪造身份。
+
+在底层传输上（`crates/pa-daemon/src/agent_messaging.rs` 和 `peer_client.rs`），`pa-daemon` 采用了两级路由：
+
+1. **优先 Worker 点对点直连**：源 Worker 向 Supervisor 请求一张 `worker` 用途的一次性访问授权（`get_worker_peer_transport`），拿到目标 Worker 的本地 Socket 后直接发起 `worker_deliver_message` 投递，绕过 Supervisor 转发。
+2. **失败回退 Supervisor 路由**：直连不可达时回退走 Supervisor 的 `send_message` 路由（且绝不盲目重试导致重复送达）。
+3. **休眠目标按需唤醒**：如果收件方是一个已经休眠落盘的旧会话或已完成的子 Agent，Supervisor 会通过 `session_catalog.rs` 按 ID 前缀或精确名称解析（先查同工作目录，必要时从 `sessions-archive/` 懒恢复；若目录未命中，再查 RLM Spawn 账本找到父会话制品树下的子会话文件），拉起一个 Worker 接管该会话文件并投递消息，把目标重新唤醒进入普通回合。但如果目标会话正在关闭中，投递会被明确拒绝，绝不悄悄把消息丢进黑洞（`.changes/inbox-agentmsg-semantics.md`）。
+
+收据里的 `deliveryStatus` 区分两种状态：`"delivered"` 表示消息已经进入空闲目标的上下文或已安全写入目标的持久信箱；`"queued"` 表示目标正在忙，消息已作为 Steering 排队等待适当时机投递，且 `send()` 立刻返回不阻塞发送方。另外，如果操作者在界面里暂停了某个会话的 Agent 消息接收，暂停动作绝不会删除信箱里已有消息，清空操作也只移除尚未通知过模型的未公告消息。
+
+持久信箱和跨进程消息让多会话协作有条不紊。接下来，我们把镜头拉远到整个守护进程的全局治理：会话 JSONL 树怎么存、怎么在不爆内存的前提下全文搜索历史会话、升级时怎么做无损热更新，以及外部 IDE 如何通过 ACP 协议接入 Prime Agent。
+
+
+# 会话生命周期、流式全文搜索与 ACP 外部协议
+
+把编程 Agent 当作日常基础设施而不是一次性玩具时，有四个很现实的运维问题躲不开：聊到一半想回退到三轮前另开分支怎么办；上个月在某个会话里改过一个重试参数，攒了几百个几百 MB 的会话文件后怎么把那段对话搜出来；发布新版本执行 `prime-agent update` 时，后台正跑着五个活跃会话和定时心跳，怎么平滑交接而不把现场全杀光；以及除了官方 TUI，外部编辑器和自动化宿主怎么用标准协议接入并中途插话。
+
+这四件事都落在 `pa-daemon` 和 `pa-core/src/session/` 的交界处。
+
+## 仅追加 JSONL 会话树与单存储恢复
+
+Prime Agent 的所有会话持久化都采用统一的仅追加（Append-Only）JSONL 格式，默认存放在 `~/.prime/agent/sessions/` 下（子 Agent 存放在父会话制品目录树中，并由 RLM Spawn 账本索引）。
+
+打开 `crates/pa-core/src/session/manager/` 和 `crates/pa-daemon/src/session_store/`，每条记录都带唯一 `id` 和 `parentId`，本质上是一棵写进顺序日志的树。这种结构的直接好处是支持非破坏性分支导航（`branch_navigation.rs`）：用户可以退回历史上任意一条消息创建新分支，旧分支依然完整留在文件里，还可以生成 `branchSummary` 供新分支参考。
+
+除了普通消息，所有影响运行态的关键变迁也以结构化记录追加进同一份会话文件：
+
+- 会话创建前缀固定写入 `model_change`、`thinking_level_change` 和 `service_tier_change`；
+- 每次目标状态更新都会同步落盘一条 `thread_goal_state` 自定义行（`goal_state_persist.rs`）；
+- 上下文压缩写入 `compactionSummary` 条目，读取活跃窗口时由会话存储自动折叠；
+- 排队中的待发指令和未结算文本队列则不写进主会话历史，而是写进独立的 Worker 恢复日志（`journal.rs`），防止把尚未执行的队列草稿污染进正式对话树。
+
+当一个 Worker 进程因异常崩溃被 Supervisor 带 `--resume <sessionFile>` 重新拉起时，新 Worker 从磁盘重建完整分支历史与最新 `thread_goal_state`（同时把已发布基线静默对齐，避免重启后重复刷屏播报目标状态），再重放恢复日志里的文本队列（注意：排队提示里的 base64 图片附件不随恢复日志跨崩溃保留），让后续压缩与推理完全接续崩前的真实历史。
+
+## 零内存暴涨的流式全文搜索
+
+随着使用时间拉长，单个长程会话的 JSONL 文件可能膨胀到几百 MB 甚至上 GB。在 `prime-agent agents` 视图里按 `Ctrl+F` 切换按消息正文搜索历史会话时，如果把所有文件全量 `serde_json::from_str` 读进 Supervisor 内存，守护进程瞬间就会 OOM。
+
+`crates/pa-daemon/src/session_content_search.rs`（仅 123 行）用非常干净的三级过滤流式扫描解决了这个问题：
+
+1. **逐行流式读取**：用 `BufReader::lines()` 每次只在内存里保留一行文本，先解析首行会话头拿到持久 `id`。
+2. **零解析原始行预筛**：先判断行里是否包含 `"type":"message"`；如果查询词是纯 ASCII 且不含引号、反斜杠、空格和控制字符（因为 JSON 转义或跨块拼接可能改变字节序列），直接对原始行做大小写不敏感子串检查，跳过绝大多数无关行，连 JSON 反序列化都省了。
+3. **精准角色与正文匹配**：只有通过预筛的行才解析为 `serde_json::Value`，且严格只匹配 `user` 和 `assistant` 角色的正文文本，刻意跳过 `toolResult` 的海量工具日志，减少噪声误命中。
+
+也要注意它当前的明确范围边界（见 `.changes/session-content-search.md`）：扫描只覆盖顶层会话目录里的 `.jsonl` 文件，子 Agent 存放在父制品树里的对话记录目前尚未纳入全文检索。
+
+## `update_prepare`：五态热更新事务与跨版本接管
+
+给一个正在后台托管多会话的守护进程做原地升级，最怕两种事故：一是旧守护进程还在受理新创建请求、新版本已经启动抢占 Socket；二是旧 Worker 被强杀，还没来得及把 Python 内核快照和队列日志刷盘。
+
+`crates/pa-daemon/src/update_prepare.rs`、`update_roster.rs`、`update_stop.rs` 和 `update_restore.rs` 为此实现了一套完整的五态热更新事务状态机：
+
+```text
+Serving -> Draining -> Fenced -> Snapshotted -> Prepared -> Stopping
+                \____________________________________________/
+                     任一阶段失败或超时 -> Aborted -> Serving
+```
+
+整套交接被拆成准备、提交、恢复三个严格有界阶段：
+
+**准备阶段（`prepare_update_restart`）**，Supervisor 进入 `Draining`，立刻立起变更闸门：所有写操作命令被拒绝并明确提示 `Daemon is preparing an update restart`，但只读查询、客户端挂载以及中止类排空命令继续放行。排空在途变更后进入 `Fenced`，向所有常驻 Worker 发起 `update_snapshot` 让它们完成状态落盘，随后汇总所有会话、Worker、子 Agent 账本和只读的 `scheduled-jobs.json` 心跳清单，原子写入 `prepared/<id>/{roster,marker}.json` 并返回 `Prepared`。整个准备阶段受 90 秒硬截止时间保护，磁盘上的准备标记自带 45 秒自过期看门狗，且支持同一 `updateId` 幂等重入；超时或异常时自动回退到 `Serving` 并清理准备目录。
+
+**提交阶段（`commit_update_restart`）**，Supervisor 向每个 Worker 发送带确认的 `shutdown` 充当刷盘屏障，设有 30 秒加 30 秒的分段预算。只要有任意 Worker 拒绝退出，Supervisor 绝不强杀，而是立刻中止本次提交、把已经停掉的 Worker 重新拉起并恢复 `Serving`；只有全部 Worker 平滑停稳，旧 Supervisor 才退出，把描述符留给新版本接手。
+
+**恢复阶段（`update_restore.rs`）**，新 Supervisor 启动时先读取环境变量 `PRIME_AGENT_UPDATE_ROSTER`，再无条件清扫本次更新的临时目录。随后按自底向上的顺序逐条恢复或认领会话（单条恢复失败只记入报告，绝不拖死整个守护进程启动），同时扫描 `scheduled-jobs.json` 重新挂起定时与心跳任务。在恢复扫描彻底完成前，客户端对尚未恢复会话的挂载请求会短暂排队等待，而不会误报会话不存在。更周全的是，它还保留了对历史 TypeScript 版更新清单的兼容逻辑：遇到旧格式清单时，先重建父会话再重建子会话，重映射活跃父 ID 并显式还原上下文与动作队列。
+
+## ACP 外部协议与 `_session/steering` 扩展
+
+除了官方终端界面，Prime Agent 还通过 `prime-agent --mode acp` 对外提供标准 **Agent Client Protocol（ACP）** 的 stdio JSON-RPC 服务（`crates/pa-daemon/src/acp/`），且底层同样挂载到守护进程会话上，而不是单独另起一套孤立引擎。
+
+除了标准的 `initialize`、`session/new`、`session/prompt`、`session/close`、`session/cancel` 与带命名空间 `_meta` 关联字段的 `session/update` 通知，v0.10.5 在 ACP 层做了两项针对真实宿主集成的打磨：
+
+**`_session/steering` 转向扩展（`.changes/sebastian-acp-session-steering.md`）**，服务端在 `initialize` 响应里通过 `_meta.steering.supported` 声明支持该扩展。外部客户端可以在一个 `session/prompt` 正在流式运行的途中调用 `_session/steering`（支持文本块和按会话去重的可选 `messageId`）。底层会向 Worker 发送带 `requireBusy` 标志的 `steer` 命令：在入队锁内原子检查当前是否真有活跃回合。如果在运行中，立刻排入 Steering 队列并返回 `injected`，由当前回合在空闲屏障前消化完毕；如果当前根本没有运行中的回合，直接回答 `promptRequired`（或 `noRunningTurn`），**绝不会偷偷启动一个新回合，也绝不会解除队列暂停状态**。
+
+**克制的错误可重试契约（`crates/pa-daemon/src/acp/mod.rs` 第 39 行）**，当一个 `session/prompt` 最终失败时，服务端返回带 `kind`、`category` 和 `retryable` 的结构化错误数据。源码注释点透了一个常被忽视的陷阱：此时脚手架内部的自动重试已经耗尽，而外部宿主再次发起 `session/prompt` 是一次全新的提示词请求，**不是幂等重放**，因为用户消息已经落盘、有副作用的工具可能已经跑过。因此只有网络断流或超时的 `model_transport` 类别会标为 `retryable: true`，而 `429` 限流、`402` 余额不足、`401` 鉴权失败和上下文溢出（`context_limit`）一律标为 `retryable: false`，防止外部编排器盲目重放造成重复扣费或重复改文件。
+
+到此为止，会话如何运行、如何协作、如何落盘与对外服务已经全部清楚。下一章进入 Prime Agent 最具特色的“自我改进”核心：分层系统提示词与 Continual Harness 怎么做到既越用越聪明，又不把大模型的 Prompt Caching 打废。
+
+
+# 分层系统提示词与 Continual Harness 自我改进
+
+做过长程 Agent 成本优化的人，对 Prompt Caching（提示词前缀缓存）的敏感度都很高。一次 20 轮的会话，只要系统提示词第 10 行变了一个时间戳或者塞进一条动态记忆，后面几万 Token 的前缀缓存就会整段失效，输入费用瞬间翻好几倍，首字延迟跟着拉长。
+
+可另一方面，Prime Agent 的卖点恰恰是“持续脚手架（Continual Harness）”：Agent 跑着跑着发现这个项目必须用某个特定测试命令，或者总结出一套更好用的子 Agent 分工策略，希望立刻沉淀下来，下一轮就生效。
+
+一边要求前缀字节级纹丝不动，一边要求行为策略在运行中持续演化。Prime Agent 在 `crates/pa-core/src/prompts/` 和 `crates/pa-core/src/refinement/` 里给出的解法非常干净：**严格分层，动静分离，把自我改进完全移出基础系统提示词**。
+
+![分层系统提示词与 Continual Harness 精炼流程](../wiki/assets/diagrams/prompt-continual-harness.svg)
+
+图里最关键的设计切口在中间那条琥珀色框：`[harness-digest]` 不拼进系统提示词，而是以一条独立用户消息的形式在冷边界或状态变更时追加进对话流。基础系统提示词永远不被 `/refine` 改写，前缀缓存和持续进化因此不再打架。
+
+## 静态前缀与动态尾部：用 `cached_prefix_len` 钉死边界
+
+打开 `crates/pa-core/src/prompts/system_prompt.rs`，整个系统提示词组装函数 `system_prompt_breakdown()` 返回的不只是最终字符串，而是一个带完整血缘信息的 `SystemPromptBreakdown` 结构，里面每个切片 `PromptSegment` 都明确标注了 `SegmentKind::Static` 或 `SegmentKind::Dynamic`，并计算出精确的字节边界 `cached_prefix_len`。
+
+**静态前缀（`SegmentKind::Static`）**只由两类输入决定：用户是否通过 `--system-prompt` 传入了完整替换文本，以及当前选中模型匹配到的模型专属补丁。默认情况下，按固定顺序拼接四个文件：
+
+1. `core`（`prompts/layers/core.md`）：定义唯一的 `python_repl` 工具和全部程序化工具、子 Agent、信箱、压缩、目标、心跳和 MCP 的完整 API 契约。
+2. `usage`（`prompts/layers/usage.md`）：强制执行规约，例如禁止直接调 `subprocess`、必须用 `edit` 精确匹配、读文件要赋给命名变量、禁止空跑 `pass` 占位、禁止 `sleep` 轮询以及不要往内核里硬装目标项目的第三方依赖。
+3. `opinionated`（`prompts/layers/opinionated.md`）：工作流偏好与沟通风格准则。
+4. `model-prompts`（`prompts/layers/model_prompts.toml`）：按模型名通配规则挂载的定向纠偏文件。比如当前仓库里就有一条真实规则：`glm-5.3*` 自动追加 `bash-over-subprocess.md`，专门纠偏特定模型爱调 `subprocess` 的习惯；用户也可以在 `<agent_dir>/model-prompts.toml` 里维护自己的映射表（路径校验会拒绝绝对路径和 `..` 穿越）。
+
+只要自定义提示和模型规则不变，`assembled[..cached_prefix_len]` 在不同会话之间严格字节级一致。
+
+**动态尾部（`SegmentKind::Dynamic`）**则按固定顺序收集所有会话级上下文：
+
+1. `packages`：内核预装 Python 包列表，并明确提示这是一个 `uv` 管理的虚拟环境，没有内置 `pip` 模块，装包要用 `uv pip install <pkg>`。
+2. `project-context`：自动发现的各层级 `AGENTS.md` 项目指令。
+3. `skills-inventory`：去掉标记为 `disable_model_invocation` 后的可见技能清单（标明哪些有 `python_import` 可直接调用，哪些是磁盘文档）。
+4. `mcp-servers`：已启用的通用 MCP 服务指引。
+5. `environment`：当前工作目录、对话日志路径、模型输入模态（如图像/视频支持）、是否无守护进程、是否启用信箱等环境事实。
+6. `session-role`：当前会话的 RLM 递归深度、是否为工厂状态子节点以及派生权限。
+7. `appended-prompt`：发现的 `APPEND_SYSTEM.md` 与 `--append-system-prompt` 追加内容。
+
+想检查某个模型到底拿到了一份怎样的系统提示词，不用翻代码猜，直接跑一条 `prime-agent prompt --model <selector>` 就能把完整提示词和每一层的来源、字节分段打印出来（`.changes/sebastian-prompt-builder-facts.md`）。
+
+## 五类持久条目与双作用域并发锁
+
+Continual Harness 的底层存储由 Rust（`crates/pa-core/src/refinement/mod.rs`）和 Python（`prime-agent-runtime/src/rlm/harness.py`）双向读写同一份 JSON 文档 `harness_state.json`。
+
+它刻意保持了很小的领域模型，只存五类条目（`REFINEMENT_KINDS`）：
+
+- `prompt`：窄范围的行为补充说明（默认路径 `policy`），绝不取代静态基础提示词；
+- `memory`：跨压缩保留的事实、项目约定与用户偏好（默认路径 `general`）；
+- `skill`：可复用的 Python 技能描述，写入时强制校验 `reference` 必须满足 `{"type": "python"}` 且带合法导入名与调用模式（`_validate_python_skill_reference`）；
+- `subagent`：可复用的子 Agent 角色规格；
+- `factory`：声明式状态机或 DAG 工厂规格（受 `factory.enabled` 门控）。
+
+每条 `HarnessEntry` 都带递增版本号 `version`、来源标记 `source`（`agent` 或 `refine`）以及起止时间戳，外加一份独立的 `refinements` 精炼事件列表与审计日志 `refinement_history.jsonl`。
+
+作用域默认严格隔离：本地存储位于 `<session-artifact-dir>/harness/harness_state.json`，仅影响当前会话；只有显式传入 `global_=True` 时，才写入跨会话共享的 `~/.prime/agent/harness/harness_state.json`。如果在 `--no-session` 这类没有持久化目录的临时会话里访问 `rlm.harness`，Python 侧的 `_HarnessProxy` 不会把内核弄崩，而是降级为空读视图并在本地写入时抛出明确错误提示改用 `global_=True`。
+
+因为 Rust 宿主和 Python 内核可能并发读写同一份文件，两边实现了一致的防踩踏细节：Rust 使用 `BTreeMap` 保序序列化防止文件无意义抖动；加锁和替换前两边都会沿符号链接解析真实目标文件（`resolved_state_file()`，最多跟踪 40 层防循环链接），避免锁住软链接别名却绕开了内核持有的真锁。
+
+## 相关性打分、`[harness-digest]` 指纹与 `/refine` 触发链路
+
+持久条目攒多了，全部倾倒给模型又会变成新的上下文负担。Prime Agent 在 `crates/pa-core/src/session_engine/harness_digest.rs` 里做了一套轻量但很考究的动态摘要机制：
+
+1. **多语言词项提取与加权排序**。`digest_query_terms()` 从当前活跃目标（最高权重 `3.0`）和最近 4 条用户/助手消息（权重从 `2.0` 逐条递减至 `1.0`）里提取最多 48 个检索词项。Python 侧的 `rlm.harness.search()` 与 Rust 侧采用同一套跨语种分词规则：拉丁字母按至少 3 字符词干切分，非 ASCII 非 CJK 语种按 2 字符起步，而没有空格分隔的中日韩文字（CJK）自动按边界与相邻拉丁词切开，并展开成重叠二元组（例如 `修复登录` 展开为 `修复`、`复登`、`登录`），即使条目里写的是 `登录故障` 也能稳定召回。
+2. **指纹防重复投递**。渲染出 `<harness_state>` 摘要的同时，宿主会计算一份不含查询词的纯状态指纹 `state_fingerprint`。`[harness-digest]` 作为一条 `display: false` 的自定义消息，在冷启动、恢复、压缩边界或状态指纹确实变化时追加进上下文。如果记忆内容根本没变，绝不重复追加冗余行；而且即使运行中途完成了精炼，也只是向后追加新行而不篡改历史消息前缀，最大限度保住已有的前缀缓存。
+3. **后台非阻塞精炼与回滚**。用户运行 `/refine`、模型调用 `await refine.run(instructions=...)`，或者在上下文压缩之后触发自动精炼（`auto_refine_trigger.rs`），精炼都不会打断正在执行的 Python 单元格，而是排队到当前回合结束后的空闲边界执行。后台规划器调用辅助模型审阅最近轨迹，提出小步、有证据支撑的增量修改，写入 `harness_state.json` 和 `refinement_history.jsonl`，并在必要时支持按快照回滚。如果会话在规划中途被销毁或切换分支，后台任务立即取消；但一旦进入写盘提交阶段，会保证完成审计与落盘，不留下半成品状态。当然，用户也可以随时在全局 `/settings` 里把 `harnessRefinements` 设为 `false`，一键彻底关闭精炼写入。
+
+有了前缀稳定、经验可沉淀的提示体系，剩下的问题就是让 Agent 在长达数小时的运行里既不把上下文撑爆，又能在遇到失败时按预算坚持推进。下一章我们拆解自动压缩、持久目标、心跳调度和自主质量门禁。
+
+
+# 自动压缩、目标驱动与有界自主运行
+
+一个跑上几个小时的自动化研究或代码重构任务，最容易在三个节点半途而废：第一，上下文逼近窗口上限，压缩触发得太晚直接撞供应商的 `input + output > contextWindow` 报错，或者触发阈值配得太低，导致每次工具调用都在反复重摘要同一段近期历史；第二，模型刚改完一半就以为差不多了，自己提前宣布结束回合；第三，启用了循环重试门禁，但模型根本没改代码，脚手架却在原地把耗时的 `cargo test` 傻傻重跑十遍。
+
+Prime Agent 用四块咬合在一起的组件管住长程续跑：带双保护边界的**自动压缩**、单活跃槽位的**持久目标（Goal）**、跨重启的**定时心跳（Heartbeat/Cron）**，以及带工作树快照防重跑的**有界自主质量门禁（Autonomous Mode）**。
+
+![RLM 变量卸载与上下文自动压缩机制](../wiki/assets/diagrams/context-compaction-offload.svg)
+
+这张图把 RLM 变量卸载和自动压缩放在一起看，就能明白为什么压缩在这里不像传统聊天框架那样伤筋动骨：压缩只折叠对话消息，Python 内核继续保留小中型变量，同时用精确的数学公式卡住触发线。
+
+## 双保护底线的自动压缩公式
+
+上下文压缩的纯决策逻辑位于 `crates/pa-core/src/session_engine/compaction.rs`。它面对两个相互拉扯的工程约束：
+
+一方面，很多模型供应商（尤其是把思考预算折算进输出上限的 Anthropic 与 Bedrock 路由）实行**联合上限**校验，只要 `输入 Token + 请求的输出预算 > contextWindow` 就会直接拒单。旧版 TypeScript 代码只按 `contextWindow - reserveTokens` 判断，在输出预算较大时仍可能撞墙。Rust 重写版专门补上了这条安全上限：
+
+```rust
+let requested = (context_window as f64 * (percent / 100.0)) as u64;
+let retention_floor = settings
+    .keep_recent_tokens
+    .saturating_add(settings.reserve_tokens.saturating_mul(2))
+    .saturating_add(1);
+let percentage = requested.max(retention_floor);
+let headroom = settings.reserve_tokens.max(COMBINED_LIMIT_HEADROOM_FLOOR);
+let combined = context_window
+    .saturating_sub(max_output_tokens)
+    .saturating_sub(headroom);
+percentage.min(combined)
+```
+
+公式里四个默认常量都写死在源码顶部：
+
+- `DEFAULT_THRESHOLD_PERCENT = 95.0`（`COMPACT_THRESHOLD_RATIO = 0.95`）：防止大窗口下 `chars / 4` 估算漂移；
+- `DEFAULT_RESERVE_TOKENS = 16_384`：预留缓冲；
+- `DEFAULT_KEEP_RECENT_TOKENS = 20_000`：压缩后保留的近期对话 Token 数；
+- `COMBINED_LIMIT_HEADROOM_FLOOR = 4_096`：即便用户调小 `reserve_tokens`，联合上限下依然保留至少 4,096 Token 余量应对估算误差。
+
+留意 `retention_floor = keep_recent_tokens + 2 * reserve_tokens + 1`（默认 `52,769`）。如果没有这条底线，一旦用户把压缩比例设成 10%，每次压缩完留下的 20,000 Token 近期上下文加上两轮摘要开销又立刻超过阈值，系统就会陷入每跑一个工具就重压缩一次的死循环。
+
+Token 估算本身走两路：有最近一次非错误、非中止助手回复的真实供应商 `Usage` 时优先采用真实账单（`total_tokens` 或 `input + output + cache_read + cache_write` 之和，因为本轮输出就是下一轮输入的一部分）；新增未结算消息则按保守的 `chars.div_ceil(4)` 估算，图片块固定按 `4,800` 字符（约 1,200 Token）计入，视频块按 `VIDEO_ESTIMATED_TOKENS * 4` 计入。
+
+触发压缩的方式有三种：达到阈值自动触发、用户执行 `/compact`、或者模型在 REPL 里调用 `await compact.run(instructions=...)` 预约在当前回合结束后执行。压缩过程中，旧消息被总结为 `compactionSummary` 落盘，随后系统做三件收尾动作：通知 Python 内核清理单个序列化超过 `16 MiB` 的超大变量、在压缩后的冷边界重新投递 `[harness-digest]` 并附加 `ipython_state` 持久态通知，以及在存在活跃目标时把目标续跑重新接入队列。而被压掉的历史并没有消失，模型随时可以通过 `await rlm.session.messages(start=..., limit=..., role=...)` 按切片翻回压缩前的原始记录。
+
+## 持久目标 `/goal` 与定时心跳
+
+长程任务里，模型常常在修完一个报错后就习惯性地停下来问“接下来还要做什么”。
+
+`/goal`（及内核技能 `goal.create` / `goal.get` / `goal.complete`）在单会话内维护唯一一个活跃目标。每当目标状态变化，Worker 都会把最新状态（目标文本、状态、用量计数、续跑次数）作为 `thread_goal_state` 自定义行落盘进会话 JSONL，保证崩溃重启后完整续接。在每个回合自然结束时，引擎通过 `crates/pa-core/src/session_engine/goal_boundary.rs` 决定是否继续：
+
+1. 若仍有未结算的 RLM 子 Agent，目标续跑主动让位延后，避免在子任务还没回信前空转催促主 Agent；
+2. 若目标尚未调用 `goal.complete()` 且未触及 Token 预算上限，引擎自动铸造一条带目标上下文的 Follow-Up 续跑消息驱动下一轮；
+3. 针对用户按下 Stop 键或中途 `/goal pause` 的竞态，v0.10.5 专门修复了两处细节（`.changes/sebastian-goal-status-error-race.md` 和 `.changes/sebastian-goal-update-terminal-check.md`）：刚发提示就按 Stop 不再把活跃目标误标为失败，回合中途暂停目标也保证在回合结束时向所有客户端广播最新状态。
+
+而对于需要按时间周期巡检（例如每 5 分钟检查一次训练指标或 CI 状态）的任务，Prime Agent 提供了 `crates/pa-core/src/cron/` 与内核技能 `rlm_heartbeat`。所有定时任务按跨进程文件锁存在会话制品的 `scheduled-jobs.json` 里，支持 `steer`（默认，可打断忙碌会话）和 `follow_up` 两种投递模式。每次修改心跳都会通过 `heartbeats_changed` 广播给所有挂载的 UI 客户端；而在开启信箱的会话里，同一个心跳任务在信箱里永远只留最新一封未读，避免离线一夜攒出一百条重复提醒。
+
+## 有界自主模式与防重跑质量门禁
+
+如果说 `/goal` 靠模型自己判断是否完成，那么 `/autonomous`（`crates/pa-core/src/autonomous/`）则把验收权交给外部命令和硬预算。
+
+CLI 和会话配置允许同时设四道硬边界：`max_continuations`、`max_turns`、`max_tokens` 和 `timeout_ms`，再加上一组用户自定义的 Shell 质量门禁命令（`--autonomous-gate`）、单门禁超时和最大重试次数。
+
+每当 Agent 回合自然停下，Worker 的 `autonomous_continuation.rs` 钩子调用 `should_autonomously_continue()`（`crates/pa-core/src/autonomous/gates.rs` 第 86 行）：
+
+1. **门禁优先于预算**：只要质量门禁全部退出码为 0，自主循环立刻宣告达标停止，不再浪费任何预算。
+2. **工作树快照防空跑**：门禁失败后，`ShellGateRunner` 会对当前会话工作目录拍一份 Git 工作树内容哈希快照（`capture_git_worktree_snapshot`），把失败结果（输出上限 `MAX_GATE_OUTPUT_CHARS = 6,000`，子进程单流捕获上限 `1 MiB`）拼进续跑提示交给模型去修。下一轮结束时，如果模型只是嘴上解释了一通却根本没有改动工作树文件，快照比对一致，门禁拒绝重跑耗时的测试脚本，防止原地空烧。
+3. **关闭 Git 配置注入面**：因为快照要在用户可能不完全信任的目标仓库里跑 `git` 探测命令，`gates.rs` 顶部明文列出了它用命令行参数强行关掉的危险扩展点：禁用 `fsmonitor` 钩子、禁用索引写钩子、禁用 promisor 懒拉取、禁用外部 diff 与 textconv 转换器、禁用子模块读取。它也极其坦诚地在源码注释里写明了唯一无法通过参数关掉的残余面：如果已修改的受跟踪文件命中了 `.gitattributes` 里的 `clean` 或 `process` 过滤器，Git 仍会执行它们。
+4. **明确不夸大结论**：`README.md` 与 `gates.rs` 都把话讲得很实：门禁通过只证明你配置的那几条命令通过了；而因为触发轮次、Token 或时间上限停下来，绝不等于任务已经成功。
+
+自动压缩、目标、心跳和门禁管住了本地长程执行；但如果模型需要连 Slack、Google Workspace 或公司内部 API，怎么既把外部工具无缝接进 Python REPL，又不把 OAuth 密钥和访问令牌散落进模型代码？下一章看 Prime Agent 的 MCP 桥接层。
+
+
+# 宿主管认证、内核跑协议的 MCP 桥接层
+
+接过 Model Context Protocol（MCP）的人都知道它有两个天然痛点：第一，很多 MCP 服务需要 OAuth 2.0 登录、动态客户端注册、PKCE 交换、本地回调端口监听和令牌自动刷新，把这些交互塞进 Python 子进程里既难和桌面浏览器配合，又容易让运行在 REPL 里的模型代码直接翻到磁盘凭据；第二，一个企业工作区动辄挂五六个 MCP 服务、几百个工具 Schema，如果像传统客户端那样在启动时把所有工具定义全塞进大模型的 `tools` 参数数组，还没开始干活上下文就已经被工具声明吃掉两万 Token。
+
+Prime Agent 给出的架构解法非常干脆：**劈成两半**。Rust 宿主管配置、目录、权限和 OAuth 凭据，Python 内核管真正的 MCP 客户端连接和按需协议调用；而且所有 MCP 工具都不进大模型的 JSON 工具定义数组，全部变成 `python_repl` 里的程序化异步调用。
+
+![MCP 桥接职责划分与安全信任边界](../wiki/assets/diagrams/mcp-security-boundary.svg)
+
+这张图同时标出了 MCP 的职责分界与整套系统的底层权限现实。先看上半部分的 MCP 桥接，再在第 13 章展开下半部分的安全边界。
+
+## 宿主侧 `McpManager`：绝不启动 MCP 子进程，只管认证与目录
+
+翻开 `crates/pa-core/README.md` 和 `crates/pa-core/src/mcp/`（18 个模块），顶部就写明了一条非目标边界：**会话引擎从不自己启动任何 MCP 服务进程**。`McpManager` 专注管好三件事：
+
+**配置解析与目录视图**，汇总内置服务目录、用户 `settings.json` 里的 `mcpServers` 声明以及共享凭据库中的连接状态。操作者在终端打开 `/mcp` 面板查看服务卡片（`service_catalog_views`）和 API Key 凭据行（`api_key_credential_views`，例如网页搜索密钥）时，全部从宿主本地状态直接出图，不阻塞去往返查询 Python 内核。
+
+**完整的 OAuth 2.0 认证链路**，`crates/pa-core/src/mcp/oauth*.rs` 实现了 RFC 9728 资源元数据发现、动态客户端注册、PKCE 挑战、本地 HTTP 回调监听（支持桌面应用固定注册回调端口，如 Slack 公共桌面客户端配置，以及动态端口候选区间）与令牌刷新。登录成功后，凭据按服务端点绑定写入共享认证存储，且通过 `pa-daemon` 的 `WorkerMcpLoginUi` 桥接把登录提示送达当前挂载的终端。
+
+**三个受控宿主请求接口**，向 Python 内核暴露 `mcp.config`、`mcp.refresh` 和可选的 `mcp.begin_login` 三个 `host_request` 处理器。当内核里的模型代码想要调用某个服务时，内核按需向宿主索取该连接的解析配置或刷新后的访问信息；而面向模型探索的目录查询接口（`list_plugins`、`search_plugins`、`list_connections`）只返回白名单元数据，绝不把原始凭据吐给模型。
+
+## 内核侧 `rlm.mcp`：按需发现、有界分页与进程卫生
+
+真正的 MCP 传输协议跑在 `prime-agent-runtime/src/rlm/mcp.py`（1,075 行）和 `mcp_base.py`（337 行）里。模型在 REPL 中面向两个清晰的表面：
+
+**按需发现面**，避免把几百个工具声明预先灌进系统提示词。模型可以用 `await mcp.list_connections()` 查已连接服务，用 `await mcp.search_tools(query, connection_id=..., limit=20)` 在最多 8 个活跃服务（`_MAX_TOOL_SEARCH_SERVERS = 8`）里搜索工具名和描述，或者用 `await mcp.describe_tool(connection_id, tool)` 单独拉取某一个工具的 `inputSchema`。
+
+**实时调用面**，`await mcp.list_tools(server)` 和 `await mcp.call_tool(server, tool, arguments=...)`。调用时，`_Generation` 生命周期管理器按需懒加载对应的 stdio 子进程或 Streamable HTTP 连接，加锁串行化调用，原样透传工具 Schema 与实时返回值。
+
+因为外部 MCP 服务质量参差不齐，`mcp.py` 里塞满了针对故障服务的防御性常量：
+
+| 防御项 | 源码常量 | 保护目标 |
+| --- | --- | --- |
+| 启动握手超时 | `_DEFAULT_STARTUP_TIMEOUT = 20.0` 秒 | 防止卡死的 stdio 服务永久挂起首次连接 |
+| 单次工具调用超时 | `_DEFAULT_CALL_TIMEOUT = 60.0` 秒 | 对齐默认单元格超时，避免失联服务拖垮调用 |
+| 优雅关闭超时 | `_SHUTDOWN_TIMEOUT = 2.5` 秒 | 严格小于宿主的 `KERNEL_SHUTDOWN_TIMEOUT_MS`（5 秒），确保内核退出前能体面回收所有 MCP 子进程 |
+| 分页列表上限 | `_MAX_TOOL_PAGES = 25` 页 | 遇到死循环游标或无限翻页的恶意/故障服务时直接抛出 `McpDiscoveryError`，绝不把残缺工具表当成完整列表发布 |
+| 环境变量白名单 | `_SAFE_ENV = ("HOME", "PATH", "TMPDIR", "TEMP", "TMP", "SystemRoot", "WINDIR")` | 启动 stdio MCP 子进程时只透传极简基础环境变量，避免把宿主的全部敏感环境变量顺手泄露给第三方 MCP 工具 |
+| 错误输出裁剪与脱敏 | `_STDERR_BYTE_LIMIT = 8 KiB`、`_STDERR_LINE_LIMIT = 40` 行 | `_StderrTail` 独立管道线程截断诊断日志，并用 `_SECRET_KEY_PATTERN` 和敏感值表清理可能渗入报错的 Token、密码或私钥，同时过滤 ANSI 转义与控制字符 |
+
+此外，在 `crates/pa-daemon/src/mcp_connections.rs` 中，当 `/mcp` 界面确实需要展示每个活跃连接的实时工具清单时，守护进程会通过前面第 4 章提到的带外 `mcp_status` 通道（默认每服务 10 秒超时）并行拉取，既不阻塞用户正在跑的 Python 单元格，又把单个故障服务的报错隔离在对应连接行里。仓库里还专门配有端到端真机回归测试 `crates/pa-daemon/tests/mcp_product_path_e2e.rs`，用真实的 Worker、Python 内核和 `mcp_echo_server.py` 走完 `mcp.config` 到 `mcp.call_tool` 全链路。
+
+后端引擎、多进程守护、信箱、提示词、压缩与 MCP 桥接全部就位后，还有一个最容易被低估的层面决定这套系统用起来到底顺不顺手：终端界面（TUI）如何做到毫秒级首帧、不卡顿地渲染流式代码和信箱卡片，以及后台怎么悄悄把可观测性做扎实。这就是下一章的主题。
+
+
+# 把渲染留在关键路径上：TUI 卡片、延迟护栏与可观测性
+
+终端类编程 Agent 容易给人笨重卡顿的印象，根源常常藏在启动与渲染路径里的同步阻塞：刚敲完 `prime-agent` 回车，启动路径先同步发了一次 157 毫秒的埋点 HTTPS 请求；或者底层终端库发了一条 kitty 键盘协议探测，碰到不回话的终端死等整整 2 秒；再或者一个跑了两百轮的会话，每来一个流式 Token 就把整屏 Markdown 和所有历史工具输出从头重新排版一遍。
+
+Prime Agent 的终端层 `pa-tui`（262 个 `.rs` 文件、131,748 行）在 `AGENTS.md` 里把首帧渲染延迟列为不可退化的产品红线，背后落了四项实打实的架构和代码护栏。
+
+## 零引擎耦合、首帧零网络与挂起 Sink 回归测试
+
+回顾第 2 章的依赖表：`pa-tui` 只依赖 `pa-types`，完全不链接 `pa-core`、`pa-ai` 或 `pa-daemon`。启动 TUI 时，它只管初始化终端状态、连上守护进程 Socket 并接管帧渲染，所有沉重的模型目录拉取、技能扫描、Python 环境引导和 OAuth 刷新都在后台 Worker 或独立异步任务里跑。
+
+`AGENTS.md` 里专门记录了一起编号 `#3288` 的真实性能回归事故，读起来非常有警示意义：曾经有一次改版不小心在交互启动路径上 `await` 了埋点启动刷盘，结果一次真实的 HTTPS POST 往返让冷启动首帧凭空多花了约 157 毫秒。之所以当时所有 CI 绿灯全过，是因为测试环境默认开了 `DO_NOT_TRACK=1` 且基准测试用了离线 Mock，完全遮住了真实网络延迟。
+
+这次踩坑直接催生了全仓四条铁律：
+
+1. **渲染关键路径绝不等待网络或磁盘同步**：遥测、目录更新、版本检查一律交由后台 Worker 托管，渲染路径只做 fire-and-forget 投递并立刻返回。
+2. **用挂起 Sink 做红灯先行的回归测试**：`pa-telemetry` 与启动路径必须通过 `the_startup_flush_never_blocks_the_first_frame` 回归测试，测试里注入一个**永远不回包**的挂起网络 Sink；只要关键路径上任何一处不小心 `await` 到了投递过程，测试就会直接超时失败。
+3. **修补第三方终端库的 2 秒黑洞**：根目录 `Cargo.toml` 里有一个 `[patch.crates-io]` 指向 `vendor/crossterm`。因为上游 `crossterm 0.28.1` 在检测 kitty 键盘协议支持时，遇到不回应的终端会把整个进程的事件读取线程死锁 2 秒。Prime Agent 在保持原有解析器和排队输入不变的前提下，把这个查询轮询上限硬切到了 250 毫秒，保住了绝大多数冷门终端和复用器下的秒开手感。
+4. **流式渲染 50 毫秒单槽合并**：后端 `crates/pa-daemon/src/streaming.rs` 对高频到达的 `message_update` 令牌增量包做 50 毫秒单槽合并广播，而遇到 `message_start`、`message_end` 或工具事件帧时先冲刷暂存增量再直发，既保证帧序严格一致，又避免每秒上百次重绘把终端缓冲区刷爆。
+
+## 固定首行的 `python_repl` 工具卡片与信箱直显
+
+在传统单工具 REPL 界面里，把代码、报错、Diff、后台命令和收到的消息混成一大坨纯文本输出，人眼根本扫不动。`crates/pa-tui/src/tool_card/ipython.rs`（695 行）围绕 `python_repl` 做了精细的卡片分层：
+
+**固定高度的折叠首行**，每张卡片顶部都是一行结构固定的摘要：状态图标（`Queued`、`Running`、`Done`、`Error`、`Aborted`）、语言标签、代码或命令预览、行数统计、耗时与异常类名。不管用户点击展开还是收起详情，顶部这一行永不跳动移位。而且如果一个单元格已经结束但里面拉起的后台 Shell 还在运行（`background_shell_running`），状态行会继续保持运行态动画且跳过静态行缓存；如果单元格本身已被用户中止，即使残留部分结果里带着已成功退出的后台 Shell，`CardStatus::of` 依然以 `card.aborted` 为准，绝不误报为成功。
+
+**面向结构化 MIME 载荷的专有子行**，得益于内核通过 `rlm.emit()` 上报的专有 MIME 类型，TUI 卡片可以把一次 Python 执行里干的不同事情拆开清晰呈现：
+
+- `application/vnd.prime-agent.diff+json`：渲染每文件编辑摘要和可展开的行级代码 Diff；
+- `application/vnd.prime-agent.bash-command+json`：提炼单元格启动的 Shell 命令概览与非空行数；
+- `application/vnd.prime-agent.agent-message+json`：按发送方向和投递状态渲染跨 Agent 消息收据；
+- `application/vnd.prime-agent.transcript-read+json`：总结调用 `rlm.session.messages()` 翻阅了哪段历史区间；
+- `application/vnd.prime-agent.inbox-message+json`（本次固定提交 `#4123` 新增）：在 `python_repl` 卡片内部逐条渲染 `rlm.inbox.read()` 刚刚读回来的信箱消息，样式与信箱归属行一致，彻底免去操作者自己去肉眼拆 Python `list[RLMInboxMessage]` 字典 repr 的痛苦。
+
+在界面细节上，最近的变更（`.changes/inbox-notice-row.md`、`.changes/at-path-token-unify.md`、`.changes/md-bash-highlight.md`）也在持续消除误导：信箱到达通知以独立系统归属行渲染（标题如 `Agent inbox · 3 new messages`），绝不伪装成用户敲入的消息；排队中的信箱唤醒行折叠进队列条的内部提示计数里，不混入可浏览的用户 Steering 预览；输入框里的 `@` 路径高亮与补全规则完全统一，支持单引号、双引号、转义空格以及 `--file=@src/main.rs` 紧跟等号的写法。
+
+## 三条可观测性管线：埋点、轨迹上传与语义边账本
+
+除了给实时操作者看的 TUI 和 `/export` 离线 HTML 导出（`crates/pa-core/src/export_html/`，内嵌 vendored `marked` 和 `highlight.js` 并把 ANSI 终端色转换成内联 HTML 样式），Prime Agent 在后台维护了三条职责分明的可观测性数据链：
+
+**采用度埋点（`pa-telemetry`）**，`AGENTS.md` 规定每个用户可见特性都在同一 PR 接入版本化事件，同时立下两条死规矩：属性里**绝对不能携带提示词、会话内容或文件内容**，只允许基础类型；投递全程在后台异步完成，绝不阻塞交互。
+
+**用户授权驱动的连续轨迹上传（`crates/pa-core/src/agent_traces/`）**，`ContinuousTraceUpload` 采用全进程共享的后台异步运行时管理所有转录读取、重试和网络上传，并把并发度硬卡在最多 256 个注册控制器和 4 路并发上传，满载时直接拒绝准入记日志而不无限积压。每次会话落盘时同步路径只检查缓存的授权状态并写一个轻量待发标记文件（不 `fsync`）；后台工作线程每秒监测一次用户授权变更，一旦用户撤销授权立刻取消在途请求，重传遵守 `Retry-After` 且最多重试 3 个周期。
+
+**语义边账本（`crates/pa-core/src/session_engine/semantic_edges/`）**，这是一份按会话落盘的仅追加模型请求账本，记录每一次向大模型发起的调用及其关联头（`X-ACP-Model-Request-ID` 与 `Idempotency-Key`），与早期 TypeScript 格式保持字节级兼容，用来把每一次模型请求和上游 ACP 调用、子 Agent 派生以及计费行精确串联起来。
+
+至此，Prime Agent 从底层的 Rust 工作区到顶层的终端卡片与可观测性已经全部拆解完毕。最后一章，我们退后一步审视整套系统最关键的取舍：安全边界到底防住了什么、没防住什么，成本账本怎么算，最后用一份零依赖的 Python 教学模型把全书六大核心不变量亲手跑通。
+
+
+# 安全边界、成本账本与可运行教学模型
+
+任何能执行任意 Shell 命令、运行生成代码并联网调用外部服务的编程 Agent，在生产团队落地前都必须回答两个最尖锐的问题：它到底能不能防住恶意代码和提示词注入？跑上一整夜的费用和失控风险怎么封顶？
+
+拆完 Prime Agent 的全部源码后，最务实的一点在于它把**哪些防线是真的、哪些地方绝不是沙箱**写得清清楚楚。
+
+## 真实安全边界：进程隔离不等于安全沙箱
+
+先看上游在 `README.md` 首页挂出的醒目警告：
+
+> Prime Agent executes model-generated Python and project commands with your user permissions. Its worker and kernel processes improve lifecycle isolation and recovery; they are **not** a security sandbox.
+
+把整个代码库里的防御措施按真实强制力排开，界限一目了然：
+
+**第一层，语言内存安全与输入防伪造（硬约束）**，全工作区通过 `Cargo.toml` 启用 `unsafe_code = "forbid"`，从编译期消除了 Rust 宿主的内存破坏面。线协议和队列层严格拦截客户端伪造守护进程内部保留类型（`inbox_notice`、`rlm_child_terminal_notice`、`rlm_child_failure` 以及 `inbox:arrival`/`inbox:reminder` 合并键）；`InboxReadFilter` 用 `deny_unknown_fields` 防止参数拼写错误导致误清空信箱；`agent_message` 的发送方身份由守护进程强制派生，模型无法冒名顶替。
+
+**第二层，代码自动导入与凭据隔离（硬约束）**，`crates/pa-core/src/skills/mod.rs` 第 145 行直接阻断 `SourceScope::Project` 作用域的 Python 技能自动导入内核，防止打开一个不可信仓库就在对话开始前悄悄执行恶意代码。MCP 认证与 OAuth 令牌由 Rust 宿主保管，内核目录接口不返回原始凭据；stdio MCP 子进程仅继承 `_SAFE_ENV` 七个基础环境变量，错误输出经过正则脱敏。
+
+**第三层，外部工具探测加固（尽力收敛，存在已知残余）**，自主模式的质量门禁在跑 Git 工作树快照时，通过命令行覆盖禁用了 `fsmonitor`、索引写钩子、promisor 懒拉取、外部 diff 与 textconv 转换器及子模块读取；但如 `crates/pa-core/src/autonomous/gates.rs` 注释所坦言，`.gitattributes` 中的 `clean` 与 `process` 过滤器无法通过 Git 标志禁用，处理完全不可信的仓库时仍是攻击面。
+
+**第四层，用户态命令与代码执行（无沙箱）**，一旦你同意让 Agent 在本地目录干活，模型在 `python_repl` 里运行的 Python 代码和 `bash()` 启动的 Shell 命令，都直接持有你当前操作系统用户的全部读写、网络与凭据权限。再加上 `bash(..., persistent=True)` 创建的进程在会话删除后仍可作为孤儿继续运行，如果面对不信任的外部代码库、不可信提示词或第三方指令，唯一稳妥的办法是把整个 `prime-agent` 放进外部容器、独立虚拟机或云端沙箱里运行，并使用可随时丢弃还原的 Git 工作树。
+
+## 模型路由、缓存定价与成本账本
+
+长程任务里，钱怎么花出去往往比代码怎么写更隐蔽。Prime Agent 在费用可见性与控制上铺了四条线：
+
+1. **多级模型目录与容灾兜底**：`pa-models` 拉取在线 Prime Inference 目录并落盘缓存到 `<agent-dir>/prime-inference-models-cache.json`，断网时回退到 `crates/pa-ai/src/models_generated.rs` 的手写编译期兜底表（包含真实上下文窗口、输出上限、思考等级支持和缓存读取单价）。如果用户通过 `--model` 选了一个目录里无法精确匹配的模型，系统会在标准错误或聊天区弹出明确告警行，而不会默默按编造的模型 ID 继续跑（`.changes/sebastian-surface-model-resolution-warning.md`）。
+2. **供应商故障自动切换与防空转**：`crates/pa-core/src/session_engine/` 的 `provider_retry.rs`、`auto_retry.rs` 和 `provider_failover.rs` 把失败分类为永久错误与可重试错误，遵守 `Retry-After` 退避；当主供应商耗尽快速重试且目录中有其他已配置供应商提供同一模型时，自动按目录顺序切换备用供应商并发送 `reason: "backup"` 事件。
+3. **前缀缓存保护与变量卸载**：静态系统提示词字节级稳定，`[harness-digest]` 按状态指纹按需追加，避免每轮重写前缀；大段日志和源码留在 CPython 变量里，减少重复进入注意力窗口的输入 Token。
+4. **子 Agent 墓碑留账与硬预算封顶**：如第 6 章所见，即使子 Agent 已被删除清理，`rlm_ledger.rs` 依然在墓碑记录里保存 `deleted_usage` 与按模型拆分的消耗统计，保证整棵递归树的开销可完整汇总；而在 `/goal` 与 `/autonomous` 模式下，`token_budget`、`max_tokens`、`max_turns` 和 `timeout_ms` 提供了硬性止损线。
+
+## 用 350 行零依赖 Python 跑通六大核心不变量
+
+源码读到最后，最好的检验方式是剥掉网络、终端 UI 和多进程样板，把 Prime Agent 最值钱的六条核心不变量放进一个零第三方依赖的离线教学模型里亲手跑一遍。
+
+本书在 `examples/mini_prime_agent.py` 中用纯 Python 3.10+ 标准库实现了这套精简模型，并在 `examples/test_mini_prime_agent.py` 中编写了 19 个单元测试，逐一对应前面章节拆解过的真实源码机制：
+
+| 教学模型组件 | 对应上游源码 | 验证的核心不变量 |
+| --- | --- | --- |
+| `HeadTailBuffer` | `crates/pa-core/src/kernel/manager/requests.rs` | 3:1 头尾切分、滚动尾窗口线性内存裁剪、省略字符数精确统计 |
+| `PersistentReplKernel` | `prime-agent-runtime/src/rlm/repl.py` | 跨单元格变量持久与尾表达式绑定 `_`、跳过保留名、`os.replace` 原子快照、仅对超单变量上限执行 `prune_oversized`（聚合超限只跳过不删内存） |
+| `SessionInbox` | `crates/pa-core/src/session_engine/inbox.rs` | `inbox.jsonl` 断写容错重放与单调 ID、未知过滤字段严格报错防误清空、按条件局部消费、同一心跳任务仅保留最新未读、合并计数唤醒文本 |
+| `SubagentRegistry` | `crates/pa-core/src/session_engine/rlm_host.rs` | `DEFAULT_RLM_MAX_DEPTH = 2` 深度拦截、兄弟唯一命名、UTF-16 码元计数的 512 长度上限与 10 秒 `progress_note` 节流、非阻塞 `collect` 快照 |
+| `compaction_threshold` / `should_compact` | `crates/pa-core/src/session_engine/compaction.rs` | 联合输出上限截顶、防频繁重摘要的 `retention_floor = keep_recent + 2 * reserve + 1` 抬升 |
+| `MiniAgentLoop` | `crates/pa-agent/src/agent.rs` & `agent_loop/run.rs` | Claim-First 排他占位防重叠运行、`rlm.end_turn()` 跑完同批其余调用后无额外回复停机、Steering → Follow-Up → Continuation 严格三级优先级 |
+
+下面这段调用代码展示了教学模型如何把持久 REPL、严格信箱过滤和 `end_turn` 批终止串在一起（完整代码见 `examples/mini_prime_agent.py`）：
+
+```python
+from mini_prime_agent import (
+    AssistantTurn,
+    MiniAgentLoop,
+    PersistentReplKernel,
+    SessionInbox,
+)
+
+inbox = SessionInbox()
+inbox.push("bash-done", "cargo test: 42 passed", arrived_at_ms=1_000, sender="cargo test")
+inbox.push("heartbeat", "check gpu util", arrived_at_ms=2_000, sender="hb-1")
+inbox.push("heartbeat", "check gpu util (latest)", arrived_at_ms=3_000, sender="hb-1")
+
+kernel = PersistentReplKernel(max_output_chars=128)
+kernel.install_binding("inbox", inbox)
+loop = MiniAgentLoop(kernel)
+
+def fake_model(_transcript):
+    return AssistantTurn(
+        text="reading bash completions and ending turn",
+        tool_calls=[
+            "done_msgs = inbox.read({'class': 'bash-done'})\nlen(done_msgs)",
+            "end_turn()",
+        ],
+    )
+
+transcript = loop.run(inbox.wake_notice_text(), fake_model)
+assert kernel.namespace["done_msgs"][0].text == "cargo test: 42 passed"
+assert inbox.count()["count"] == 1  # 只剩最新一条 heartbeat，未被误清空
+```
+
+在本书仓库根目录运行以下命令，即可离线复验全部 19 个单元测试：
+
+```bash
+python3 -m unittest discover -s examples -v
+```
+
+测试全部通过后，你不仅看懂了 Prime Agent 这 55 万行 Rust 与 Python 源码里的设计决策，手里也有了一套可以随时改参数、加断言、验证边界条件的最小实验台。
+
+
+# 源码索引、关键常量表、术语与核验命令
+
+本附录集中收录本书所依据的固定快照元数据、源码目录映射、关键源码常量表、中英文术语对照以及本地核验命令，方便直接对照上游代码逐条查证。
+
+## 上游快照元数据
+
+| 字段 | 值 |
+| --- | --- |
+| 仓库地址 | `https://github.com/PrimeIntellect-ai/prime-agent` |
+| 固定提交 SHA | `783acb5d72a9b23f97fa4a793a67d421b3ec402d` |
+| 提交说明 | `feat(inbox): show what rlm.inbox.read returned in the python_repl card (#4123)` |
+| 工作区版本 | `0.10.5`（`Cargo.toml` `[workspace.package]`，MIT License，Rust 2021） |
+| 最近正式版本 | `v0.10.5`（`2026-11-18T19:15:02Z`） |
+| 快照采集日期 | `2026-11-21` |
+| Rust 源码规模 | 10 个 crate，`crates/*/src` 下 1,053 个 `.rs` 文件、524,791 行 |
+| Python 运行时规模 | `prime-agent-runtime/` 下 22 个 `.py` 文件（含测试）、33,135 行；其中 `src/rlm/` 核心源码 13,749 行 |
+| 内置技能包数量 | `skills/` 下 14 个目录（10 个可执行 Python 技能 + 4 个 Markdown 技能） |
+
+## 核心源码路径索引
+
+| 架构模块 | 关键文件与目录 |
+| --- | --- |
+| 工作区配置与 Lint 门禁 | `Cargo.toml`、`AGENTS.md`、`vendor/crossterm/PRIME_AGENT_PATCH.md` |
+| Agent Turn 循环与 Claim-First | `crates/pa-agent/src/agent.rs`、`crates/pa-agent/src/agent_loop/run.rs` |
+| 共享线协议与领域词表 | `crates/pa-types/src/daemon/`、`crates/pa-types/src/inbox_notice.rs`、`crates/pa-types/src/session.rs` |
+| `python_repl` 工具定义与截断 | `crates/pa-core/src/tools/ipython.rs`、`crates/pa-core/src/kernel/manager/requests.rs`、`crates/pa-core/src/kernel/manager/execution.rs`、`crates/pa-core/src/kernel/shared.rs` |
+| Protocol v3 CPython 内核 | `prime-agent-runtime/src/rlm/repl.py`、`prime-agent-runtime/src/rlm/repl.md`、`prime-agent-runtime/src/rlm/__init__.py` |
+| 异步 `bash()` 与持久进程 | `prime-agent-runtime/src/rlm/bash.py`、`prime-agent-runtime/src/rlm/_winjob.py` |
+| 技能加载与安全边界 | `crates/pa-core/src/skills/mod.rs`、`skills/*/SKILL.md` |
+| 递归子 Agent 与 Spawn 账本 | `crates/pa-core/src/session_engine/rlm_host.rs`、`crates/pa-daemon/src/rlm_children/`、`crates/pa-daemon/src/rlm_ledger.rs`、`crates/pa-daemon/src/supervisor_parent_death.rs` |
+| 声明式状态机工厂 | `prime-agent-runtime/src/rlm/factory.py`、`prime-agent-runtime/src/rlm/machines/` |
+| 持久信箱与跨进程通信 | `crates/pa-core/src/session_engine/inbox.rs`、`crates/pa-daemon/src/agent_inbox.rs`、`crates/pa-daemon/src/agent_messaging.rs`、`crates/pa-daemon/src/peer_client.rs` |
+| 会话搜索、热更新与 ACP | `crates/pa-daemon/src/session_content_search.rs`、`crates/pa-daemon/src/update_prepare.rs`、`crates/pa-daemon/src/update_restore.rs`、`crates/pa-daemon/src/acp/` |
+| 分层提示词与 Continual Harness | `crates/pa-core/src/prompts/system_prompt.rs`、`crates/pa-core/src/prompts/layers/`、`crates/pa-core/src/refinement/`、`crates/pa-core/src/session_engine/harness_digest.rs`、`prime-agent-runtime/src/rlm/harness.py` |
+| 自动压缩、目标、心跳与自主门禁 | `crates/pa-core/src/session_engine/compaction.rs`、`crates/pa-core/src/session_engine/goal_boundary.rs`、`crates/pa-core/src/cron/`、`crates/pa-core/src/autonomous/gates.rs` |
+| MCP 宿主认证与内核客户端 | `crates/pa-core/src/mcp/`、`crates/pa-daemon/src/mcp_connections.rs`、`prime-agent-runtime/src/rlm/mcp.py` |
+| TUI 工具卡片与可观测性 | `crates/pa-tui/src/tool_card/ipython.rs`、`crates/pa-daemon/src/streaming.rs`、`crates/pa-core/src/agent_traces/`、`crates/pa-core/src/session_engine/semantic_edges/` |
+
+## 关键源码常量速查
+
+| 常量名 | 核验值 | 所在位置 | 作用 |
+| --- | --- | --- | --- |
+| `PROTOCOL_VERSION` | `3` | `rlm/repl.py` | Python REPL 线协议版本号 |
+| `DEFAULT_MAX_OUTPUT_CHARS` | `65,536` | `pa-core/src/kernel/shared.rs` | 单单元格 stdout/stderr 3:1 头尾截断上限 |
+| `MAX_BACKGROUND_OUTPUT_CHARS` | `65,536` | `pa-core/src/kernel/shared.rs` | 未归属后台原始 fd 输出缓冲上限 |
+| `_STREAM_FRAME_TEXT_CAP` | `65,536` | `rlm/repl.py` | 单条 Python 流事件帧最大字符数 |
+| `_RESULT_TEXT_CAP` | `1,048,576` | `rlm/repl.py` | 单次表达式 `repr` 或异常文本传输上限 |
+| `_PAYLOAD_CAP` | `16 MiB` | `rlm/repl.py` | `emit()` 与 `host_request()` 单帧 JSON 上限 |
+| `DEFAULT_PYTHON_CELL_TIMEOUT_MS` | `60,000` 毫秒 | `pa-core/src/settings/types.rs` | 单元格默认超时时间 |
+| `PYTHON_REPL_TIMEOUT_MAX_S` | `180` 秒 | `pa-core/src/tools/ipython.rs` | 模型单次调用允许申请的最大超时 |
+| `KERNEL_SHUTDOWN_TIMEOUT_MS` | `5,000` 毫秒 | `pa-core/src/kernel/shared.rs` | 宿主等待内核退出的强杀时限 |
+| `_SHUTDOWN_TIMEOUT`（MCP） | `2.5` 秒 | `rlm/mcp.py` | MCP 客户端关闭时限（严格低于宿主 5 秒线） |
+| `_YIELD_AFTER_SECONDS` | `1.0` 秒 | `rlm/bash.py` | 接入完成通知时 `await bash()` 自动降级等待窗口 |
+| `DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES` | `16 MiB` | `rlm/repl.py` | 快照单变量上限与压缩裁剪阈值 |
+| `DEFAULT_SNAPSHOT_MAX_BYTES` | `256 MiB` | `rlm/repl.py` | 快照总字节数上限 |
+| `DEFAULT_RLM_MAX_DEPTH` | `2` | `pa-core/src/session_engine/rlm_host.rs` | 默认递归子 Agent 最大深度 |
+| `RLM_PROGRESS_NOTE_MAX_LENGTH` | `512`（UTF-16 码元） | `pa-core/src/session_engine/rlm_host.rs` | 子 Agent 进度条单条最大长度 |
+| `RLM_PROGRESS_NOTE_MIN_INTERVAL_MS` | `10,000` 毫秒 | `pa-core/src/session_engine/rlm_host.rs` | 进度条最小发送间隔 |
+| `RLM_LEDGER_MAX_BYTES` / `MAX_RECORDS` | `32 MiB` / `100,000` | `pa-daemon/src/rlm_ledger.rs` | Spawn 账本失败闭合读取上限 |
+| `DEFAULT_RESERVE_TOKENS` | `16,384` | `pa-core/src/session_engine/compaction.rs` | 自动压缩默认预留 Token |
+| `DEFAULT_KEEP_RECENT_TOKENS` | `20,000` | `pa-core/src/session_engine/compaction.rs` | 压缩后默认保留的近期历史 Token |
+| `COMPACT_THRESHOLD_RATIO` | `0.95` | `pa-core/src/session_engine/compaction.rs` | 压缩默认窗口比例上限 |
+| `COMBINED_LIMIT_HEADROOM_FLOOR` | `4,096` | `pa-core/src/session_engine/compaction.rs` | 联合输入输出上限最小安全余量 |
+| `MAX_GATE_OUTPUT_CHARS` | `6,000` | `pa-core/src/autonomous/gates.rs` | 写入续跑提示的门禁失败输出上限 |
+| `_MAX_TOOL_PAGES` | `25` 页 | `rlm/mcp.py` | MCP `tools/list` 分页最大页数 |
+
+## 核心术语表
+
+- **RLM（Recursive Language Model，递归语言模型）**：将上下文与大块数据视为持久 REPL 里的变量，并通过程序化函数调用按需派生递归子 Agent 的运行时范式。
+- **PTC（Programmatic Tool Calling，程序化工具调用）**：模型不直接输出几十种零散 JSON 工具调用，而是通过唯一的 `python_repl` 工具编写 Python 代码调用异步函数、循环和过滤数据。
+- **Continual Harness（持续脚手架）**：独立于不可变静态系统提示词之外的持久化状态层（含 `prompt`、`memory`、`skill`、`subagent`、`factory` 五类条目），支持通过 `/refine` 做小步、有证据的增量更新与回滚。
+- **Claim-First**：在消费任何待办队列前必须先原子获取 `RunClaim` 所有权槽位，避免并发启动时丢失排队消息。
+- **核家族（Nuclear Family）**：单个 Agent 允许直接观测和发信的范围，严格限定为其唯一父节点、同级兄弟节点（所有根会话互为兄弟）与直接子节点。
+- **持久信箱（Agent Inbox）**：由守护进程维护的每会话 `inbox.jsonl` 日志存储，把 6 类机器通知与唤醒提示分离，由模型通过 `rlm.inbox.read()` 按条件消费。
+- **ACP（Agent Client Protocol）**：基于 stdio JSON-RPC 的标准化外部客户端接入协议，Prime Agent 在此基础上扩展了 `_session/steering` 运行中转向能力。
+
+## 本地核验与复现命令
+
+在上游仓库快照目录中核对提交、统计和配置边界：
+
+```bash
+git rev-parse HEAD
+rg -n "DEFAULT_MAX_OUTPUT_CHARS|DEFAULT_RLM_MAX_DEPTH|DEFAULT_RESERVE_TOKENS" crates/
+rg -n "SourceScope::Project" crates/pa-core/src/skills/
+```
+
+在本书仓库目录中运行教学模型单元测试、重新生成图表、构建站点与检验链接：
+
+```bash
+python3 -m unittest discover -s examples -v
+python3 scripts/make_diagrams.py
+node wiki/build.mjs
+python3 scripts/make_epub.py
+python3 scripts/check_links.py
+```

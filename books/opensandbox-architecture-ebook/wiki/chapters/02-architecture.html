@@ -1,0 +1,210 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>技术方案：一条契约、三种后端、两个平面 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="02-architecture"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#四份-openapi-契约分给三类进程">四份 OpenAPI 契约分给三类进程</a></li><li><a href="#两个配置值装下三种运行时后端">两个配置值装下三种运行时后端</a></li><li><a href="#两个平面的硬分工">两个平面的硬分工</a></li><li><a href="#同一份-api-在三种后端上的翻译表">同一份 API 在三种后端上的翻译表</a></li><li><a href="#真正左右代码形态的四条工程原则">真正左右代码形态的四条工程原则</a></li><li><a href="#仓库目录与体量速览">仓库目录与体量速览</a></li><li><a href="#为什么不选更省事的替代方案">为什么不选更省事的替代方案</a></li><li><a href="#源码入口">源码入口</a></li></ol></details><article class="content"><h1 id="技术方案-一条契约-三种后端-两个平面">技术方案：一条契约、三种后端、两个平面</h1><p>把上篇的六条需求塞进同一套代码库，第一步是决定在哪里画界线。如果把命令执行、文件传输和容器调度全揉进一个中心服务，控制面重启就会掐断所有正在跑的测试流；如果给 Docker、Kubernetes 和 Firecracker 各写一套独立 API，本地调试到线上集群的迁移成本就会失控。</p>
+<p>OpenSandbox 给出的结构解法很凝练：<strong>对外一条契约，对内三种后端，横向切成两个平面。</strong></p>
+<h2 id="四份-openapi-契约分给三类进程">四份 OpenAPI 契约分给三类进程</h2><p><code>specs/</code> 目录下的四份 OpenAPI 文件是公开行为的唯一来源，<code>AGENTS.md</code> 明确要求 SDK 生成物必须从契约源头重新生成，不得手改补丁：</p>
+<table>
+<thead>
+<tr>
+<th>契约文件</th>
+<th align="right">当前体量（v1.3.0-rc.2）</th>
+<th>承担职责</th>
+<th>实现进程</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>specs/sandbox-lifecycle.yml</code></td>
+<td align="right">约 124 KB（3349 行）</td>
+<td>沙箱创建、查询、删除、续期、endpoint、暂停/恢复、快照、模板、网络策略</td>
+<td>生命周期服务器（<code>:8080</code>）</td>
+</tr>
+<tr>
+<td><code>specs/execd-api.yaml</code></td>
+<td align="right">约 119 KB（3475 行）</td>
+<td>命令执行、Shell 会话、文件与目录、代码上下文、指标、隔离会话</td>
+<td><code>execd</code>（<code>:44772</code>）</td>
+</tr>
+<tr>
+<td><code>specs/egress-api.yaml</code></td>
+<td align="right">约 29 KB（827 行）</td>
+<td>出向策略热更新、Credential Vault 与动态凭据交换</td>
+<td><code>egress</code>（<code>:18080</code>）</td>
+</tr>
+<tr>
+<td><code>specs/diagnostic-api.yml</code></td>
+<td align="right">约 16 KB（434 行）</td>
+<td>诊断路由上下文、带 <code>scope</code> 的日志与事件描述符</td>
+<td>生命周期服务器（<code>:8080</code>）</td>
+</tr>
+</tbody></table>
+<p>三类进程之间没有耦合在一起的内部 RPC 链路。客户端先向控制面申请沙箱并查询 endpoint，拿到可达地址和必需请求头后，直接连向数据面的 <code>execd</code> 或 <code>egress</code>。代价是客户端要同时理解三个默认端口和各自的鉴权头；收益是故障域彻底分开，控制面升级或重启不会打断沙箱内正在推流的命令。</p>
+<h2 id="两个配置值装下三种运行时后端">两个配置值装下三种运行时后端</h2><p>服务端配置文件里的 <code>runtime.type</code> 只有两个合法取值：<code>docker</code> 和 <code>kubernetes</code>。第三种后端 Fast Sandbox 并没有另立一个新的 <code>runtime.type</code>，而是挂载在 <code>kubernetes</code> 下的组合分支：</p>
+<div class="table-wrap"><pre tabindex="0"><code class="hljs">runtime.type = &quot;docker&quot;
+  └── DockerSandboxService             直连本地 Docker daemon
+
+runtime.type = &quot;kubernetes&quot;
+  └── CompositeSandboxService
+        ├── KubernetesSandboxService   容器负载：BatchSandbox 或 agent-sandbox
+        └── FastSandboxService         模板负载：FastPath gRPC -&gt; Fastlet -&gt; Firecracker microVM</code></pre></div><p>分流规则在 <code>server/opensandbox_server/services/composite_service.py</code> 里写得直白：创建阶段看请求来源，带 <code>templateId</code> 或引用了 <code>fsb</code> 后端快照的请求进 <code>FastSandboxService</code>，其余进 <code>KubernetesSandboxService</code>；沙箱建好之后，凡是 ID 以 <code>fsb-</code> 开头的全部分发给模板分支，其余归容器分支。没有额外映射表，前缀本身就是路由器。</p>
+<h2 id="两个平面的硬分工">两个平面的硬分工</h2><p>架构文档把全站流量画成三条路径：生命周期管理、执行与服务访问、出向控制。落到进程职责上只有一条红线：<strong>控制面不碰沙箱内部，数据面不碰沙箱账本。</strong></p>
+<ul>
+<li><strong>控制面</strong>只负责认证、租户解析、请求校验、持久化自己拥有的目录数据（快照元数据与模板定义），然后把工作负载动作委派给对应后端。容器、Pod 与 CRD 才是沙箱本身的状态真相，控制面数据库里不存沙箱表。</li>
+<li><strong>数据面</strong>把命令执行、文件读写、PTY、Jupyter 内核、资源指标和出向网络拦截全部留在沙箱内或紧邻沙箱的代理进程里。控制面自带的 <code>/sandboxes/{id}/proxy/{port}</code> 在 <code>1.2.1</code> 起已明确转入维护模式，仅作直连与网关都不可达时的兼容退路。</li>
+</ul>
+<p>图 1 把四个交互维度拆开来画，避免把观测和出向误解成串行代理链。</p>
+<figure class="diagram"><img src="../assets/diagrams/architecture.svg" alt="图 1：OpenSandbox 组件与交互关系。管理请求进入生命周期服务器，执行流量经解析后的访问路径直达 execd，egress 管出向，观测走旁路。容器用 sidecar，Fast Sandbox 用每 Fastlet 共享 egress 进程。" width="1160" height="980"><figcaption>图 1：OpenSandbox 组件与交互关系。管理请求进入生命周期服务器，执行流量经解析后的访问路径直达 execd，egress 管出向，观测走旁路。容器用 sidecar，Fast Sandbox 用每 Fastlet 共享 egress 进程。</figcaption></figure>
+
+<p>换到时间轴上，图 2 追踪一次 Kubernetes BatchSandbox 池化创建的成功路径。需要纠正一个常见直觉：生命周期 API 整体是异步模型，但 Kubernetes 容器后端会在服务端借助 watch 等待工作负载进入 <code>Running</code> 或 <code>Allocated</code> 才返回；可即便如此，响应返回只说明 Pod 就位，客户端仍需先走健康检查再发业务命令。池容量耗尽时请求在 <code>429</code> 处结束，不会进入后续步骤。</p>
+<figure class="diagram"><img src="../assets/diagrams/request-flow.svg" alt="图 2：Kubernetes BatchSandbox 池化成功路径（资源 watch 与任务执行器细节作逻辑归并）。创建响应不代表应用就绪，拿到 endpoint 与请求头后仍需健康检查；容量耗尽返回 429 的请求在此终止。" width="1080" height="980"><figcaption>图 2：Kubernetes BatchSandbox 池化成功路径（资源 watch 与任务执行器细节作逻辑归并）。创建响应不代表应用就绪，拿到 endpoint 与请求头后仍需健康检查；容量耗尽返回 429 的请求在此终止。</figcaption></figure>
+
+<h2 id="同一份-api-在三种后端上的翻译表">同一份 API 在三种后端上的翻译表</h2><p>生命周期请求里全是跨运行时抽象字段：<code>resourceLimits</code>、<code>volumes</code>、<code>networkPolicy</code>、<code>platform</code>、<code>secureAccess</code>、<code>metadata</code>、<code>extensions</code>。它们落到底层时各不相同：</p>
+<table>
+<thead>
+<tr>
+<th>抽象概念</th>
+<th>Docker</th>
+<th>Kubernetes 容器</th>
+<th>Fast Sandbox</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>算力单位</td>
+<td>容器</td>
+<td>Pod（BatchSandbox / agent-sandbox）</td>
+<td>Firecracker microVM</td>
+</tr>
+<tr>
+<td>卷挂载</td>
+<td>绑定挂载 / 命名卷</td>
+<td>PVC / hostPath</td>
+<td>不支持（适配层拒绝）</td>
+</tr>
+<tr>
+<td>出向控制</td>
+<td>每沙箱 egress sidecar</td>
+<td>Pod 内 egress sidecar</td>
+<td>每 Fastlet 共享 egress 进程</td>
+</tr>
+<tr>
+<td>暂停机制</td>
+<td>容器 pause（冻结内存）</td>
+<td>commit rootfs 镜像并释放 Pod</td>
+<td>写 vmstate+内存+rootfs 检查点并释放 Fastlet</td>
+</tr>
+<tr>
+<td>公开快照模式</td>
+<td>仅 <code>full</code>（本地 commit）</td>
+<td>仅 <code>full</code>（推 registry）</td>
+<td><code>full</code> 与 <code>rootfsOnly</code>（原生 S3 与 OCI 均支持）</td>
+</tr>
+<tr>
+<td>访问入口</td>
+<td>单宿主端口 + <code>/proxy/{port}</code></td>
+<td>ingress 头/URI 路由或 Pod IP</td>
+<td>本地签名 <code>f1.</code> 路由 scope</td>
+</tr>
+</tbody></table>
+<p>运行时中立只保到 API 形状这一层，后端能兑现什么语义，靠契约错误码与兼容性矩阵如实交代。</p>
+<h2 id="真正左右代码形态的四条工程原则">真正左右代码形态的四条工程原则</h2><p>架构文档列出的设计原则里，有四条直接塑造了仓内代码的结构：</p>
+<p><strong>契约先行（Protocol First）</strong>，公开字段与状态码以 <code>specs/</code> 为准。服务端代码里的 <code>API_CONTRACT_VERSION</code> 对齐 <code>specs/sandbox-lifecycle.yml</code> 的 <code>info.version</code>（<code>0.1.0</code>），发布版本号另走 <code>GET /version</code>，协议演进和组件发版彼此解耦。</p>
+<p><strong>安全默认配显式逃生舱</strong>，非交互环境下未配 API key 直接拒绝启动，除非显式注入 <code>OPENSANDBOX_INSECURE_SERVER=YES</code>；开启多租户或声明安全运行时，启动阶段就验证命名空间可达与运行时可用，配置有误立刻退出，不带病接流量。</p>
+<p><strong>失败必须可观测</strong>，沙箱状态对象除了 <code>state</code>，还携带机器可读的 <code>reason</code>、人类可读的 <code>message</code> 与迁移时间 <code>lastTransitionAt</code>。<code>execd</code>、<code>egress</code>、<code>ingress</code> 和 Node Agent 都按低基数纪律输出指标，并把策略拒绝与基础设施故障分开计数。</p>
+<p><strong>兼容面显式收口</strong>，已废弃的 <code>devops</code> 纯文本路由在 <code>1.3.0-rc.1</code> 直接移除，未知请求字段在封闭对象上返回 <code>422</code>，还在探索期的新适配层（如 <code>1.3.0-rc.2</code> 引入的实验性 <code>components/e2b-shim</code>，对应 OSEP-0027）以独立 Go 模块和健康探针骨架先落位，不污染主控制面。</p>
+<h2 id="仓库目录与体量速览">仓库目录与体量速览</h2><table>
+<thead>
+<tr>
+<th>目录</th>
+<th>职责</th>
+<th>主要语言</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>server/</code></td>
+<td>生命周期控制面（FastAPI）</td>
+<td>Python</td>
+</tr>
+<tr>
+<td><code>components/execd/</code></td>
+<td>沙箱内执行守护进程与 init 进程</td>
+<td>Go</td>
+</tr>
+<tr>
+<td><code>components/egress/</code></td>
+<td>出向策略、DNS/nftables、Vault 与 MITM</td>
+<td>Go + Python</td>
+</tr>
+<tr>
+<td><code>components/ingress/</code></td>
+<td>Kubernetes 入向反向代理</td>
+<td>Go</td>
+</tr>
+<tr>
+<td><code>components/nodeagent/</code></td>
+<td>节点级容器日志、系统调用与 <code>vm-console</code> 采集</td>
+<td>Go</td>
+</tr>
+<tr>
+<td><code>components/e2b-shim/</code></td>
+<td>实验性 E2B 兼容适配骨架（OSEP-0027，暂无业务路由）</td>
+<td>Go</td>
+</tr>
+<tr>
+<td><code>kubernetes/</code></td>
+<td>三个 CRD 与 reconciler 控制器</td>
+<td>Go</td>
+</tr>
+<tr>
+<td><code>sdks/sandbox/*</code></td>
+<td>Python / JS / Kotlin / Go / C# 五语言沙箱 SDK</td>
+<td>多语言</td>
+</tr>
+<tr>
+<td><code>sdks/code-interpreter/*</code></td>
+<td>高层代码解释器 SDK</td>
+<td>Py / TS / Kotlin</td>
+</tr>
+<tr>
+<td><code>cli/</code></td>
+<td><code>osb</code> 命令行工具</td>
+<td>Python</td>
+</tr>
+<tr>
+<td><code>manifests/charts/</code></td>
+<td>umbrella 与子组件 Helm Chart（要求 K8s &gt;= 1.22）</td>
+<td>YAML</td>
+</tr>
+<tr>
+<td><code>specs/</code></td>
+<td>四份 OpenAPI 契约与契约测试</td>
+<td>YAML</td>
+</tr>
+</tbody></table>
+<h2 id="为什么不选更省事的替代方案">为什么不选更省事的替代方案</h2><p>把执行接口合进生命周期服务器，调用方只要记一个 base URL，确实省心，但所有命令的 SSE 长流都会穿过控制面，重启控制面等于掐断在跑任务，带宽与连接数也会迅速压垮 Python 服务。把三种后端拆成三个独立项目，各家能做出更贴合底层的接口，但五套语言 SDK 要维护三倍工作量，本地 Docker 写完无缝迁到集群的体验也随之消失。干脆砍掉 Docker 只保 Kubernetes，维护负担小不少，却把单机快速体验挡在了门外。</p>
+<p>OpenSandbox 把复杂度压进了运行时适配层和兼容性文档里。调用方拿到的是一致的编程模型，维护者则承担起把三套异构底层塞进同一份契约的长期成本。</p>
+<h2 id="源码入口">源码入口</h2><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>docs/architecture/index.md</code></td>
+<td>六个对外界面、三条交互路径与五条核心流程</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/factory.py</code></td>
+<td>配置到具体服务实现的映射（66 行）</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/composite_service.py</code></td>
+<td><code>fsb-</code> 前缀路由与创建分流（184 行）</td>
+</tr>
+<tr>
+<td><code>manifests/charts/opensandbox/Chart.yaml</code></td>
+<td>umbrella chart 的组件拼装关系</td>
+</tr>
+<tr>
+<td><code>components/e2b-shim/go.mod</code></td>
+<td>实验性 E2B 兼容适配模块边界</td>
+</tr>
+</tbody></table>
+</article><nav class="pager" aria-label="篇章导航"><a href="01-requirements.html"><small>上一篇</small>需求篇：Agent 执行环境要满足什么</a><a href="03-contracts.html"><small>下一篇</small>契约层：四份 OpenAPI 与它们没写的东西</a></nav></main><script src="../assets/wiki.js"></script></body></html>

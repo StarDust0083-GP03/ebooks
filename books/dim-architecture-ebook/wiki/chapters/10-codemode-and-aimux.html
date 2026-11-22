@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从时间总线、分支路由、rutis 跨语言数据面到权限与压缩重放，源码级解剖 arcships/dim Agent v4 架构"><meta name="author" content="独立源码研究">
+<title>Code Mode 与 Aimux 模型宿主 · Dim 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">D</span><span>Dim 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 10</div><div class="rail-title">Code Mode 与 Aimux 模型宿主</div><ol><li><a href="#code-mode-用-rquickjs-把工具编排压回单次调用">Code Mode：用 rquickjs 把工具编排压回单次调用</a></li><li><a href="#aimux-模型宿主-把协议怪癖封死在发送边界">Aimux 模型宿主：把协议怪癖封死在发送边界</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 10 章</div><h1>Code Mode 与 Aimux 模型宿主</h1><div class="chapter-meta">arcships/dim v0.1.0-alpha.27 · 快照 2026-11-22 · 约 18 分钟</div></header><div class="prose"><p>让大模型批量查 20 个文件、过滤出 3 处匹配再交叉比对，如果每次读取都走一轮“模型生成 <code>tool_use</code> → 宿主执行 → 把几千行原文塞回上下文 → 模型再调下一轮”，不仅慢、费 Token，还会把大量中间噪音永久留在对话历史里。另一方面，真正把请求发给 OpenAI、Anthropic、Gemini 或兼容网关时，各家在多模态工具结果、提示词缓存断点、HTTP 重定向安全、请求体上限和流式录制上的细微差异，稍不留神就会变成线上故障。</p>
+<p>Dim 用两个职责极其聚焦的 crate 分别解决这两件事：<code>crates/dim-codemode</code> 和 <code>crates/dim-agent-aimux</code>。</p>
+<h2 id="code-mode-用-rquickjs-把工具编排压回单次调用">Code Mode：用 rquickjs 把工具编排压回单次调用<a class="anchor" href="#code-mode-用-rquickjs-把工具编排压回单次调用" aria-label="链接到本节">#</a></h2>
+<p><code>dim-codemode</code> 基于 <code>rquickjs 0.14</code>（启用了 <code>futures</code> 和 <code>parallel</code> 特性），按三层作用域拆成三个部件：进程级保存运行表 <code>CodeModeRuns</code>，Session 级 <code>CodeModeSessionPlugin</code> 向 <code>toolRegistry</code> 注册名为 <code>codemode</code>（<code>risk: &quot;session&quot;</code>）的工具，分支级把调用接到本分支的 <code>ToolExecutor</code>。</p>
+<p>模型调用 <code>codemode</code> 时传入的是一段纯 JavaScript 异步函数体（支持顶层 <code>await</code> 和 <code>return</code>）。<code>crates/dim-codemode/src/interpreter.rs</code> 每次执行都会新建一个全新的 <code>AsyncRuntime</code> 和 <code>AsyncContext</code>，<strong>里面没有 Node API、没有文件系统、没有网络、没有定时器，甚至没有 <code>console</code></strong>。宿主往这个全新上下文里注入的唯一对象是 <code>tools</code>，只暴露三个方法：</p>
+<ul>
+<li><code>tools.list()</code>：返回本次模型请求可见的工具摘要列表 <code>[{ name, description }]</code>（主动剔除了 <code>codemode</code> 自己，防止递归套娃）。</li>
+<li><code>tools.describe(name)</code>：按需返回某个工具的完整 JSON Schema 声明。</li>
+<li><code>tools.call(name, args)</code>：异步调用该工具，失败时抛出携带 <code>code</code>、<code>message</code> 和可选 <code>data</code> 的 <code>ToolCallError</code>。</li>
+</ul>
+<p>这里有三条设计原则，直接体现了 Dim 不搞旁路的克制：</p>
+<p><strong>第一，子调用绝不绕过权限与审批。</strong> <code>tools.call</code> 通过 <code>NestedToolHost</code> 经过本分支的 <code>ToolExecutor</code>、<code>ToolBinding</code> 和 <code>Approval</code>，不会直接调底层文件或 Shell 函数。脚本里哪怕写了一百行循环，每一次外部读写或命令执行照样受当前会话的权限预设、文件事实和人工审批门禁约束，取消令牌也通过 <code>cancel.child_token()</code> 联动中断。</p>
+<p><strong>第二，子调用结果绝不污染主模型上下文。</strong> 脚本里调用 50 次 <code>read</code> 读出来的几兆源码，全都在 QuickJS 内存里过滤、聚合、归并；最终只有 <code>return</code> 出来的 JSON 序列化值会成为外层 <code>codemode</code> 工具的 <code>ToolResult.content</code> 返回给模型。前面第 3 章提过的 <code>AgentEvent::parent_call_id</code> 在这里正好派上用场：所有子调用在时间线上留痕时都会通过 <code>tokio::task_local!</code> 自动盖上外层 <code>codemode</code> 的 <code>parent_call_id</code>，而 <code>AgentEvent::context_flags()</code> 见到非空 <code>parent_call_id</code> 直接返回 <code>(false, false)</code>，保证子工具的庞大结果永远不会漏进后续模型请求的上下文。</p>
+<p><strong>第三，硬资源边界留在宿主，不交给模型调参。</strong> <code>crates/dim-codemode/src/config.rs</code> 给 <code>CodeModeConfig</code> 定义了八项纯宿主侧硬上限，全部不暴露成工具参数，也不写进提示词：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>默认上限</th>
+<th>保护目标</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>max_code_bytes</code></td>
+<td><code>256 KiB</code>（262,144 字节）</td>
+<td>限制单次提交的脚本代码长度</td>
+</tr>
+<tr>
+<td><code>max_runtime_ms</code></td>
+<td><code>600,000 ms</code>（10 分钟）</td>
+<td>配合 QuickJS 中断处理器强停死循环</td>
+</tr>
+<tr>
+<td><code>max_calls</code></td>
+<td><code>4096</code> 次</td>
+<td>限制单次脚本最多发起的子工具调用总数</td>
+</tr>
+<tr>
+<td><code>max_parallel_calls</code></td>
+<td><code>16</code> 并发</td>
+<td>用 Tokio <code>Semaphore</code> 控制脚本内 <code>Promise.all</code> 并发度</td>
+</tr>
+<tr>
+<td><code>max_memory_bytes</code></td>
+<td><code>1 GiB</code></td>
+<td>通过 <code>runtime.set_memory_limit</code> 限制 QuickJS 堆内存</td>
+</tr>
+<tr>
+<td><code>max_programs</code></td>
+<td><code>2</code></td>
+<td>限制同一作用域并发运行的程序数</td>
+</tr>
+<tr>
+<td><code>max_output_bytes</code></td>
+<td><code>16 MiB</code></td>
+<td>限制外层 <code>return</code> 序列化结果体积</td>
+</tr>
+<tr>
+<td><code>max_single_result_bytes</code></td>
+<td><code>4 MiB</code></td>
+<td>限制单个子工具结果传入 JS 内存的体积</td>
+</tr>
+</tbody></table></div>
+<p>当脚本超时或中途被取消时，外层错误文案还会附带一句明确提示：<code>Some child calls may have completed; check their effects before retrying.</code> 提醒模型不要因为脚本报错就盲目重跑已经产生副作用的步骤。</p>
+<h2 id="aimux-模型宿主-把协议怪癖封死在发送边界">Aimux 模型宿主：把协议怪癖封死在发送边界<a class="anchor" href="#aimux-模型宿主-把协议怪癖封死在发送边界" aria-label="链接到本节">#</a></h2>
+<p><code>crates/dim-agent-aimux</code> 把上游 crates.io 固定版本 <code>=0.6.1</code> 的 <code>aimux-core</code>、<code>aimux-provider-utils</code>、<code>aimux-providers</code> 和 <code>aimux-stream</code> 封装成进程级 <code>AimuxPlugin</code>（提供 <code>ModelHost</code>），负责对接 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Gemini GenerateContent、xAI、Bedrock 以及各类兼容端点。</p>
+<p><code>crates/dim-agent-aimux/README.md</code> 和源码里的四个工程细节，把模型接入层最容易踩的暗坑全挡在了外面：</p>
+<h3 id="1-工具结果里的图像按协议分路-不污染历史">1. 工具结果里的图像按协议分路，不污染历史<a class="anchor" href="#1-工具结果里的图像按协议分路-不污染历史" aria-label="链接到本节">#</a></h3>
+<p>当工具（比如 <code>read</code> 读取截图或 OCR 布局图）返回了图像内容块时，并非所有大模型协议都允许在 <code>tool_result</code> 消息里直接夹带图片。Aimux 宿主在发送前按 <code>ModelProtocol</code> 自动分路，同时保持 Timeline 历史和存储原样不变：</p>
+<ul>
+<li><code>anthropic</code> 与 <code>bedrock</code> 协议原生支持在 <code>tool_result.content</code> 数组里放图像块，直接内嵌发送。</li>
+<li><code>openai-chat</code>、<code>openai-compatible</code>、<code>openai-responses</code>、<code>xai</code>、<code>xai-responses</code> 和 <code>gemini</code> 的工具返回字段只接受纯字符串，转换器会在工具文本原位置留一个文本标记，等该步骤所有 tool 消息结束后，紧跟补发一条 <code>user</code> 消息，按调用顺序附带全部图像及来源说明。</li>
+</ul>
+<h3 id="2-发送前-64-mib-体积闸门与严格的同源重定向">2. 发送前 64 MiB 体积闸门与严格的同源重定向<a class="anchor" href="#2-发送前-64-mib-体积闸门与严格的同源重定向" aria-label="链接到本节">#</a></h3>
+<p>多模态输入或超大工具输出很容易拼出异常庞大的 HTTP JSON 请求体。Aimux 宿主在真正发出网络请求前，会对协议编码后的实际字节长度做一道本地硬检查，取 <code>64 MiB</code> 与当前连接声明上限的较小者；超限直接作为本地请求拒绝结束，既不发往远端，也不触发重试。</p>
+<p>更细心的是 HTTP 重定向策略：模型请求是带 JSON body 和 API Key 的 <code>POST</code>。如果用 <code>reqwest</code> 默认的重定向策略，遇到 <code>301</code>/<code>302</code>/<code>303</code> 会被自动改成不带 body 的 <code>GET</code>，遇到跨源跳转时 <code>reqwest</code> 也只会剥离 <code>Authorization</code> 和 <code>Cookie</code>，却不会剥离 <code>x-api-key</code> 或 <code>x-goog-api-key</code>，直接造成凭据外泄。因此 Aimux 的 HTTP client 只在**完全同源（scheme、host、port 一致）**的前提下跟随 <code>307</code> 和 <code>308</code>，最多 10 跳；其余跳转一律拒绝并在 <code>src/driver.rs</code> 里把脱敏后的状态码、目标 URL 和拒绝原因补写回错误信息。</p>
+<h3 id="3-anthropic-提示词缓存断点的精准放置">3. Anthropic 提示词缓存断点的精准放置<a class="anchor" href="#3-anthropic-提示词缓存断点的精准放置" aria-label="链接到本节">#</a></h3>
+<p>针对 Anthropic 协议，Aimux 转换器最多主动放两个 5 分钟生命周期的缓存断点（API 上限是 4 个）：第一个放在 System 最后一个块上，使工具声明和静态 System 文本合成一份跨轮复用的稳定前缀（前提是 System 没有自带显式断点）；第二个放在最后一条 <code>user</code> 或 <code>tool_result</code> 消息上（前提是总断点不超过 4 个）。如果调用方自己塞了超过 4 个显式断点，Aimux 绝不替它默默裁剪，请求发出后明确报错 <code>Unsupported model parameter: cacheControl breakpoint limit</code>。文档里甚至顺带坦承了统一打标的已知代价：压缩摘要这类一次性请求也会多付一次缓存写入费用（短于最小可缓存长度的不计费），换取的是代码路径完全统一，不需要给压缩请求开特例。</p>
+<h3 id="4-无重试归属与-rfc-0023-录制">4. 无重试归属与 RFC-0023 录制<a class="anchor" href="#4-无重试归属与-rfc-0023-录制" aria-label="链接到本节">#</a></h3>
+<p>Aimux 适配器本身不做自动重试，HTTP 失败只保留类型化的状态码和条件码交回给上层 <code>ModelProvider</code> 决定是否退避重来；卸载时先关准入、释放未读流、排空已受理调用，再释放独占 HTTP 连接池，旧句柄一律返回 <code>OwnerClosed</code>。需要排查线上模型报文时，只需打开 <code>model-log</code> 设置源，Aimux 的 <code>RecordingOutcomeStream</code> 就会在流结束、出错或丢弃时把完整线上报文（含缓存断点）按 RFC-0023 格式写入 <code>&lt;目录&gt;/recordings.jsonl</code>，关闭时零调用开销。</p>
+<p>到这里，Agent 内核里的存储、事件、分支、插件、压缩、权限、脚本沙箱和模型宿主已经全部就位。下一章把视角拉到最外层，看看守护进程 App Server、终端 CLI、Web 工作区、MCP 与 ACP 网关是如何把这套内核送到用户手里的。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="09-detached-work-and-permissions.html"><small>上一章</small><strong>脱离工作、工具审批与权限边界</strong></a><a class="next" href="11-server-cli-web-and-protocols.html"><small>下一章</small><strong>App Server、CLI、Web 与 ACP / MCP 网关</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言与全景导读</a><a href="../chapters/01-why-not-a-chat-loop.html"><span>01</span>为什么不用普通对话循环</a><a href="../chapters/02-workspace-and-scopes.html"><span>02</span>28 个 Crate 与三层作用域</a><a href="../chapters/03-time-bus.html"><span>03</span>时间总线与只认序号的事实流</a><a href="../chapters/04-event-driven-contracts.html"><span>04</span>事件驱动契约：Dispatcher、before 与重启重建</a><a href="../chapters/05-timeline-branches.html"><span>05</span>分支时间线：默认分支、父子通信与配额路由</a><a href="../chapters/06-rutis-and-data-faces.html"><span>06</span>rutis 插件引擎与跨语言数据面</a><a href="../chapters/07-self-evolving-plugins.html"><span>07</span>在会话里给自己写插件与热重载自演化</a><a href="../chapters/08-context-compaction-and-replay.html"><span>08</span>上下文投影、压缩与历史渲染边界</a><a href="../chapters/09-detached-work-and-permissions.html"><span>09</span>脱离工作、工具审批与权限边界</a><a href="../chapters/10-codemode-and-aimux.html"><span>10</span>Code Mode 与 Aimux 模型宿主</a><a href="../chapters/11-server-cli-web-and-protocols.html"><span>11</span>App Server、CLI、Web 与 ACP / MCP 网关</a><a href="../chapters/12-tradeoffs-and-boundaries.html"><span>12</span>架构权衡与工程边界</a><a href="../chapters/13-teaching-model.html"><span>13</span>零依赖 Python 教学模型与 18 个单元测试</a><a href="../chapters/appendix-sources.html"><span>A</span>附录 A：源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · arcships/dim v0.1.0-alpha.27 · 快照 88a3df366940 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

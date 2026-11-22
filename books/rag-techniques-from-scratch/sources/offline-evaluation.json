@@ -1,0 +1,658 @@
+{
+  "scope": "6 fixed teaching questions; no LLM",
+  "runs": [
+    {
+      "mode": "bm25",
+      "k": 2,
+      "radius": 0,
+      "summary": {
+        "candidate_recall": 1.0,
+        "delivery_recall": 1.0,
+        "complete_rate": 1.0,
+        "mrr": 1.0
+      },
+      "cases": [
+        {
+          "query": "回调处理顺序",
+          "gold": [
+            "callback-v2:0"
+          ],
+          "retrieved": [
+            "callback-v2:0",
+            "refund-v2:1"
+          ],
+          "injected": [
+            "callback-v2:0",
+            "refund-v2:1"
+          ],
+          "context_characters": 146,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "支付回调验签和幂等如何处理",
+          "gold": [
+            "callback-v2:0",
+            "callback-v2:1"
+          ],
+          "retrieved": [
+            "callback-v2:0",
+            "callback-v2:1"
+          ],
+          "injected": [
+            "callback-v2:0",
+            "callback-v2:1"
+          ],
+          "context_characters": 168,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "重复通知如何处理",
+          "gold": [
+            "callback-v2:1"
+          ],
+          "retrieved": [
+            "callback-v2:1",
+            "callback-v2:0"
+          ],
+          "injected": [
+            "callback-v2:1",
+            "callback-v2:0"
+          ],
+          "context_characters": 168,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "退款失败后如何处理",
+          "gold": [
+            "refund-v2:0"
+          ],
+          "retrieved": [
+            "refund-v2:0",
+            "refund-v2:1"
+          ],
+          "injected": [
+            "refund-v2:0",
+            "refund-v2:1"
+          ],
+          "context_characters": 146,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "退款申请单的幂等键",
+          "gold": [
+            "refund-v2:1"
+          ],
+          "retrieved": [
+            "refund-v2:1",
+            "refund-v2:0"
+          ],
+          "injected": [
+            "refund-v2:1",
+            "refund-v2:0"
+          ],
+          "context_characters": 146,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "回调模块技术负责人是谁",
+          "gold": [
+            "owner-v1:0",
+            "team-v1:0"
+          ],
+          "retrieved": [
+            "owner-v1:0",
+            "team-v1:0"
+          ],
+          "injected": [
+            "owner-v1:0",
+            "team-v1:0"
+          ],
+          "context_characters": 117,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        }
+      ]
+    },
+    {
+      "mode": "cosine",
+      "k": 2,
+      "radius": 0,
+      "summary": {
+        "candidate_recall": 0.9166666666666666,
+        "delivery_recall": 0.9166666666666666,
+        "complete_rate": 0.8333333333333334,
+        "mrr": 1.0
+      },
+      "cases": [
+        {
+          "query": "回调处理顺序",
+          "gold": [
+            "callback-v2:0"
+          ],
+          "retrieved": [
+            "callback-v2:0",
+            "owner-v1:0"
+          ],
+          "injected": [
+            "callback-v2:0",
+            "owner-v1:0"
+          ],
+          "context_characters": 132,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "支付回调验签和幂等如何处理",
+          "gold": [
+            "callback-v2:0",
+            "callback-v2:1"
+          ],
+          "retrieved": [
+            "callback-v2:0",
+            "owner-v1:0"
+          ],
+          "injected": [
+            "callback-v2:0",
+            "owner-v1:0"
+          ],
+          "context_characters": 132,
+          "retrieval": {
+            "recall": 0.5,
+            "mrr": 1.0,
+            "complete": false
+          },
+          "delivery": {
+            "recall": 0.5,
+            "mrr": 1.0,
+            "complete": false
+          }
+        },
+        {
+          "query": "重复通知如何处理",
+          "gold": [
+            "callback-v2:1"
+          ],
+          "retrieved": [
+            "callback-v2:1",
+            "refund-v2:1"
+          ],
+          "injected": [
+            "callback-v2:1",
+            "refund-v2:1"
+          ],
+          "context_characters": 158,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "退款失败后如何处理",
+          "gold": [
+            "refund-v2:0"
+          ],
+          "retrieved": [
+            "refund-v2:0",
+            "refund-v2:1"
+          ],
+          "injected": [
+            "refund-v2:0",
+            "refund-v2:1"
+          ],
+          "context_characters": 146,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "退款申请单的幂等键",
+          "gold": [
+            "refund-v2:1"
+          ],
+          "retrieved": [
+            "refund-v2:1",
+            "refund-v2:0"
+          ],
+          "injected": [
+            "refund-v2:1",
+            "refund-v2:0"
+          ],
+          "context_characters": 146,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "回调模块技术负责人是谁",
+          "gold": [
+            "owner-v1:0",
+            "team-v1:0"
+          ],
+          "retrieved": [
+            "owner-v1:0",
+            "team-v1:0"
+          ],
+          "injected": [
+            "owner-v1:0",
+            "team-v1:0"
+          ],
+          "context_characters": 117,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        }
+      ]
+    },
+    {
+      "mode": "fusion",
+      "k": 2,
+      "radius": 0,
+      "summary": {
+        "candidate_recall": 1.0,
+        "delivery_recall": 1.0,
+        "complete_rate": 1.0,
+        "mrr": 1.0
+      },
+      "cases": [
+        {
+          "query": "回调处理顺序",
+          "gold": [
+            "callback-v2:0"
+          ],
+          "retrieved": [
+            "callback-v2:0",
+            "owner-v1:0"
+          ],
+          "injected": [
+            "callback-v2:0",
+            "owner-v1:0"
+          ],
+          "context_characters": 132,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "支付回调验签和幂等如何处理",
+          "gold": [
+            "callback-v2:0",
+            "callback-v2:1"
+          ],
+          "retrieved": [
+            "callback-v2:0",
+            "callback-v2:1"
+          ],
+          "injected": [
+            "callback-v2:0",
+            "callback-v2:1"
+          ],
+          "context_characters": 168,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "重复通知如何处理",
+          "gold": [
+            "callback-v2:1"
+          ],
+          "retrieved": [
+            "callback-v2:1",
+            "callback-v2:0"
+          ],
+          "injected": [
+            "callback-v2:1",
+            "callback-v2:0"
+          ],
+          "context_characters": 168,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "退款失败后如何处理",
+          "gold": [
+            "refund-v2:0"
+          ],
+          "retrieved": [
+            "refund-v2:0",
+            "refund-v2:1"
+          ],
+          "injected": [
+            "refund-v2:0",
+            "refund-v2:1"
+          ],
+          "context_characters": 146,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "退款申请单的幂等键",
+          "gold": [
+            "refund-v2:1"
+          ],
+          "retrieved": [
+            "refund-v2:1",
+            "refund-v2:0"
+          ],
+          "injected": [
+            "refund-v2:1",
+            "refund-v2:0"
+          ],
+          "context_characters": 146,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "回调模块技术负责人是谁",
+          "gold": [
+            "owner-v1:0",
+            "team-v1:0"
+          ],
+          "retrieved": [
+            "owner-v1:0",
+            "team-v1:0"
+          ],
+          "injected": [
+            "owner-v1:0",
+            "team-v1:0"
+          ],
+          "context_characters": 117,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        }
+      ]
+    },
+    {
+      "mode": "fusion",
+      "k": 1,
+      "radius": 1,
+      "summary": {
+        "candidate_recall": 0.8333333333333334,
+        "delivery_recall": 0.9166666666666666,
+        "complete_rate": 0.8333333333333334,
+        "mrr": 1.0
+      },
+      "cases": [
+        {
+          "query": "回调处理顺序",
+          "gold": [
+            "callback-v2:0"
+          ],
+          "retrieved": [
+            "callback-v2:0"
+          ],
+          "injected": [
+            "callback-v2:0",
+            "callback-v2:1"
+          ],
+          "context_characters": 168,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "支付回调验签和幂等如何处理",
+          "gold": [
+            "callback-v2:0",
+            "callback-v2:1"
+          ],
+          "retrieved": [
+            "callback-v2:0"
+          ],
+          "injected": [
+            "callback-v2:0",
+            "callback-v2:1"
+          ],
+          "context_characters": 168,
+          "retrieval": {
+            "recall": 0.5,
+            "mrr": 1.0,
+            "complete": false
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "重复通知如何处理",
+          "gold": [
+            "callback-v2:1"
+          ],
+          "retrieved": [
+            "callback-v2:1"
+          ],
+          "injected": [
+            "callback-v2:0",
+            "callback-v2:1"
+          ],
+          "context_characters": 168,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 0.5,
+            "complete": true
+          }
+        },
+        {
+          "query": "退款失败后如何处理",
+          "gold": [
+            "refund-v2:0"
+          ],
+          "retrieved": [
+            "refund-v2:0"
+          ],
+          "injected": [
+            "refund-v2:0",
+            "refund-v2:1"
+          ],
+          "context_characters": 146,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          }
+        },
+        {
+          "query": "退款申请单的幂等键",
+          "gold": [
+            "refund-v2:1"
+          ],
+          "retrieved": [
+            "refund-v2:1"
+          ],
+          "injected": [
+            "refund-v2:0",
+            "refund-v2:1"
+          ],
+          "context_characters": 146,
+          "retrieval": {
+            "recall": 1.0,
+            "mrr": 1.0,
+            "complete": true
+          },
+          "delivery": {
+            "recall": 1.0,
+            "mrr": 0.5,
+            "complete": true
+          }
+        },
+        {
+          "query": "回调模块技术负责人是谁",
+          "gold": [
+            "owner-v1:0",
+            "team-v1:0"
+          ],
+          "retrieved": [
+            "owner-v1:0"
+          ],
+          "injected": [
+            "owner-v1:0"
+          ],
+          "context_characters": 53,
+          "retrieval": {
+            "recall": 0.5,
+            "mrr": 1.0,
+            "complete": false
+          },
+          "delivery": {
+            "recall": 0.5,
+            "mrr": 1.0,
+            "complete": false
+          }
+        }
+      ]
+    }
+  ]
+}

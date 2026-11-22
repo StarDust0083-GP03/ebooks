@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从需求、配置、角色到 Hook 与验收，解剖 Claude Code Game Studios 的工作流"><meta name="author" content="独立源码研究">
+<title>前言：先看清这东西到底是怎么跑起来的 · Claude Code 游戏工作室</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">G</span><span>Claude Code 游戏工作室</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 00</div><div class="rail-title">前言：先看清这东西到底是怎么跑起来的</div><ol><li><a href="#怎么读懂一套没有-main-函数的框架">怎么读懂一套没有 main 函数的框架</a></li><li><a href="#从-v1-2-0-到-v1-3-0-的变化导读">从 v1.2.0 到 v1.3.0 的变化导读</a></li><li><a href="#快照与证据边界">快照与证据边界</a></li><li><a href="#怎么读这本书">怎么读这本书</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 00 章</div><h1>前言：先看清这东西到底是怎么跑起来的</h1><div class="chapter-meta">CCGS v1.3.0 快照 2026-11-09 · 约 18 分钟</div></header><div class="prose"><p>周五晚上你突然冒出个点子：想做一个钓鱼小游戏，稀有鱼只在黄昏咬钩。如果直接打开命令行冲着 Claude 喊“帮我写个钓鱼游戏”，十有八九二十分钟后能跑起来，但半小时后你就会发现：数值全硬编码在几百行的函数里，聊到后面它忘了你刚才说过“别加战斗系统”，改一个按钮把钓鱼逻辑改炸了，最后还信誓旦旦地告诉你“所有功能已全部完成”。</p>
+<p>这就是 <a href="https://github.com/Donchitos/Claude-Code-Game-Studios">Donchitos/Claude-Code-Game-Studios</a>（下文简称 CCGS）想治的病。</p>
+<p>打开这个仓库，满眼都是“49 个 AI 员工、75 个技能（算上 3 个旧名兼容入口一共 78 个 <code>SKILL.md</code>）、15 个 Hook、73 份品类资料、4 大引擎支持”。刚看 README，很容易以为它是一个后台跑着几十个微服务的多 Agent 分布式平台。</p>
+<p>拆到底层，真相没那么玄乎：**它既不是游戏引擎，也不自己起任何常驻进程。**它就是一套塞进 Git 仓库里的“文书 + 脚本”工程模板——Markdown 写的人设和剧本、YAML 记的项目状态、TSV 配的引擎路径表、Bash 和 Python 写的校验脚本。唯一的运行宿主就是你本机的 Claude Code。</p>
+<p>它干的核心事情只有一件：<strong>把大模型的两个天然毛病——“聊长了健忘”和“没测就嘴硬说做完了”——尽量装进笼子里。</strong></p>
+<h2 id="怎么读懂一套没有-main-函数的框架">怎么读懂一套没有 main 函数的框架<a class="anchor" href="#怎么读懂一套没有-main-函数的框架" aria-label="链接到本节">#</a></h2>
+<p>因为没有 HTTP 入口，也没有数据库表结构，读 CCGS 不能用读 Web 后端的老办法。真正管用的，是盯住下面四条线：</p>
+<ol>
+<li><strong>提示词怎么进上下文</strong>：<code>CLAUDE.md</code> 里 <code>@</code> 导入的常驻规范、敲斜杠命令时加载的 <code>SKILL.md</code>、派子代理时塞进去的角色文件，以及防止读爆内存的 40 KB 读保护。</li>
+<li><strong>配置怎么算出最终值</strong>：你在 <code>project.yaml</code> 里只写一行 <code>modes.rigor: standard</code>，<code>yaml-helper.sh</code> 怎么沿着 5 级瀑布链把它展开成 6 个子开关，又怎么处理手写错的枚举值、重复块和个人本地覆盖。</li>
+<li><strong>谁真能拦住模型，谁只是嘴上劝劝</strong>：同样挂在 <code>.claude/settings.json</code> 里，宿主权限 <code>permissions.deny</code> 是真硬拦，15 条注册 Hook 里其实只有 3 处用了 <code>exit 2</code>，名头很响的 <code>validate-write.sh</code> 永远返回 <code>exit 0</code>。</li>
+<li><strong>怎么才算“真做完了”</strong>：从 <code>/prototype</code> 的无头浏览器自检、Grow 成工程时的同种子回放对比，到 <code>/dev-story</code> 的“先验磁盘文件再读汇报”，再到 <code>/story-done</code> 的四态判决、内容哈希回执和暴露 AI 擅自拍板的 <code>Own calls</code>。</li>
+</ol>
+<p>只抄它那堆人设提示词，你拿到的依然是个爱瞎改的聊天助手；把配置解析、脚本观察、Hook 分层和证据门禁一起拎出来，才算摸到了它最值钱的骨架。</p>
+<h2 id="从-v1-2-0-到-v1-3-0-的变化导读">从 v1.2.0 到 v1.3.0 的变化导读<a class="anchor" href="#从-v1-2-0-到-v1-3-0-的变化导读" aria-label="链接到本节">#</a></h2>
+<p>如果你以前看过 CCGS v1.2.0（或者看过本书的旧版），直接克隆最新的 v1.3.0 仓库，会明显感觉<strong>整套框架的入口重心调了个头</strong>。好消息是，底层的四根硬骨头（四层约束、5 级配置解析、<code>/dev-story</code> 与 <code>/story-done</code> 证据门禁、Hook 退出码语义）全都稳稳保留了下来；但下面五处大变化，读正文前必须心里有数：</p>
+<ol>
+<li><strong>入口大转向：“先玩一把”成了主干道，重流程收编为 Studio Mode</strong>。以前一上来 <code>/start</code> 就要你选引擎、定档位、写简报再拆故事；v1.3.0 把 <strong>&quot;Make me a game&quot;（<code>/prototype</code>）</strong> 放到了最前面。没有设置引擎时，它只问一轮最多 8 个按品类定制的问题，生成一页 <code>design/game-brief.md</code>，当场在 <code>prototypes/&lt;name&gt;/</code> 搓出双击就能玩的浏览器游戏，自己拉起无头浏览器跑一遍自检再交给你。玩开心了再一路迭代、挂滑块调参、或者 Grow 成根目录的 Vite + TypeScript 正式工程。以前那套 49 个角色、每系统一份 GDD、ADR 和阶段门禁，现在统一叫 <strong>Studio Mode</strong>，等你项目真做大了再按需开启。</li>
+<li><strong>Web 成为一等公民，新增统一引擎表与 73 份品类资料</strong>。除了 Godot 4、Unity、Unreal Engine 5，v1.3.0 正式加入了 <code>engine.name: Web</code>（Vite + TypeScript，可选 Three.js / Phaser / PixiJS），并且把以前散落各处的引擎目录和命令收进了一张总表 <code>.claude/engines/engines.tsv</code>，同时支持在 <code>project.yaml</code> 里用 <code>engine.code_root</code> / <code>engine.test_root</code> 自定义路径。旁边还多了一整个 <code>.claude/genres/</code> 目录，专门给 <code>/prototype</code> 提供 69 个品类的出题套路、混搭规则和美术方向。</li>
+<li><strong>三个高频命令改名，新增 <code>/cut</code> 收尾技能</strong>。为了不和其他 AI 工具的内置命令撞车，<code>/help</code> 改名为 <code>/next-step</code>，<code>/settings</code> 改名为 <code>/project-settings</code>，<code>/changelog</code> 改名为 <code>/write-changelog</code>（旧目录保留为 20 来行的兼容转发层 shim，敲旧名依然能跑，但会提示你换新名）。另外新增了 <code>/cut</code>，专门在收尾期帮你砍掉多余需求、列打磨清单，商业项目还能设目标发布日和功能冻结日。</li>
+<li><strong>四个重型技能“折叠”了子代理，Hook 兼容无 Git Bash 的 Windows</strong>。<code>/design-system</code>、<code>/art-bible</code>、<code>/architecture-review</code>、<code>/code-review</code> 不再动辄拉起一堆子代理烧 token，而是改成在当前会话里按 <code>references/lens-*.md</code> 切换不同专家视角来写（仅保留少数确实效果更好的子代理）。<code>.claude/settings.json</code> 里新增了 28 条只读脚本白名单，免得技能每问完一个问题就重新弹窗求批准；同时 15 条 Hook 命令全改成了 Bash/PowerShell 双语包装，没装 Git Bash 的 Windows 机器上会自动跳过并告警，不再把每一次文件读写都卡死。</li>
+<li><strong>长出来的项目自带“同种子回放”与 AI 自主决策清账</strong>。<code>/dev-story</code> 和 <code>/story-done</code> 在 v1.3.0 里盯得更细：凡是从原型长出来的 Web 工程，每个故事做完都要重跑一次同种子回放（<code>one-shot-grow.sh replay</code>）对比画面和状态；而且程序员在设计没写明的地方擅自拍的板（数值、颜色、时机、提示文案），必须在关闭前汇总成 <code>Own calls</code> 交给人类逐条确认“留还是改”。</li>
+</ol>
+<h2 id="快照与证据边界">快照与证据边界<a class="anchor" href="#快照与证据边界" aria-label="链接到本节">#</a></h2>
+<p>本书所有源码拆解、脚本行为和资产盘点，均锁定在同一份上游快照上：</p>
+<ul>
+<li><strong>上游仓库</strong>：<code>Donchitos/Claude-Code-Game-Studios</code></li>
+<li><strong>版本与提交</strong>：<code>v1.3.0</code>，commit <code>abc0de79d6ceb0b5d7aa693945849b3937afbe6a</code>（上游发布于 2026-11-09）</li>
+<li><strong>采集日期</strong>：2026-11-21</li>
+<li><strong>开源许可</strong>：MIT</li>
+</ul>
+<p>这份快照里的实测资产数量如下（注意区分“磁盘文件数”和 README 里的“功能口径”）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>资产类别</th>
+<th align="right">实测数量</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>角色（<code>.claude/agents/*.md</code>）</td>
+<td align="right">49</td>
+<td><code>inherit</code> 30 个、<code>sonnet</code> 16 个、<code>opus</code> 3 个</td>
+</tr>
+<tr>
+<td>技能（<code>.claude/skills/*/SKILL.md</code>）</td>
+<td align="right">78</td>
+<td>75 个正式技能 + 3 个旧名兼容转发（<code>help</code> / <code>settings</code> / <code>changelog</code>）</td>
+</tr>
+<tr>
+<td>路径规则（<code>.claude/rules/*.md</code>）</td>
+<td align="right">14</td>
+<td>按目录或后缀生效的编码与文档规范</td>
+</tr>
+<tr>
+<td>Hook 脚本（<code>.claude/hooks/*.sh</code>）</td>
+<td align="right">18</td>
+<td>其中 15 条注册在 <code>settings.json</code>，另 3 个为库/辅助脚本</td>
+</tr>
+<tr>
+<td>辅助脚本（<code>.claude/scripts/</code>）</td>
+<td align="right">49</td>
+<td>涵盖配置、注册表、状态、原型自检与 Web 脚手架（含 <code>.sh</code>/<code>.awk</code>/<code>.js</code>）</td>
+</tr>
+<tr>
+<td>文档模板（<code>.claude/docs/templates/</code>）</td>
+<td align="right">74</td>
+<td>含 62 份主模板与细分指导/轻量原型起步文件</td>
+</tr>
+<tr>
+<td>品类知识库（<code>.claude/genres/</code>）</td>
+<td align="right">73</td>
+<td>含 <code>chipsets.yaml</code>、各品类卡片及混搭/美术/设备指南</td>
+</tr>
+</tbody></table></div>
+<p>这里先把研究边界一次性交代清楚，后面章节不再反复叠甲：**本书做的是源码精读、配置与脚本逻辑核验，以及用独立 Python 教学模型复刻核心约束。**我们没有花几周真拿它从零做完一款商业 3A 游戏，也没有跑大规模生产账单压测；文中提到的盲评和对照实验数据，均如实转述自上游 README 与 CHANGELOG 的公开记录。凡是源码里写死的机制，会指到具体文件和代码；凡是脱离静态代码才能知道的线上表现（比如不同模型的实际遵循率、token 消耗），都明说这是工程判断。</p>
+<h2 id="怎么读这本书">怎么读这本书<a class="anchor" href="#怎么读这本书" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>赶时间想先捞最值钱的干货</strong>：顺序读完第 01–03 章，搞懂“为什么这么设计、双轨入口怎么跑”，然后直接跳到第 08、09 章看实施与验收门禁，再翻第 10 章把 15 个 Hook 卸妆。</li>
+<li><strong>想给自己的非游戏项目抄一套底座</strong>：重点读第 04 章（5 级配置瀑布）、第 06 章（Skill 协议与防呆提问）、第 11 章（零依赖注册表）、第 14 章（磁盘检查点）和第 15 章（安全盲区）。</li>
+<li><strong>想亲手验证机制有没有吹牛</strong>：直接拉到第 17 章，不用装 Claude Code 也不用装游戏引擎，跑一遍 200 行 Python 教学模型和 17 个单元测试。</li>
+</ul>
+<p>每章末尾都留了三道在本地终端就能做的练习和参考思路。合上这本书的时候，希望你不是记住了一堆斜杠命令，而是能对着任何一套 AI Agent 框架，一眼看穿：<strong>哪几条规则真有代码兜底，哪几条只是贴在墙上的口号。</strong></p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a class="next" href="01-requirements.html"><small>下一章</small><strong>需求：一个人写游戏，为什么还要套规矩</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：先看清这东西到底是怎么跑起来的</a><a href="../chapters/01-requirements.html"><span>01</span>需求：一个人写游戏，为什么还要套规矩</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：一个会话，四种约束</a><a href="../chapters/03-onboarding.html"><span>03</span>入门：先玩一把（<code>/prototype</code>）与 Studio Mode（<code>/start</code>）双轨入口</a><a href="../chapters/04-config.html"><span>04</span>配置求值：一个 <code>rigor</code> 如何长出六个设置</a><a href="../chapters/05-agents.html"><span>05</span>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</a><a href="../chapters/06-skill-protocol.html"><span>06</span>Skill 协议：一条斜杠命令怎么从解析走到交接</a><a href="../chapters/07-artifacts.html"><span>07</span>产物模型：一页简报与故事、需求、ADR 三张网</a><a href="../chapters/08-dev-story.html"><span>08</span>实施链路：<code>/dev-story</code> 怎么把故事变成代码</a><a href="../chapters/09-story-done.html"><span>09</span>验收：<code>/story-done</code> 如何堵死“基本完成”</a><a href="../chapters/10-hooks.html"><span>10</span>Hook：十五个检查点里，到底谁真的能拦住</a><a href="../chapters/11-registries.html"><span>11</span>注册表：跨文档事实怎么管才不漂移</a><a href="../chapters/12-teams.html"><span>12</span>协作：团队流水线、默认塌缩与“透镜折叠”</a><a href="../chapters/13-engine.html"><span>13</span>引擎与品类适配：统一引擎表、Web 一等公民与品类库</a><a href="../chapters/14-context.html"><span>14</span>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</a><a href="../chapters/15-security.html"><span>15</span>安全边界：能聊天、有 Hook，不等于有沙箱</a><a href="../chapters/16-verification.html"><span>16</span>验证与演进：Markdown 写的框架，怎么证明自己没改坏</a><a href="../chapters/17-mini-studio.html"><span>17</span>最小实验：用两百行 Python 亲手跑通四条核心约束</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.3.0 源码索引、实测数据、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · CCGS v1.3.0 · 快照 abc0de79d6ce · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

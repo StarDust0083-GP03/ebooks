@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="源码拆解 PrimeIntellect-ai/prime-agent v0.10.5：Rust 多进程宿主、Protocol v3 Python REPL、持久信箱、递归子 Agent 与 Continual Harness"><meta name="author" content="独立源码研究">
+<title>单工具收口下的程序化工具链：bash、edit 与可执行技能 · Prime Agent 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">PA</span><span>Prime Agent 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 05</div><div class="rail-title">单工具收口下的程序化工具链：bash、edit 与可执行技能</div><ol><li><a href="#bash-默认异步-1-秒有界等待与跨重启接管">bash()：默认异步、1 秒有界等待与跨重启接管</a></li><li><a href="#edit-精确唯一匹配与原生-diff-回传">edit：精确唯一匹配与原生 Diff 回传</a></li><li><a href="#14-个内置技能与用户-仓库信任边界">14 个内置技能与用户/仓库信任边界</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 05 章</div><h1>单工具收口下的程序化工具链：<code>bash</code>、<code>edit</code> 与可执行技能</h1><div class="chapter-meta">Prime Agent v0.10.5 快照 2026-11-21 · 约 18 分钟</div></header><div class="prose"><p>如果只看模型工具列表里唯一的 <code>python_repl</code>，很容易误以为 Prime Agent 让模型天天在 Python 里自己调 <code>subprocess.run()</code> 和 <code>open().write()</code>。真这么干的话，两分钟就能遇到一堆麻烦：一个阻塞的 <code>subprocess.run([&quot;cargo&quot;, &quot;test&quot;])</code> 会把整个 CPython 事件循环卡死，终端界面看不到任何实时进度，用户按中断也停不掉孤儿进程；整文件覆写则动不动把几百行无关代码改丢，连最小 diff 都展示不出来。</p>
+<p>Prime Agent 在 <code>crates/pa-core/src/prompts/layers/usage.md</code> 里明令禁止模型直接用 <code>subprocess</code> 或 <code>os.system</code>，同时把日常高频操作做成了两层程序化工具：由运行时直接内建的 <code>bash()</code>，以及作为可执行 Python 技能预导入内核的 <code>edit</code> 与其余 13 个内置技能。</p>
+<h2 id="bash-默认异步-1-秒有界等待与跨重启接管"><code>bash()</code>：默认异步、1 秒有界等待与跨重启接管<a class="anchor" href="#bash-默认异步-1-秒有界等待与跨重启接管" aria-label="链接到本节">#</a></h2>
+<p><code>prime-agent-runtime/src/rlm/bash.py</code>（1,843 行）是整个 Python 运行时里最贴近操作系统细节的模块。调用 <code>bash(&quot;cargo test&quot;)</code> 时，它是同步函数，立刻派生子进程并返回 <code>BashHandle</code>，不阻塞当前语句。每次 <code>bash()</code> 都是全新进程，壳层变量不会跨调用保留，但因为遵循 POSIX 进程继承，模型在 Python 里做的 <code>os.chdir(...)</code> 和 <code>os.environ[...]</code> 都会自然传给后续的 <code>bash()</code> 子进程（反之不行）。</p>
+<p>这套封装在三个地方做得非常克制且扎实：</p>
+<p><strong>1 秒有界等待自动降级</strong>，很多模型习惯顺手写 <code>r = await bash(&quot;pytest&quot;)</code>。如果在有守护进程的会话里跑一个耗时 10 分钟的构建，一直 <code>await</code> 会直接撞上 60 秒单元格超时。<code>bash.py</code> 第 66 行的处理方式很巧：内核引导阶段会检查宿主是否注册了 <code>bash.completed</code> 处理器，只要注册了，就把 <code>_completion_notices_wired</code> 置为 <code>True</code>。此后 <code>await bash(...)</code> 走 <code>_bounded_wait(..., bound=1.0)</code>（<code>_YIELD_AFTER_SECONDS = 1.0</code>）。快命令 1 秒内跑完直接返回 <code>BashResult</code>；超过 1 秒还没结束时，它绝不取消底层命令，而是立刻返回一个实时快照对象（<code>r.running</code> 为 <code>True</code>、<code>r.output</code> 带着当前已收集输出、<code>r.handle</code> 指向活句柄），并在前 3 次降级时往 <code>stderr</code> 打一行教学提示（<code>_MAX_DEGRADE_HINTS = 3</code>），提醒模型可以结束本回合，等命令跑完后的 <code>[bash-done]</code> 通知再回来。如果运行在没有通知机制的无守护进程模式里，等待保持无界，防止模型结束回合后再也没人唤醒它。</p>
+<p><strong>兼容保守 POSIX Shell 的底层信道</strong>，<code>bash.py</code> 第 41 行把子进程输出和完成状态通道固定在单数字文件描述符 <code>_OUTPUT_FD = 8</code> 和 <code>_STATUS_FD = 9</code>，源码注释点明了原因：<code>dash</code> 等 POSIX 壳层只在语法上保证支持单数字 fd 重定向。同时单次命令输出有独立缓冲上限（头部 <code>_HEAD_CAP = 512 KiB</code>，尾部 <code>_TAIL_CAP = 1.5 MiB</code>），完成标记使用 <code>\x1eprime-agent-complete:</code> 与 <code>\x1f</code> 包裹；取消等待时先发 <code>SIGTERM</code> 给进程组，留 0.5 秒宽限再发 <code>SIGKILL</code>（Windows 侧借助 <code>_winjob.py</code> 的 Job Object 与 <code>taskkill /T</code> 清理进程树）。每次调用还会通过 <code>application/vnd.prime-agent.bash-command+json</code> MIME 帧向宿主上报命令摘要，供 TUI 工具卡片展示。</p>
+<p><strong><code>persistent=True</code> 跨重启持久进程</strong>，对于开发服务器、长时间训练脚本这类必须活过内核、Worker 甚至守护进程重启的任务，<code>bash(cmd, persistent=True)</code>（仅限 POSIX 下的已保存会话）把进程挂到独立持久化目录里。即便会话重启甚至被归档删除，该进程依然继续运行，直到自己退出或显式被 <code>kill()</code>。重启后的新内核调用 <code>from rlm import persistent_shells; persistent_shells()</code> 就能把句柄重新认领回来；在离线期间已经跑完的持久进程会被列出一次已完成状态，而重新接管后的运行中进程通过轮询检测结束，因此结果通知约有 1 秒延迟。</p>
+<h2 id="edit-精确唯一匹配与原生-diff-回传"><code>edit</code>：精确唯一匹配与原生 Diff 回传<a class="anchor" href="#edit-精确唯一匹配与原生-diff-回传" aria-label="链接到本节">#</a></h2>
+<p>在 <code>skills/edit/SKILL.md</code> 和 <code>crates/pa-core/src/prompts/layers/usage.md</code> 里，修改已有文件的唯一推荐入口是 <code>await edit(path=..., old_str=..., new_str=...)</code>（<code>edit</code> 模块经由 <code>rlm/skill.py</code> 包装为可直接调用的异步对象，等价于 <code>edit.run(...)</code>）。</p>
+<p>它的设计哲学和许多基于行号打补丁的编辑器截然不同，只抓两条铁律：</p>
+<ol>
+<li><strong>精确唯一匹配</strong>：<code>old_str</code> 在目标文件里必须不多不少刚好出现一次。匹配不到或者命中多处，直接抛出异常要求模型扩大上下文切片，绝不做模糊猜测，从根源上避免改错同名函数。</li>
+<li><strong>结构化 Diff 事件直达界面</strong>：改动落盘后，<code>edit</code> 技能不是只返回一句字符串，还会调用 <code>rlm.emit()</code> 发出 MIME 类型为 <code>application/vnd.prime-agent.diff+json</code> 的显示载荷（定义见 <code>crates/pa-core/src/kernel/shared.rs</code> 第 61 行）。Rust 宿主收集这些载荷，通过 <code>crates/pa-core/src/tools/ipython/diff/</code> 计算带 4 行上下文的统一差异，写进 <code>ToolResult</code> 的 <code>details.diffs</code>，TUI 和 HTML 导出器就能直接渲染彩色行级 Diff，而不是让用户在纯文本里人眼找改动。</li>
+</ol>
+<p>因为模型身处 Python REPL，<code>edit</code> 还能和变量天然配合：先在 Python 里读入文件并定位起止切片赋给 <code>old</code>，用字符串操作构造 <code>new</code>，再调 <code>await edit(path=..., old_str=old, new_str=new)</code>。如果代码片段里本身包含三双引号，直接用三单引号变量规避转义灾难。</p>
+<h2 id="14-个内置技能与用户-仓库信任边界">14 个内置技能与用户/仓库信任边界<a class="anchor" href="#14-个内置技能与用户-仓库信任边界" aria-label="链接到本节">#</a></h2>
+<p>在仓库的 <code>skills/</code> 目录下，v0.10.5 一共随行打包了 14 个技能包，覆盖文件编辑、媒体加载、多 Agent 协作、长程调度和自我改进：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>技能目录</th>
+<th>形态</th>
+<th>核心用途</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>edit</code></td>
+<td>可执行 Python 技能</td>
+<td>精确唯一字符串替换并推送 diff 载荷</td>
+</tr>
+<tr>
+<td><code>attach-image</code></td>
+<td>可执行 Python 技能</td>
+<td>校验视觉模型能力并把 JPEG/PNG/GIF/WebP 载入上下文</td>
+</tr>
+<tr>
+<td><code>attach-video</code></td>
+<td>可执行 Python 技能</td>
+<td>载入单文件上限 7.5 MB 的 MP4/WebM 视频片段（面向声明 <code>video</code> 输入的 OpenAI 兼容接口）</td>
+</tr>
+<tr>
+<td><code>agent-message</code></td>
+<td>可执行 Python 技能</td>
+<td>核家族内点对点发消息或广播（<code>agent_message.send</code>）</td>
+</tr>
+<tr>
+<td><code>agent-observe</code></td>
+<td>可执行 Python 技能</td>
+<td>查看家族名册、单节点状态与最近消息预览</td>
+</tr>
+<tr>
+<td><code>compact</code></td>
+<td>可执行 Python 技能</td>
+<td>查询上下文占用并预约在回合边界执行压缩</td>
+</tr>
+<tr>
+<td><code>goal</code></td>
+<td>可执行 Python 技能</td>
+<td>创建、查询和完结当前会话的持久目标</td>
+</tr>
+<tr>
+<td><code>refine</code></td>
+<td>可执行 Python 技能</td>
+<td>预约在回合结束时执行 Continual Harness 精炼</td>
+</tr>
+<tr>
+<td><code>rlm-heartbeat</code></td>
+<td>可执行 Python 技能</td>
+<td>创建、暂停、恢复和删除周期性自唤醒心跳</td>
+</tr>
+<tr>
+<td><code>websearch</code></td>
+<td>可执行 Python 技能</td>
+<td>借助宿主管理的 API Key 发起网页检索</td>
+</tr>
+<tr>
+<td><code>factory</code></td>
+<td>Markdown 技能</td>
+<td>指导使用 <code>rlm.factory</code> 状态机编排</td>
+</tr>
+<tr>
+<td><code>mcp</code></td>
+<td>Markdown 技能</td>
+<td>指导发现与调用 MCP 工具服务</td>
+</tr>
+<tr>
+<td><code>prime-intellect</code></td>
+<td>Markdown 技能 + 参考文档</td>
+<td>Prime Intellect 算力、环境、推理与沙箱文档索引</td>
+</tr>
+<tr>
+<td><code>skill-creator</code></td>
+<td>Markdown 技能 + Python 技能规范</td>
+<td>指导编写和打包新的自定义技能</td>
+</tr>
+</tbody></table></div>
+<p>这 14 个技能里藏着一条非常硬的安全边界。打开 <code>crates/pa-core/src/skills/mod.rs</code> 第 142 行的 <code>get_python_skill_runtime_info()</code>：</p>
+<pre><code class="language-rust">pub fn get_python_skill_runtime_info(skills: &amp;[Skill]) -&gt; Vec&lt;PythonSkillRuntimeInfo&gt; {
+    skills
+        .iter()
+        .filter(|skill| skill.is_python() &amp;&amp; skill.source_info.scope != SourceScope::Project)
+        ...
+}
+</code></pre>
+<p>这一行过滤器明确划出了一条红线：只有内置技能和用户主动安装进个人配置目录的 Python 技能，才会在内核引导时自动安装并预导入进 REPL；任何来自当前代码仓库（<code>SourceScope::Project</code>）的技能，哪怕目录里放了 <code>pyproject.toml</code> 和 Python 源码，宿主也<strong>绝不会自动导入内核执行</strong>，只把它的 <code>SKILL.md</code> 当成普通文档路径放进提示词清单。这样当你 <code>cd</code> 进一个陌生开源仓库启动 <code>prime-agent</code> 时，恶意仓库无法借技能发现机制在第一回合前偷偷注入启动代码。</p>
+<p>另外，资源解析系统（<code>crates/pa-core/src/packages/</code>）还支持通过 <code>npm</code>、<code>git</code> 或本地路径安装外部技能包，并按明确优先级完成资源覆盖合并。至于模型怎么知道每个技能的接口签名？预导入的技能模块可以直接在 REPL 里用 <code>help(&lt;skill&gt;)</code>、<code>dir(&lt;skill&gt;)</code> 或 <code>inspect.signature(...)</code> 自省，不需要把几十页 API 文档全硬塞进系统提示词里占 Token。</p>
+<p>单会话里的命令、编辑和技能都已齐备，但遇到大型调研或并行改造时，单个上下文窗口仍然太窄。下一章我们看 Prime Agent 怎样把一个会话裂变成一棵受控的递归子 Agent 树。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="04-python-repl.html"><small>上一章</small><strong>Protocol v3 内核：python_repl 如何把状态、输出和中断管稳</strong></a><a class="next" href="06-subagents-delegation.html"><small>下一章</small><strong>递归子 Agent 树、Spawn 账本与状态机工厂</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：把长程自主编程收进一个持久 Python REPL</a><a href="../chapters/01-why-rlm.html"><span>01</span>为什么传统工具调用在长程任务上会失速</a><a href="../chapters/02-workspace-topology.html"><span>02</span>十个 Rust Crate 与一层 Python 运行时的双层拓扑</a><a href="../chapters/03-agent-loop.html"><span>03</span>Turn 循环、Claim-First 抢占与三层消息队列</a><a href="../chapters/04-python-repl.html"><span>04</span>Protocol v3 内核：<code>python_repl</code> 如何把状态、输出和中断管稳</a><a href="../chapters/05-bash-edit-skills.html"><span>05</span>单工具收口下的程序化工具链：<code>bash</code>、<code>edit</code> 与可执行技能</a><a href="../chapters/06-subagents-delegation.html"><span>06</span>递归子 Agent 树、Spawn 账本与状态机工厂</a><a href="../chapters/07-agent-inbox.html"><span>07</span>持久信箱 <code>rlm.inbox</code> 与跨进程消息投递</a><a href="../chapters/08-session-search-acp.html"><span>08</span>会话生命周期、流式全文搜索与 ACP 外部协议</a><a href="../chapters/09-prompt-continual-harness.html"><span>09</span>分层系统提示词与 Continual Harness 自我改进</a><a href="../chapters/10-context-compaction-autonomy.html"><span>10</span>自动压缩、目标驱动与有界自主运行</a><a href="../chapters/11-mcp-bridge.html"><span>11</span>宿主管认证、内核跑协议的 MCP 桥接层</a><a href="../chapters/12-tui-observability.html"><span>12</span>把渲染留在关键路径上：TUI 卡片、延迟护栏与可观测性</a><a href="../chapters/13-security-cost-mini-model.html"><span>13</span>安全边界、成本账本与可运行教学模型</a><a href="../chapters/appendix-sources.html"><span>A</span>源码索引、关键常量表、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Prime Agent v0.10.5 · 快照 783acb5d72a9 · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

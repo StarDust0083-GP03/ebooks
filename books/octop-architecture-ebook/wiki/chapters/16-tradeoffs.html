@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 Octop v1.0.3b7 源码的架构解剖：单进程宿主、托管专家、多层存储、多副本租约与安全边界"><meta name="author" content="独立源码研究">
+<title>架构取舍：单机够用到何时，复杂度卡在哪里 · Octop 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">O</span><span>Octop 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 16</div><div class="rail-title">架构取舍：单机够用到何时，复杂度卡在哪里</div><ol><li><a href="#五个经受住版本迭代的好选择">五个经受住版本迭代的好选择</a></li><li><a href="#当下复杂度真正堆在哪里">当下复杂度真正堆在哪里</a></li><li><a href="#治理顺序-先收契约-再谈拆分">治理顺序：先收契约，再谈拆分</a></li><li><a href="#什么时候才真的需要引入进程外队列或拆-worker">什么时候才真的需要引入进程外队列或拆 Worker</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 16 章</div><h1>架构取舍：单机够用到何时，复杂度卡在哪里</h1><div class="chapter-meta">Octop v1.0.3b7 快照 2026-11-18 · 约 12 分钟</div></header><div class="prose"><p>从启动装配、身份隔离、多层存储一路拆到多副本租约，整个 Octop 的技术选型呈现出一条非常鲜明的主线：宁可在宿主内部把边界和状态机写严实，也不为了纸面上的高大上架构过早引入外部中间件。看完 <code>v1.0.3b7</code> 的全部演进之后，可以客观盘一盘这套架构最值得抄的作业、当下真正聚集复杂度的地方，以及什么时候才真的该动刀拆分。</p>
+<h2 id="五个经受住版本迭代的好选择">五个经受住版本迭代的好选择<a class="anchor" href="#五个经受住版本迭代的好选择" aria-label="链接到本节">#</a></h2>
+<p>把 <code>v1.0.3b1</code> 到 <code>v1.0.3b7</code> 的变化串起来看，有五项决策越往后走越显出威力：</p>
+<ol>
+<li><strong>宿主与四大运行库硬切边界</strong>：把 LangGraph 循环、IM 协议、长期记忆和浏览器 CDP 拆成独立发版的 Python 包，宿主只管用户、权限、控制面、装配和工作台。每次修底层运行库漏洞（比如记忆长会话分批提炼或 harness 协议升级），宿主改一行 <code>pyproject.toml</code> 就能平滑升级，代码库不至于在几个垂直领域同时腐烂。</li>
+<li><strong>果断收口失败或过重的实验</strong>：<code>v1.0.3b5</code> 彻底下线只支持 SQLite 的 <code>history_v2</code>，并用启动一次性迁移把老用户平滑接回 <code>thread_messages</code>；同版本把桌面壳从 Wails 切成 Electron 45；<code>v1.0.3b3</code> 把庞大的内置市场目录迁到远程市场。对一个高速迭代的开源平台来说，及时做减法比堆新功能稀缺得多。</li>
+<li><strong>用 ADR 003 + 同行租约走完多副本第一步</strong>：没有为了多实例一上来就强绑 Redis 和 Celery，而是把技能包与知识库并进共享 PostgreSQL、给 Cron 和 IM 通道加上 90s/30s/25s 同行租约、入口靠 Cookie 粘滞。既守住了单机 SQLite 的零依赖体验，又给了中小团队一套能直接上 Kubernetes Helm 的横向扩展方案。</li>
+<li><strong>托管专家走回环 MCP 而非重写外部 Runner</strong>：面对 Claude Code、OpenCode、Codex 等形态各异的外部编程 Agent，不试图魔改它们的内部循环，而是借 ACP 统一会话模式与审批队列，再把 Octop 的知识库、专家回调、文件、定时任务和插件封装成 6 个本地回环 MCP 递过去，集成成本压到极低。</li>
+<li><strong>共享展示但隔离执行状态</strong>：团队房间用主持人 <code>thread_id</code> 做共享展示，用 <code>conversation_id~member</code> 隔离成员 checkpoint 和工作区；共享专家默认隔离所有人的私人线程，只有显式标记 <code>contributed</code> 才开放阅读。</li>
+</ol>
+<h2 id="当下复杂度真正堆在哪里">当下复杂度真正堆在哪里<a class="anchor" href="#当下复杂度真正堆在哪里" aria-label="链接到本节">#</a></h2>
+<p>没有哪套架构只有甜头没有代价。把 <code>v1.0.3b7</code> 的代码摊开量一遍，压力高度集中在三个超大核心模块和两类结构张力上：</p>
+<p><strong>三个高密度核心模块</strong>：<code>src/octop/infra/agents/manager.py</code> 已经接近五千行，<code>src/octop/infra/gateway/process/processor.py</code> 超过两千两百行，前端 <code>dashboard/src/pages/Chat/hooks/chatStore.ts</code> 同样体量可观。大文件本身不自动等于坏设计，但它意味着每次改动都要同时踩稳普通聊天、托管 ACP、专家团队、HITL 审批、模型故障转移、用量统计和 Bridge 远端代理七八条契约，任何一个角落漏测都容易引发回归。</p>
+<p><strong>两类固有结构张力</strong>：</p>
+<ul>
+<li><strong>多层存储的一致性与清理成本</strong>：控制面、checkpoint、消息投影、长期记忆、知识索引和远程工作区各自落盘，跨层删除必须严格排顺序（先清 checkpoint 再删线程行），共享 PostgreSQL 上更是因为 checkpoint 表缺少原生外键归属，不得不把孤儿清理收成只统计不删除的保守策略。</li>
+<li><strong>进程内状态与多副本粘滞的边界</strong>：虽然多副本已经能共享配置、知识库和单活通道，但正在进行的 WebSocket 流、团队在途 <code>TeamJobTracker</code>、取消信号和飞书本地去重表仍停留在单进程内存或本机磁盘里。副本重启或滚动发布时，在途流必然中断一次，需要刷新重新接轨。</li>
+</ul>
+<h2 id="治理顺序-先收契约-再谈拆分">治理顺序：先收契约，再谈拆分<a class="anchor" href="#治理顺序-先收契约-再谈拆分" aria-label="链接到本节">#</a></h2>
+<p>如果你正基于 Octop 做二次开发，或者自己也在搭一套类似的自托管 Agent 平台，遇到性能或维护压力时，先做三件低风险高回报的事，远比拍脑袋拆微服务管用：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>优先动作</th>
+<th>解决的真实痛点</th>
+<th>怎么算做到位</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>拆分配置解析与生命周期</td>
+<td>改一个工具或模型参数就要动几千行的 <code>manager.py</code></td>
+<td>纯函数输入配置生成 <code>HarnessAgentConfig</code> 快照，脱离生命周期锁独立单测</td>
+</tr>
+<tr>
+<td>固化多入口事件契约</td>
+<td>Web、IM、托管专家和团队流在前端或历史里各有一套特判</td>
+<td>同一组事件流在多个入口和 <code>chatStore</code> 状态下断言产出完全一致</td>
+</tr>
+<tr>
+<td>建立负面与恢复测试矩阵</td>
+<td>正常问答跑得通，但越权、并发审批、断网和删库边界含糊</td>
+<td>覆盖越权线程、重复审批、连续工具熔断、PG 孤儿只统计和停机备份恢复</td>
+</tr>
+</tbody></table></div>
+<h2 id="什么时候才真的需要引入进程外队列或拆-worker">什么时候才真的需要引入进程外队列或拆 Worker<a class="anchor" href="#什么时候才真的需要引入进程外队列或拆-worker" aria-label="链接到本节">#</a></h2>
+<p>先看真实测量数据（事件循环阻塞延迟、同时活跃回合数、文档解析/OCR CPU 占用、数据库锁等待和尾延迟），不要拿“注册用户破千”这种静态数字当拆分理由。只有出现下面四种信号之一时，进程外队列和独立 Worker 才值回它的运维票价：</p>
+<ol>
+<li><strong>大量重 CPU 后台任务拖慢对话事件循环</strong>：例如高频批量上传几百页扫描 PDF 做 OCR 和本地向量化。此时最稳的第一刀是只把文档解析与建索引抽成独立 Worker，不动用户、权限、专家和聊天主进程。</li>
+<li><strong>要求任务跨进程重启不断线且必须可靠接续</strong>：例如几十步的自动化巡检或长时代码生成，要求进程崩溃后由另一台节点自动捞起未完成派工，而不是靠人工刷新重试。</li>
+<li><strong>团队异步派工需要跨实例分发与整树取消</strong>：现有的进程内 <code>TeamJobTracker</code> 和仅取消主持人流的语义无法满足强一致任务树控制。</li>
+<li><strong>执行沙箱需要独立的弹性伸缩池</strong>：代码执行和浏览器自动化资源消耗波动极大，与轻量控制面混部会互相挤占内存。</li>
+</ol>
+<p>记住一个前提：加一套进程外队列绝不只是多装一个 Redis。你必须同步设计持久 <code>job_id</code>、租约与 fencing token、失败重试分类、外部写操作幂等键、取消信号跨节点传播和流式帧跨实例路由（Pub/Sub）。如果目前单机 SQLite 或者 2~3 副本 PostgreSQL + Cookie 粘滞已经跑得稳稳当当，保留模块化单体就是最省钱也最容易排障的架构。</p>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/adr/001-single-process-model.md"><code>docs/adr/001-single-process-model.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/adr/002-database-backends.md"><code>docs/adr/002-database-backends.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/adr/003-skill-package-kb-pg-storage.md"><code>docs/adr/003-skill-package-kb-pg-storage.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/manager.py"><code>src/octop/infra/agents/manager.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/gateway/process/processor.py"><code>src/octop/infra/gateway/process/processor.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/dashboard/src/pages/Chat/hooks/chatStore.ts"><code>dashboard/src/pages/Chat/hooks/chatStore.ts</code></a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="15-operations.html"><small>上一章</small><strong>部署与运维：Electron 壳、镜像分层与多副本租约</strong></a><a class="next" href="17-mini-host.html"><small>下一章</small><strong>代码实战：用两百行标准库模型验证六条边界</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：看懂一个 Agent 宿主如何拼起来</a><a href="../chapters/01-requirements.html"><span>01</span>需求推导：脱离模型 SDK 之后要守住什么</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：单进程宿主与四套可复用运行库</a><a href="../chapters/03-lifecycle.html"><span>03</span>启动与退出：装配顺序、延迟绑库与有序收尾</a><a href="../chapters/04-agent-runtime.html"><span>04</span>Agent 装配：原生专家、托管专家与中间件顺序</a><a href="../chapters/05-identity.html"><span>05</span>身份与会话：四种标识与共享专家的线程隔离</a><a href="../chapters/06-storage.html"><span>06</span>存储与历史：六类数据平面、下线归档与安全清理</a><a href="../chapters/07-workspace.html"><span>07</span>工作区后端：内容访问、对象存储与容器挂载边界</a><a href="../chapters/08-turn-path.html"><span>08</span>一次对话：从 WebSocket 入队到工具熔断与推送</a><a href="../chapters/09-memory-rag.html"><span>09</span>记忆与知识库：命名空间维护、图谱扩展与重排序</a><a href="../chapters/10-extensions.html"><span>10</span>工具与扩展：Skill、Plugin、Connector 与 MCP OAuth</a><a href="../chapters/11-teams.html"><span>11</span>多 Agent 团队：共享展示时间线，隔离执行状态</a><a href="../chapters/12-security.html"><span>12</span>安全边界：MFA、权限分离、审批串行与云凭证隔离</a><a href="../chapters/13-dashboard.html"><span>13</span>前端状态机：离线订阅、五道恢复门与历史竞态</a><a href="../chapters/14-interop.html"><span>14</span>跨端协作：托管 ACP 回环与 Bridge 实例隧道</a><a href="../chapters/15-operations.html"><span>15</span>部署与运维：Electron 壳、镜像分层与多副本租约</a><a href="../chapters/16-tradeoffs.html"><span>16</span>架构取舍：单机够用到何时，复杂度卡在哪里</a><a href="../chapters/17-mini-host.html"><span>17</span>代码实战：用两百行标准库模型验证六条边界</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.0.3b7 源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Octop v1.0.3b7 · 快照 ecd2cdbce3a5 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

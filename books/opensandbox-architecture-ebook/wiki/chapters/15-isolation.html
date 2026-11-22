@@ -1,0 +1,150 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>隔离与加固：从 runc、进程降权到 microVM · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="15-isolation"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#纵深防御的四层分工">纵深防御的四层分工</a></li><li><a href="#安全运行时选型与硬性不兼容矩阵">安全运行时选型与硬性不兼容矩阵</a></li><li><a href="#osep-0018-加固地板-让降权覆盖镜像入口进程">OSEP-0018 加固地板：让降权覆盖镜像入口进程</a></li><li><a href="#一份诚实的威胁边界表">一份诚实的威胁边界表</a></li><li><a href="#源码入口">源码入口</a></li></ol></details><article class="content"><h1 id="隔离与加固-从-runc-进程降权到-microvm">隔离与加固：从 runc、进程降权到 microVM</h1><p>安全评审里最常听到的一句空话是「我们已经跑在容器里了」。跑不可信的 AI 生成代码，只靠标准容器命名空间往往挡不住两类最现实的威胁：一类是通过内核漏洞或宿主挂载越权逃出容器；另一类是根本不逃逸，直接在沙箱内部利用残留 capabilities 或共享工作区提权、改写启动脚本或偷走守护进程令牌。</p>
+<p>OpenSandbox 把防御拆成四层，并且要求<strong>每一层都能对外如实汇报当前到底处于 <code>active</code>、<code>degraded</code> 还是 <code>unsupported</code></strong>，不让调用方对着配置文件盲信。</p>
+<h2 id="纵深防御的四层分工">纵深防御的四层分工</h2><table>
+<thead>
+<tr>
+<th>防护层</th>
+<th>核心机制</th>
+<th>挡住的威胁</th>
+<th>开启方式</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1. 沙箱边界</td>
+<td>资源限额、安全运行时（runc / gVisor / Kata / Firecracker）</td>
+<td>容器逃逸、越权访问宿主机</td>
+<td>服务端 <code>[secure_runtime]</code> 或 Fast Sandbox 模板</td>
+</tr>
+<tr>
+<td>2. 沙箱内加固地板</td>
+<td><code>EXECD_INIT=1</code> + <code>opensandbox-launcher</code>（cap drop、<code>no_new_privs</code>、seccomp、可选 Landlock）</td>
+<td>沙箱内提权、读 <code>/proc/1/environ</code> 偷令牌、越界写文件系统</td>
+<td>镜像内置或挂载 TOML（<code>EXECD_ISOLATION_CONFIG</code>）</td>
+</tr>
+<tr>
+<td>3. 隔离会话</td>
+<td>per-execution bubblewrap 命名空间与受控 bind mount</td>
+<td>同一沙箱内并发或串行任务互相污染</td>
+<td>每次执行调用 <code>/v1/isolated/*</code></td>
+</tr>
+<tr>
+<td>4. eBPF 审计</td>
+<td>基于沙箱 cgroup 记录 <code>exec</code>、<code>connect</code> 与权限变更</td>
+<td>事后取证（仅审计不阻断）</td>
+<td>单独发布的 <code>execd-ebpf</code> 变体镜像</td>
+</tr>
+</tbody></table>
+<h2 id="安全运行时选型与硬性不兼容矩阵">安全运行时选型与硬性不兼容矩阵</h2><p>服务端通过 <code>[secure_runtime].type</code> 全局配置隔离运行时，并在启动阶段由 <code>validate_secure_runtime_on_startup</code> 强校验可用性（不可用立刻退出）。上游 <code>docs/guides/secure-container.md</code> 给出的开销与能力对照，比单纯背安全等级有用得多：</p>
+<table>
+<thead>
+<tr>
+<th>运行时</th>
+<th>隔离原理</th>
+<th>启动开销</th>
+<th>内存开销</th>
+<th>系统调用</th>
+<th>GPU</th>
+<th>systemd / 特权</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>runc</code>（默认）</td>
+<td>Linux 命名空间 + cgroup</td>
+<td>~0 ms</td>
+<td>极小</td>
+<td>完整</td>
+<td>支持</td>
+<td>支持</td>
+</tr>
+<tr>
+<td><code>gVisor</code></td>
+<td>用户态内核拦截 syscall</td>
+<td>~10 到 50 ms</td>
+<td>~50 MB</td>
+<td>部分</td>
+<td>需额外配置</td>
+<td>systemd 需额外配置</td>
+</tr>
+<tr>
+<td><code>Kata (QEMU)</code></td>
+<td>轻量虚拟机（QEMU）</td>
+<td>~500 ms</td>
+<td>~20 到 50 MB</td>
+<td>完整</td>
+<td>支持</td>
+<td>支持</td>
+</tr>
+<tr>
+<td><code>Kata (CLH)</code></td>
+<td>Cloud Hypervisor 虚拟机</td>
+<td>~200 ms</td>
+<td>~10 到 20 MB</td>
+<td>完整</td>
+<td>支持</td>
+<td>支持</td>
+</tr>
+<tr>
+<td><code>Kata (Firecracker)</code></td>
+<td>Firecracker microVM</td>
+<td>~125 ms</td>
+<td>~5 MB</td>
+<td>受限</td>
+<td>不支持</td>
+<td>不支持</td>
+</tr>
+</tbody></table>
+<p>选型时真正卡脖子的，往往是分散在不同组件里的几条<strong>硬性不兼容</strong>：</p>
+<ul>
+<li><strong>gVisor 与 egress 包级策略不兼容</strong>。egress 的 iptables 与原生 nftables 重定向路径都依赖 gVisor 未实现的 netfilter 特性；需要安全运行时叠加出向防火墙，必须选 Kata 或 Fast Sandbox。</li>
+<li><strong>gVisor 与 Kubernetes rootfs 快照不兼容</strong>。Kubernetes 的 rootfs 快照提交器明确拒绝 <code>gVisor</code> RuntimeClass。选 gVisor 等于同时放弃 <code>dns+nft</code> 出向策略与暂停/恢复。</li>
+<li><strong>egress 与透明服务网格（Istio / Envoy）冲突</strong>。两者会争抢同一网络命名空间的出向流量改写，必须把沙箱 Pod 排除在 mesh 自动注入之外，或改用 CNI 级平台出向控制。</li>
+<li><strong>Fast Sandbox 的防火墙执行点不在 guest 内部</strong>。跨 VM 流量在 Pod 视角属于二层桥流量，权威规则装在 pod-netns 的 forward 链上，guest 内部防火墙不构成安全边界。</li>
+<li><strong>Firecracker 强依赖宿主硬件与文件系统能力</strong>。缺 <code>/dev/kvm</code>、<code>/dev/net/tun</code>、cgroup v2、XFS reflink 或 10 GiB 磁盘余量，节点自检不通过，不会获得调度标签。</li>
+</ul>
+<h2 id="osep-0018-加固地板-让降权覆盖镜像入口进程">OSEP-0018 加固地板：让降权覆盖镜像入口进程</h2><p>在 <code>1.3.0-rc.1</code> 之前，即便在镜像里配置了沙箱内降权，由于 <code>execd</code> 只是后台进程，用户镜像自己的 <code>entrypoint</code> 依然拿着容器上限权限在跑。现在 <code>runtime.execd_run_as_init = true</code> 成为默认配置，配合 <code>docs/guides/privilege-reduction.md</code> 和仓内预置的 <code>components/execd/configs/isolation.hardened.toml</code>：</p>
+<div class="table-wrap"><pre tabindex="0"><code class="hljs"><span class="hljs-section">[hardening]</span>
+<span class="hljs-attr">enabled</span> = <span class="hljs-literal">true</span>
+
+<span class="hljs-section">[landlock]</span>
+<span class="hljs-attr">enabled</span> = <span class="hljs-literal">true</span></code></pre></div><p>用户只需把这两行 TOML 烘进镜像（推荐，避免宿主机可写挂载被 UID 0 工作负载篡改）或经 Docker 只读 bind mount / Kubernetes ConfigMap 加请求环境变量投递，设置 <code>EXECD_ISOLATION_CONFIG=/etc/opensandbox/isolation.toml</code>，<code>execd --init</code> 就会让<strong>包括镜像 entrypoint、<code>/command</code>、Shell 会话和 PTY 在内的全部用户代码进程</strong>穿过 <code>opensandbox-launcher</code> 的顺序敏感降权链：清掉 execd 凭据环境、裁剪 bounding capabilities、锁死 <code>no_new_privs</code>、设定 UID 与保留能力、按需装上 Landlock 文件系统白名单（要求 Linux &gt;= 5.13）、最后加载内置 seccomp 拒绝列表再 <code>execve</code>。</p>
+<p>设计上有两条非常清醒的边界：</p>
+<ul>
+<li><strong>配置错即致命，特性缺即降级</strong>。TOML 语法错、capability 拼写错或把保留调用 <code>execve</code> 写进 seccomp 拒绝表，会直接令 <code>execd</code> 启动退出；但老内核或当前 Fast Sandbox guest 内核缺少 Landlock 时，该层按 fail-open 契约跳过，并通过 <code>sbx.isolation.capabilities().hardening</code> 诚实报告 <code>landlock.state = &quot;unsupported&quot;</code>，其余层继续生效。如果运维开启了 <code>[hardening]</code> 却手动关掉了 <code>execd_run_as_init</code>，探针也会诚实上报 <code>degraded</code> 并提示存在开关漂移。</li>
+<li><strong>默认依然关闭加固地板</strong>。隔离边界由平台在容器/VM 层先兜底，进程降权由镜像构建者按需开启，避免一刀切把依赖特殊 syscall 的存量镜像全搞挂。</li>
+</ul>
+<p>此外，<code>1.3.0-rc.1</code> 在所有运行时统一拦截了含 Windows 反斜杠遍历或前导反斜杠的 <code>volumeMounts.subPath</code>，封堵了 Windows 节点的卷根逃逸；生命周期钩子则继续明确定性为平台配置的可信初始化代码，是便利设施而非安全边界。</p>
+<h2 id="一份诚实的威胁边界表">一份诚实的威胁边界表</h2><p>放到真实安全评审里，这套体系<strong>能挡住的</strong>包括：跨沙箱互访、容器向宿主机逃逸（强度取决于所选运行时）、沙箱内进程关闭或绕开出向防火墙（无 <code>NET_ADMIN</code>）、代码从环境或 <code>/proc/1/environ</code> 偷取真实外部凭据（Vault 外置 + <code>non-dumpable</code>），以及单沙箱内多任务互相污染（隔离会话）。</p>
+<p>它<strong>挡不住的</strong>同样必须明说：通过已经被白名单放行的域名往外传数据（egress 是目的地控制，不是 DLP 数据防泄漏）；提示注入诱导 Agent 合法删光自己的工作区；部署刻意启用共享命名空间时的软隔离退化；默认镜像未启用 <code>execd-ebpf</code> 时的细粒度内核行为审计缺失；以及平台自己写错的生命周期钩子代码。</p>
+<h2 id="源码入口">源码入口</h2><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>docs/guides/secure-container.md</code></td>
+<td>运行时开销、配置与兼容性矩阵</td>
+</tr>
+<tr>
+<td><code>docs/guides/privilege-reduction.md</code></td>
+<td>OSEP-0018 加固地板、TOML 模板与能力探测用法</td>
+</tr>
+<tr>
+<td><code>docs/guides/network-security.md</code></td>
+<td>出向策略边界、规则优先级与配置约束</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/runtime/hardening_linux.go</code></td>
+<td><code>opensandbox-launcher</code> 降权链与 <code>degraded</code>/<code>unsupported</code> 上报</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/isolation/</code></td>
+<td>bubblewrap 隔离会话与路径解析校验</td>
+</tr>
+<tr>
+<td><code>oseps/0004-secure-container-runtime.md</code></td>
+<td>安全容器运行时提案</td>
+</tr>
+</tbody></table>
+</article><nav class="pager" aria-label="篇章导航"><a href="14-identity-tenancy.html"><small>上一篇</small>身份与多租户：三种凭据，两层边界</a><a href="16-observability.html"><small>下一篇</small>可观测性与诊断：让短命沙箱留下可核验的证据</a></nav></main><script src="../assets/wiki.js"></script></body></html>

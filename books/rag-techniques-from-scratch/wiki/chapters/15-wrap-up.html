@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从文档解析、切分、混合检索到纠错、图谱、评估与上线边界的 RAG 工程实战指南"><meta name="author" content="独立源码研究">
+<title>完结篇：用一次请求串起整套设计 · RAG 工程实战</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">RAG</span><span>RAG 工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 15</div><div class="rail-title">完结篇：用一次请求串起整套设计</div><ol><li><a href="#第一步-先划定这次请求能看什么">第一步：先划定这次请求能看什么</a></li><li><a href="#第二步-找齐验签与幂等两条必要证据">第二步：找齐验签与幂等两条必要证据</a></li><li><a href="#第三步-在可控预算里把证据完整送到模型眼前">第三步：在可控预算里把证据完整送到模型眼前</a></li><li><a href="#第四步-回答严格停在证据边界之内">第四步：回答严格停在证据边界之内</a></li><li><a href="#一张按故障现象选技术的排查表">一张按故障现象选技术的排查表</a></li><li><a href="#本章对应代码">本章对应代码</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 15 章</div><h1>完结篇：用一次请求串起整套设计</h1><div class="chapter-meta">RAG_Techniques 快照 2026-11-02 · 约 10 分钟</div></header><div class="prose"><p>回到开篇值班群里的那句话：“支付回调已经验签了，重复通知还会不会重复发货？”现在把整本书拆过的各个环节重新串成一条线，跟着这一次请求走完全程，看看每一层到底守住了什么。</p>
+<h2 id="第一步-先划定这次请求能看什么">第一步：先划定这次请求能看什么<a class="anchor" href="#第一步-先划定这次请求能看什么" aria-label="链接到本节">#</a></h2>
+<p>请求进来，应用先从服务端认证会话拿到用户身份（离线实验里用 Alice 作替身），并锁定当前对外服务的只读索引快照版本。<code>visible(&quot;alice&quot;)</code> 立刻过滤出“现行有效且 Alice 有权阅读”的子集：已废弃的反例 <code>callback-v1:0</code> 被挡在门外，Bob 的私人排查草稿 <code>bob-v1:0</code> 根本没有机会进入后面的统计量。权限与版本在计分前收口，不指望相关性分数或提示词去替安全兜底。</p>
+<h2 id="第二步-找齐验签与幂等两条必要证据">第二步：找齐验签与幂等两条必要证据<a class="anchor" href="#第二步-找齐验签与幂等两条必要证据" aria-label="链接到本节">#</a></h2>
+<p>查询语句里带着“回调”“验签”“幂等”。BM25 和第二路检索各自在可见子集上打分产出排名，RRF 按稳定 <code>chunk.id</code> 去重合并，把 <code>callback-v2:0</code> 和 <code>callback-v2:1</code> 稳稳送进头部。两条记录缺一不可：<code>callback-v2:0</code> 交代了先验签再核对商户号、订单号、金额和币种的处理顺序，<code>callback-v2:1</code> 交代了以渠道流水号和事件类型做幂等、重复通知不重复发货以及业务通知失败进重试队列的规则。</p>
+<p>如果研发换了一种口语问法“同一个通知推了两遍会不会发两次货”，词面基线抓不稳时，第 7 章的查询改写或入库期构建的 <code>PromptIndex</code>（HyPE 问题代理）就能把口语问题映射到 <code>callback-v2:1</code>，并且照样先验父片段权限、再按父片段 ID 去重。如果首轮检索仍然偏弱，第 10 章的 <code>crag_route</code> 会在严格次数上限内改写重试，实在找不到就干脆返回 <code>insufficient_evidence</code>，绝不凭常识硬编，也不把内部查询丢给公网。</p>
+<h2 id="第三步-在可控预算里把证据完整送到模型眼前">第三步：在可控预算里把证据完整送到模型眼前<a class="anchor" href="#第三步-在可控预算里把证据完整送到模型眼前" aria-label="链接到本节">#</a></h2>
+<p>拿到候选后，如果召回 <code>k</code> 设得小，可以通过 <code>expand()</code> 沿同一 <code>doc_id</code>、同一 <code>version</code> 且再次通过 <code>visible(user)</code> 校验的范围补全相邻段落。随后 <code>pack_context()</code> 把片段编号、来源标签、正文和分隔符全部计入预算，整块装入、不拦腰切断否定词，输出最终正文与 <code>injected_ids</code>。</p>
+<p>在默认离线实验里，<code>callback-v2:0</code> 和 <code>callback-v2:1</code> 全部装入，连同标签一共 168 个字符。要是有人误把预算调成 100 字符，日志里会立刻露出 <code>retrieved</code> 有两条而 <code>injected</code> 只剩一条的落差，一眼就能定位故障出在打包预算，不用白白怀疑分词或向量模型。</p>
+<h2 id="第四步-回答严格停在证据边界之内">第四步：回答严格停在证据边界之内<a class="anchor" href="#第四步-回答严格停在证据边界之内" aria-label="链接到本节">#</a></h2>
+<p>把 <code>injected_ids</code> 对应的两段原文交给生成器后，一个合格的受控回答应该长这样（以下为依据两段教学规范手写的示范文本，并非离线程序自动生成）：</p>
+<blockquote>
+<p>验签只是回调校验的第一步，规范要求先验签，再核对商户号、订单号、金额和币种，全部核对成功后才能更新支付状态。[callback-v2:0] 重复通知需要以渠道流水号和事件类型作为幂等键去重，不会重复发货；状态更新成功后发出的业务通知如果失败，会进入重试队列。[callback-v2:1]</p>
+</blockquote>
+<p>注意它没做的两件事：它没有断言某笔具体订单到底有没有发货，也没有替人修改任何业务状态。研发如果接着追问“那订单 20261102001 到底到账了吗”，路由层应该把问题交给授权的业务查询接口，而不是继续翻规范文档。</p>
+<h2 id="一张按故障现象选技术的排查表">一张按故障现象选技术的排查表<a class="anchor" href="#一张按故障现象选技术的排查表" aria-label="链接到本节">#</a></h2>
+<p>回头看上游 47 份 Notebook，不必把所有方法全装进自己的系统。真正好用的一张地图，是遇到具体失败时知道该先查哪一层、再对照试哪一招：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>线上或离线观察到的故障</th>
+<th>第一时间检查</th>
+<th>验证后可按需对照引入的方案</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>原文数字错位、表头丢失、否定词缺失</td>
+<td>解析输出原文块</td>
+<td>OCR 4.1 等版面感知解析、块感知切分</td>
+</tr>
+<tr>
+<td>规则前后条件拆散、段落脱离主语</td>
+<td>切分边界与章节路径</td>
+<td>标题增强、结构切分、语义切分、命题切分</td>
+</tr>
+<tr>
+<td>用户口语表达与规范术语对不上</td>
+<td>查询日志与词面命中</td>
+<td>同义词表、查询改写拆解、HyDE、HyPE</td>
+</tr>
+<tr>
+<td>正确片段已召回但排在 top-k 之后</td>
+<td>候选池排名与融合逻辑</td>
+<td>按 ID 对齐的 RRF 混合检索、Cross-Encoder 或 LLM 重排</td>
+</tr>
+<tr>
+<td>命中关键句但缺少相邻例外条款</td>
+<td>同文档邻域与预算截断</td>
+<td>受控邻域扩展、RSE、重算总 Token 预算</td>
+</tr>
+<tr>
+<td>问整份制度的全局总结总是挂一漏万</td>
+<td>平面检索覆盖度</td>
+<td>层次摘要索引、RAPTOR、MemoRAG、长上下文对照</td>
+</tr>
+<tr>
+<td>跨两三份文档找负责人或上下游依赖</td>
+<td>跨文档连接路径</td>
+<td>受控两步检索、LightRAG / Graph RAG</td>
+</tr>
+<tr>
+<td>关键规则藏在流程图或监控截图里</td>
+<td>多模态原件覆盖度</td>
+<td>图说化 Captioning、ColPali 页面图像检索</td>
+</tr>
+<tr>
+<td>检索不到时乱编，或偶发泄露旧版与私密笔记</td>
+<td>状态流转、权限与快照</td>
+<td>CRAG 有界拒答状态机、全路径 ACL、原子快照发布</td>
+</tr>
+</tbody></table></div>
+<p>每引入一行新技术，都遵循同一条纪律：拿同一份语料快照和固定回归题集，同时记录候选召回、注入召回、完整证据命中率、拒答准确度、延迟和费用。把账算明白再上线，系统才会越改越稳，而不是越叠越脆。</p>
+<h2 id="本章对应代码">本章对应代码<a class="anchor" href="#本章对应代码" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="appendix-code.html">完整离线检索与纠错实验入口</a></li>
+<li><a href="appendix-code.html">固定 6 题多配置对照脚本</a></li>
+<li><a href="appendix-code.html">20 项核心不变量单元测试</a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="14-production.html"><small>上一章</small><strong>上线边界：权限、快照、停服与故障不能靠提示词兜底</strong></a><a class="next" href="appendix-map.html"><small>下一章</small><strong>附录 A：上游 47 份 Notebook 与 21 份脚本阅读地图</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-opening.html"><span>00</span>开篇：文档都在库里，助手为什么还会答错</a><a href="../chapters/01-requirements.html"><span>01</span>需求篇：先框住哪些问题必须答对</a><a href="../chapters/02-architecture.html"><span>02</span>技术方案：从需求推导一条可追踪的链路</a><a href="../chapters/03-ingestion.html"><span>03</span>资料入库：先把文档读对，再谈检索</a><a href="../chapters/04-chunking.html"><span>04</span>文档切分：验签和幂等，为什么总只召回一半</a><a href="../chapters/05-baseline.html"><span>05</span>基础检索：先交付一条能复现的离线链路</a><a href="../chapters/06-fusion-reranking.html"><span>06</span>混合检索与重排：把不同候选放进同一张账</a><a href="../chapters/07-query-enhancement.html"><span>07</span>查询增强：用户不一定会说出幂等这个词</a><a href="../chapters/08-context.html"><span>08</span>证据组装：检索到了，还要让模型完整读到</a><a href="../chapters/09-evaluation.html"><span>09</span>评估：两条高分结果，未必够答完一个问题</a><a href="../chapters/10-corrective.html"><span>10</span>纠错检索：找不到以后，系统走哪一条路</a><a href="../chapters/11-hierarchy-memory.html"><span>11</span>层次索引与记忆：问题开始面向整份资料</a><a href="../chapters/12-graph.html"><span>12</span>图谱检索：从模块一路查到技术负责人</a><a href="../chapters/13-multimodal-agent.html"><span>13</span>多模态与 Agent：处理图表文档与多步任务</a><a href="../chapters/14-production.html"><span>14</span>上线边界：权限、快照、停服与故障不能靠提示词兜底</a><a href="../chapters/15-wrap-up.html"><span>15</span>完结篇：用一次请求串起整套设计</a><a href="../chapters/appendix-map.html"><span>A</span>附录 A：上游 47 份 Notebook 与 21 份脚本阅读地图</a><a href="../chapters/appendix-sources.html"><span>B</span>附录 B：源码快照、论文范围、术语与研究边界</a><a href="../chapters/appendix-code.html"><span>C</span>附录 C：配套教学实现与样例数据</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · RAG_Techniques 2fd7bd0ffe5b（2026-11-02）· 核对 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

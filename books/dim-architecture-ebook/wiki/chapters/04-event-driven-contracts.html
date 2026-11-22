@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从时间总线、分支路由、rutis 跨语言数据面到权限与压缩重放，源码级解剖 arcships/dim Agent v4 架构"><meta name="author" content="独立源码研究">
+<title>事件驱动契约：Dispatcher、before 与重启重建 · Dim 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">D</span><span>Dim 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 04</div><div class="rail-title">事件驱动契约：Dispatcher、before 与重启重建</div><ol><li><a href="#dispatcher-一条分支唯一的顺序读者">Dispatcher：一条分支唯一的顺序读者</a></li><li><a href="#九条时间线扩展规则的核心约束">九条时间线扩展规则的核心约束</a></li><li><a href="#before-钩子-受限的可信变形器">before 钩子：受限的可信变形器</a></li><li><a href="#副作用不重放与-consume-重建协议">副作用不重放与 consume 重建协议</a></li><li><a href="#时间线事实-vs-总线通知-什么该落盘">时间线事实 vs 总线通知：什么该落盘</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 04 章</div><h1>事件驱动契约：Dispatcher、before 与重启重建</h1><div class="chapter-meta">arcships/dim v0.1.0-alpha.27 · 快照 2026-11-22 · 约 16 分钟</div></header><div class="prose"><p>把事件写进 SQLite 只是前半场。如果订阅者各自开后台线程轮询数据库、或者在处理回调里同步等一个耗时 30 秒的模型请求，整个分支的顺序语义就会瞬间瓦解。Dim 用四个机制把消费端锁死在可预测的轨道上：单分支 <code>Dispatcher</code>、提交锁内的 <code>before</code> 同步变形链、<code>consume</code> 重建交接协议，以及不经时间线的轻量广播通道 <code>SessionBroadcast</code>。</p>
+<h2 id="dispatcher-一条分支唯一的顺序读者">Dispatcher：一条分支唯一的顺序读者<a class="anchor" href="#dispatcher-一条分支唯一的顺序读者" aria-label="链接到本节">#</a></h2>
+<p>在 <code>crates/dim-agent-runtime/src/core/dispatcher.rs</code> 里，<code>Dispatcher</code> 挂载在每条分支的私有总线通道 <code>dim/timeline/{instance}/committed</code> 上。每当 <code>Timeline</code> 推进发布水位，热窗口里的已发布事件按 <code>sequence</code> 从小到大送进 <code>Dispatcher</code>，再逐条匹配订阅者注册的键模式：精确键（如 <code>approval/request</code>）、域通配（如 <code>approval/*</code>）或全局通配（<code>*</code>）。</p>
+<p>事件处理器（handler）有两条不能碰的红线：</p>
+<p>第一，<strong>handler 绝对不能等慢操作</strong>。网络请求、工具执行、磁盘冷读、子分支构建都不允许卡在 handler 里。<code>docs/architecture/rust-agent/event-driven-flows.md</code> 规定得很清楚：能力在 handler 返回之前，把异步工作登记到自己持有的任务表里就立刻返回。等异步任务将来跑完，再通过 <code>Timeline::append</code> 把结果事实写到时间线尾部，交给后面的分发轮次消费。</p>
+<p>第二，<strong>错误与 panic 必须归属到具体订阅者</strong>。<code>SubscriptionListener::on_event</code> 用 <code>catch_unwind</code> 包住同步启动和异步 future 轮询。一旦某个订阅者返回 <code>Err</code> 或发生 panic，Dispatcher 会把故障归因到该订阅者名称，通过 <code>Dispatcher::fail</code> 终止该分支的后续派发并上报，而不是悄无声息地跳过一条事实继续往下跑。</p>
+<h2 id="九条时间线扩展规则的核心约束">九条时间线扩展规则的核心约束<a class="anchor" href="#九条时间线扩展规则的核心约束" aria-label="链接到本节">#</a></h2>
+<p><code>docs/architecture/rust-agent/principles.md</code> 第 4 节写下了通过时间线扩展行为的九条规则，其中四条直接决定了业务代码的写法：</p>
+<p><strong>改别人的状态，只能写指令事件。</strong> 调用方永远不直接调同步方法去修改另一个模块的内存状态，也不替状态所有者写结果事件。审批是最典型的例子：外部客户端发来决定后，经入口写入 <code>approval/respond</code>；<code>Approval</code> 状态机按序号读到指令，只有第一条对未决请求有效的指令会被采纳，后面抢跑的指令直接忽略，不需要为“什么都没发生”再多写一条无用事件。输入撤回同理：入口写 <code>input/withdraw</code>，<code>InputQueue</code> 只有在还握着这条未采用输入时才写 <code>input/deleted</code>。</p>
+<p><strong>交接一旦完成，原模块就不再插手。</strong> 当 <code>InputQueue</code> 写出 <code>input/applied</code>，这条输入的所有权就正式移交给了 <code>Loop</code>。交接之前可以用 <code>input/withdraw</code> 撤回；交接之后想停下来，只能走新所有者的指令 <code>stop/interrupt</code>。</p>
+<p><strong>原子批次一起落盘，但消费端按条可见。</strong> 需要同时生效的事实（例如 <code>Prompt</code> 变更、<code>input/applied</code> 与 <code>context/configured</code>）由产生方打包进一次 <code>append_batch_registered</code> 提交，起决定作用的事件放在批次最后。订阅者看不到批次边界，只按序号一条条收，需要校验批次终点的地方（如历史分页、分叉切点）统一通过 <code>Timeline::batch_end</code> 查询存储记录的批次元数据。</p>
+<p><strong>写入前复核由状态机自负其责，且只看已消费状态。</strong> 状态机先做决定、稍后才提交写入时，不能去偷看时间线尾部尚未被自己消费的事件，只能拿自身已消费的状态复核。即便生产方在消费中断前写出了迟到请求，消费方按序处理时也会依据自己已经消费到的 <code>stop/interrupt</code> 把属于该 turn 的请求取消掉。</p>
+<h2 id="before-钩子-受限的可信变形器"><code>before</code> 钩子：受限的可信变形器<a class="anchor" href="#before-钩子-受限的可信变形器" aria-label="链接到本节">#</a></h2>
+<p>有时宿主需要在事件真正落盘前改写草稿，比如注入元数据、重写测试用的候选载荷，或者统一规范化字段。Dim 没有让外部去篡改已提交历史，而是在 <code>Timeline</code> 的提交锁内部提供了一条同步瀑布链 <code>BeforeCommit</code>（<code>crates/dim-agent-runtime/src/core/timeline.rs</code>）。</p>
+<p><code>before</code> 的边界被卡得非常窄：</p>
+<ul>
+<li>它只在写入前同步变换当前 <code>EventDraft</code>，不能改写已经提交的历史，也不能阻止写入或等待任何异步 I/O。</li>
+<li>因为运行在分支提交锁内部，任何跨进程 RPC 都可能把整条分支锁死，所以只有进程内的 Rust 插件可以注册 <code>before</code>，TypeScript 和 Python 插件无法注册（ADR 001）。</li>
+<li>每一个钩子的输入和变形结果都会被记录成 <code>TraceStep</code>，挂在 <code>TimelineTrace</code> 里随事件一起持久化，通过 <code>dimcode export</code> 可以完整导出审计轨迹。</li>
+<li>一旦链上任意一个 <code>before</code> 钩子报错或 panic，整条链直接回退，提交<strong>最初的原始草稿</strong>，且不会让分支提交锁中毒。</li>
+<li>产生方登记状态和后续执行，一律以 <code>before</code> 变形后最终提交的事件为准，绝不能继续拿着提交前的候选变量干活，也不做二次校验去反对可信变形。</li>
+</ul>
+<h2 id="副作用不重放与-consume-重建协议">副作用不重放与 <code>consume</code> 重建协议<a class="anchor" href="#副作用不重放与-consume-重建协议" aria-label="链接到本节">#</a></h2>
+<p>在 Dim 的世界观里，插件热重载和进程崩溃重启对新一代状态机来说是同一件事，走的也是同一套交接协议：<code>Dispatcher::consume</code>（<code>docs/design/plugin-contract.md</code> 第 5.2 节）。</p>
+<p>普通写法很容易掉进漏事件或重复事件的坑：如果先读历史再订阅，读历史期间新到达的事件会漏掉；如果先订阅再读历史，重叠区间的事件会被处理两遍。<code>Dispatcher::consume</code> 用一个极简的暂存闸门堵死了这个窗口：</p>
+<ol>
+<li>先向 Dispatcher 注册监听，进入 <code>holding = true</code> 状态，期间到达的实时匹配事件全部暂存进 <code>Held.events</code> 列表。</li>
+<li>执行该能力提供的 <code>rebuild</code> 回调。回调在分支 <code>Timeline</code> 上固定一个查询截点 <code>cutoff</code>（内部重建可包含已提交未发布的尾部），只查询自己折叠状态所需的事件字段，按历史恢复内存视图，并把上一代留在半路的在途操作结算成终态（绝不重新发起外部工具或模型请求），最后把 <code>cutoff</code> 返回给 Dispatcher。</li>
+<li>Dispatcher 把 <code>holding</code> 切回 <code>false</code>，只把 <code>Held.events</code> 里序号<strong>严格大于 <code>cutoff</code></strong> 的事件按序喂给实时 handler，之后无缝衔接后续实时事件。</li>
+</ol>
+<p>每条事件在重建和实时两个阶段合起来恰好处理一次，既不丢、也不重。</p>
+<p>这套要求同时划清了内存状态的合法性边界（<code>time-bus.md</code> 第 3 条）：任何跨工作、跨代使用的业务状态，都必须能由“时间线历史 + 重读外部配置状态”恢复到等价。唯独已结算的在途 I/O 局部控制状态是例外，比如单次模型调用失败后的重试计数、退避等待预算、凭据刷新标记，它们只属于当前这一次调用，重载时原调用直接按失败或取消结算，不会把重试计数带进下一项工作。</p>
+<h2 id="时间线事实-vs-总线通知-什么该落盘">时间线事实 vs 总线通知：什么该落盘<a class="anchor" href="#时间线事实-vs-总线通知-什么该落盘" aria-label="链接到本节">#</a></h2>
+<p>不是所有消息都值得占用时间线序号。<code>principles.md</code> 第 4 节第 9 条定了一个很硬的筛选条件：只有影响后续业务决定的事实才进 Timeline。</p>
+<p>给界面展示的实时进度、进程级状态变化（比如会话标题更新、Provider 目录变更、设置修订）不进 Timeline，而是走 <code>rutis</code> 根上的扁平事件总线。每条会话有一条由 <code>SessionBroadcast</code> 插件维护的命名通道 <code>session/{sessionId}</code>，负责把本会话各分支已经分发的事件零拷贝（<code>Arc&lt;AgentEvent&gt;</code>）广播给订阅方，同时转发进程级所有者发出的 <code>SessionNotice</code>、宿主观察屏障 <code>Fence { recipient, token }</code> 以及卸载时的 <code>Closed</code>。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>传输通道</th>
+<th>持久化与重放</th>
+<th>顺序保证</th>
+<th>典型用途</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>分支 Timeline + Dispatcher</td>
+<td>SQLite WAL 持久化，按 <code>consume</code> 重建</td>
+<td>分支内严格单调 <code>sequence</code></td>
+<td>输入、模型调用、工具结果、审批、分支创建、压缩</td>
+</tr>
+<tr>
+<td><code>session/{sessionId}</code> 广播</td>
+<td>不持久化、不补发、无订阅即丢弃</td>
+<td>同分支与分发序一致，跨分支按发出序</td>
+<td>TUI / Web / ACP 客户端实时流、UI 通知、交付屏障</td>
+</tr>
+<tr>
+<td><code>settings/{source}</code> 等总线事件</td>
+<td>不持久化、不重放</td>
+<td>单事件名内按发出序启动监听</td>
+<td>配置变更提醒、<code>skills/catalog</code>、<code>agent/session-deleted</code></td>
+</tr>
+</tbody></table></div>
+<p>因为总线事件不重放，任何消费总线事件的部件（比如 <code>SessionTitle</code> 监听 <code>input/applied</code>）都必须具备从 Timeline 或所有者状态重新读取的能力，这样漏掉一次总线事件顶多延迟动作，不会破坏状态一致性。</p>
+<p>把单条分支的时间线和分发契约夯实之后，下一步就能顺理成章地看一条会话如何长出一整棵分支树。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="03-time-bus.html"><small>上一章</small><strong>时间总线与只认序号的事实流</strong></a><a class="next" href="05-timeline-branches.html"><small>下一章</small><strong>分支时间线：默认分支、父子通信与配额路由</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言与全景导读</a><a href="../chapters/01-why-not-a-chat-loop.html"><span>01</span>为什么不用普通对话循环</a><a href="../chapters/02-workspace-and-scopes.html"><span>02</span>28 个 Crate 与三层作用域</a><a href="../chapters/03-time-bus.html"><span>03</span>时间总线与只认序号的事实流</a><a href="../chapters/04-event-driven-contracts.html"><span>04</span>事件驱动契约：Dispatcher、before 与重启重建</a><a href="../chapters/05-timeline-branches.html"><span>05</span>分支时间线：默认分支、父子通信与配额路由</a><a href="../chapters/06-rutis-and-data-faces.html"><span>06</span>rutis 插件引擎与跨语言数据面</a><a href="../chapters/07-self-evolving-plugins.html"><span>07</span>在会话里给自己写插件与热重载自演化</a><a href="../chapters/08-context-compaction-and-replay.html"><span>08</span>上下文投影、压缩与历史渲染边界</a><a href="../chapters/09-detached-work-and-permissions.html"><span>09</span>脱离工作、工具审批与权限边界</a><a href="../chapters/10-codemode-and-aimux.html"><span>10</span>Code Mode 与 Aimux 模型宿主</a><a href="../chapters/11-server-cli-web-and-protocols.html"><span>11</span>App Server、CLI、Web 与 ACP / MCP 网关</a><a href="../chapters/12-tradeoffs-and-boundaries.html"><span>12</span>架构权衡与工程边界</a><a href="../chapters/13-teaching-model.html"><span>13</span>零依赖 Python 教学模型与 18 个单元测试</a><a href="../chapters/appendix-sources.html"><span>A</span>附录 A：源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · arcships/dim v0.1.0-alpha.27 · 快照 88a3df366940 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

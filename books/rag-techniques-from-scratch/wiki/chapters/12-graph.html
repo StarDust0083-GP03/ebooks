@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从文档解析、切分、混合检索到纠错、图谱、评估与上线边界的 RAG 工程实战指南"><meta name="author" content="独立源码研究">
+<title>图谱检索：从模块一路查到技术负责人 · RAG 工程实战</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">RAG</span><span>RAG 工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 12</div><div class="rail-title">图谱检索：从模块一路查到技术负责人</div><ol><li><a href="#先试受控两步检索-还是直接建图">先试受控两步检索，还是直接建图</a></li><li><a href="#图里的每条边都要带方向-出处与权限">图里的每条边都要带方向、出处与权限</a></li><li><a href="#上游五条-graph-rag-路线定位各不相同">上游五条 Graph RAG 路线定位各不相同</a></li><li><a href="#读-lightrag-示例时看清简化边界">读 LightRAG 示例时看清简化边界</a></li><li><a href="#图谱回归测试要验收整条证据路径">图谱回归测试要验收整条证据路径</a></li><li><a href="#本章对应资料">本章对应资料</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 12 章</div><h1>图谱检索：从模块一路查到技术负责人</h1><div class="chapter-meta">RAG_Techniques 快照 2026-11-02 · 约 10 分钟</div></header><div class="prose"><p>线上报警响了，研发问：“支付回调模块出问题找谁评审？”打开我们的教学语料看两条记录：<code>owner-v1:0</code> 写着“支付回调模块由结算组维护”，<code>team-v1:0</code> 写着“结算组的技术负责人是陈禾，负责评审与故障协调”。第二条里根本没出现“回调”两个字。去掉题目里的提示词后，单次检索很容易只拉回 <code>owner-v1:0</code>，到“结算组”就断了线。这里缺的是一条跨文档实体连接。</p>
+<h2 id="先试受控两步检索-还是直接建图">先试受控两步检索，还是直接建图<a class="anchor" href="#先试受控两步检索-还是直接建图" aria-label="链接到本节">#</a></h2>
+<p>遇到两跳问题，最省力的做法通常是显式写一条两步查询，不必立刻采购图数据库：先按“支付回调模块 维护团队”查到“结算组”，再把“结算组 技术负责人”送进第二次检索拿到 <code>team-v1:0</code>。如果业务里的跨文档路径就固定那么两三条（比如模块 → 团队 → 负责人），受控两步检索逻辑透明、不用维护离线抽取流水线，维护成本低得多。</p>
+<p>只有当实体关系网很密、大量问题反复沿着不同关系链跳转（比如服务依赖、接口调用、人员职责、制度引用交织在一起），把高频连接提前沉淀成图结构才划算：</p>
+<pre><code class="language-text">支付回调模块 ──维护团队──→ 结算组 ──技术负责人──→ 陈禾
+  来源 owner-v1:0              来源 team-v1:0
+</code></pre>
+<h2 id="图里的每条边都要带方向-出处与权限">图里的每条边都要带方向、出处与权限<a class="anchor" href="#图里的每条边都要带方向-出处与权限" aria-label="链接到本节">#</a></h2>
+<p>真正把知识图谱用稳，难点不在画几个节点和连线，而在四项数据纪律：</p>
+<ul>
+<li>边必须有明确方向和关系语义。“陈禾负责结算组”反过来不成立，“维护支付回调模块”也不等于“有权审批生产退款”。<code>team-v1:0</code> 特意写明“此记录不代表批准任何真实退款”，就是为了防止下游把职责关系擅自升格成操作授权。</li>
+<li>每条边必须绑定原文出处（chunk ID 与版本）。只把三元组塞进模型，用户没法核对这条关系是原文真写的，还是抽取模型自己脑补的。</li>
+<li>同名实体必须靠稳定业务标识消歧。简单把字符串转小写去空格，根本分不清两个都叫“结算组”的不同事业部团队，合并错节点会把整条链路带沟里。</li>
+<li>图遍历必须在当前用户可见的子图上执行。如果中间节点或边来自某份受限文档，不仅不能返回原文，连节点的存在和度计数都不该暴露给无权用户。另外，组织架构会变动，查“现在归谁管”和查“去年故障时归谁管”需要按生效时间切视图。</li>
+</ul>
+<h2 id="上游五条-graph-rag-路线定位各不相同">上游五条 Graph RAG 路线定位各不相同<a class="anchor" href="#上游五条-graph-rag-路线定位各不相同" aria-label="链接到本节">#</a></h2>
+<p>很多人嘴里都说“上 Graph RAG”，实际指向的是完全不同的架构。核对上游仓库的 5 份相关 Notebook，就能分清它们各自解什么题：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>上游 Notebook</th>
+<th>技术侧重</th>
+<th>适合哪类问题</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>graph_rag.ipynb</code></td>
+<td>通用实体关系抽取配合文本检索</td>
+<td>局部多跳关系查找</td>
+</tr>
+<tr>
+<td><code>graphrag_with_milvus_vectordb.ipynb</code></td>
+<td>文本块与关系三元组分集合入库并做关系重排</td>
+<td>已有向量库，希望补充三元组检索</td>
+</tr>
+<tr>
+<td><code>graph_rag_local_attribution.ipynb</code></td>
+<td>本地模型加 NetworkX，强调句级出处归因</td>
+<td>数据不能出内网且重视逐句溯源</td>
+</tr>
+<tr>
+<td><code>Microsoft_GraphRag.ipynb</code></td>
+<td>实体图聚类 + 社区摘要 + 局部答案再全局汇总（arXiv:2404.16130）</td>
+<td>面向全语料的全局归纳题，而非简单两跳查询</td>
+</tr>
+<tr>
+<td><code>light_rag.ipynb</code></td>
+<td>低层具体实体 + 高层主题关系双层检索（arXiv:2410.05779）</td>
+<td>兼顾局部细节与高层关联的轻量方案</td>
+</tr>
+</tbody></table></div>
+<p>尤其要注意 Microsoft GraphRAG 的定位：它通过社区检测和社区摘要来回答“整个语料库反映出哪些核心主题”这类全局问题，构建与更新摘要的 LLM 账单很可观，拿它来替代一条简单的两跳负责人查询属于高射炮打蚊子。</p>
+<h2 id="读-lightrag-示例时看清简化边界">读 LightRAG 示例时看清简化边界<a class="anchor" href="#读-lightrag-示例时看清简化边界" aria-label="链接到本节">#</a></h2>
+<p>静态核对上游 <code>all_rag_techniques/light_rag.ipynb</code>（提交 <code>2fd7bd0f</code>），它用 NetworkX 存图，并建了实体和关系两套 FAISS 索引来演示低层/高层双层召回，读起来很直观。但它为了教学做了几处明显简化：使用了无向图、实体主键主要靠名称去空格转小写拼接，测试语料片段也做了截取。</p>
+<p>把这套原型搬进真实业务前，需要自己补齐有向关系、实体消歧、多租户权限过滤和文档删除后的边清理机制。同时必须保留纯文本回退链路：LLM 抽三元组难免漏抽，图里查不到边只说明没抽出来，绝不能直接推导成“文档里没有这项关系”。</p>
+<h2 id="图谱回归测试要验收整条证据路径">图谱回归测试要验收整条证据路径<a class="anchor" href="#图谱回归测试要验收整条证据路径" aria-label="链接到本节">#</a></h2>
+<p>评估跨文档负责人题时，不能只看最终答案里有没有出现“陈禾”两个字，必须要求交付证据里同时包含 <code>owner-v1:0</code> 和 <code>team-v1:0</code>，并且把起点实体、经过的边和每条边的原文出处一起记进日志。这样才能拦住模型凭记忆猜中人名，或者误经过同名团队撞巧答对的假阳性。专项回归里还要专门塞入三类破坏用例：负责人已换任的旧路径、经过无权限中间节点的越权路径、以及颠倒主宾语的反向关系提问。</p>
+<h2 id="本章对应资料">本章对应资料<a class="anchor" href="#本章对应资料" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="appendix-code.html">跨文档负责人样例（<code>owner-v1:0</code>、<code>team-v1:0</code>）</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/graph_rag.ipynb">上游通用 Graph RAG</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/graphrag_with_milvus_vectordb.ipynb">上游 Milvus Graph RAG</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/graph_rag_local_attribution.ipynb">上游本地句级归因 Graph RAG</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/Microsoft_GraphRag.ipynb">上游 Microsoft GraphRAG</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/light_rag.ipynb">上游 LightRAG</a></li>
+<li><a href="https://arxiv.org/abs/2404.16130">GraphRAG 论文（arXiv:2404.16130）</a></li>
+<li><a href="https://arxiv.org/abs/2410.05779">LightRAG 论文（arXiv:2410.05779）</a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="11-hierarchy-memory.html"><small>上一章</small><strong>层次索引与记忆：问题开始面向整份资料</strong></a><a class="next" href="13-multimodal-agent.html"><small>下一章</small><strong>多模态与 Agent：处理图表文档与多步任务</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-opening.html"><span>00</span>开篇：文档都在库里，助手为什么还会答错</a><a href="../chapters/01-requirements.html"><span>01</span>需求篇：先框住哪些问题必须答对</a><a href="../chapters/02-architecture.html"><span>02</span>技术方案：从需求推导一条可追踪的链路</a><a href="../chapters/03-ingestion.html"><span>03</span>资料入库：先把文档读对，再谈检索</a><a href="../chapters/04-chunking.html"><span>04</span>文档切分：验签和幂等，为什么总只召回一半</a><a href="../chapters/05-baseline.html"><span>05</span>基础检索：先交付一条能复现的离线链路</a><a href="../chapters/06-fusion-reranking.html"><span>06</span>混合检索与重排：把不同候选放进同一张账</a><a href="../chapters/07-query-enhancement.html"><span>07</span>查询增强：用户不一定会说出幂等这个词</a><a href="../chapters/08-context.html"><span>08</span>证据组装：检索到了，还要让模型完整读到</a><a href="../chapters/09-evaluation.html"><span>09</span>评估：两条高分结果，未必够答完一个问题</a><a href="../chapters/10-corrective.html"><span>10</span>纠错检索：找不到以后，系统走哪一条路</a><a href="../chapters/11-hierarchy-memory.html"><span>11</span>层次索引与记忆：问题开始面向整份资料</a><a href="../chapters/12-graph.html"><span>12</span>图谱检索：从模块一路查到技术负责人</a><a href="../chapters/13-multimodal-agent.html"><span>13</span>多模态与 Agent：处理图表文档与多步任务</a><a href="../chapters/14-production.html"><span>14</span>上线边界：权限、快照、停服与故障不能靠提示词兜底</a><a href="../chapters/15-wrap-up.html"><span>15</span>完结篇：用一次请求串起整套设计</a><a href="../chapters/appendix-map.html"><span>A</span>附录 A：上游 47 份 Notebook 与 21 份脚本阅读地图</a><a href="../chapters/appendix-sources.html"><span>B</span>附录 B：源码快照、论文范围、术语与研究边界</a><a href="../chapters/appendix-code.html"><span>C</span>附录 C：配套教学实现与样例数据</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · RAG_Techniques 2fd7bd0ffe5b（2026-11-02）· 核对 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

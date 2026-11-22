@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从需求、配置、角色到 Hook 与验收，解剖 Claude Code Game Studios 的工作流"><meta name="author" content="独立源码研究">
+<title>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场 · Claude Code 游戏工作室</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">G</span><span>Claude Code 游戏工作室</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 05</div><div class="rail-title">角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</div><ol><li><a href="#先破个执念-不是-49-个常驻-ai-员工">先破个执念：不是 49 个常驻 AI 员工</a></li><li><a href="#一个角色文件里藏着哪四个硬参数">一个角色文件里藏着哪四个硬参数</a></li><li><a href="#三层架构与七条协作规矩">三层架构与七条协作规矩</a></li><li><a href="#两个很容易撞墙的工程细节">两个很容易撞墙的工程细节</a></li><li><a href="#v1-3-0-的反思-四个技能把子代理-折-回来了">v1.3.0 的反思：四个技能把子代理“折”回来了</a></li><li><a href="#源码里一处真实存在的规则打架">源码里一处真实存在的规则打架</a></li><li><a href="#常见误解">常见误解</a></li><li><a href="#练习">练习</a></li><li><a href="#答案提示">答案提示</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 05 章</div><h1>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</h1><div class="chapter-meta">CCGS v1.3.0 快照 2026-11-09 · 约 18 分钟</div></header><div class="prose"><h2 id="先破个执念-不是-49-个常驻-ai-员工">先破个执念：不是 49 个常驻 AI 员工<a class="anchor" href="#先破个执念-不是-49-个常驻-ai-员工" aria-label="链接到本节">#</a></h2>
+<p>打开 <code>.claude/agents/</code>，确实整整齐齐躺着 49 个 Markdown 文件。很多人第一眼会脑补出一幅热闹画面：一敲命令，创意总监、主程、策划、美术、QA 排着队在后台开会。</p>
+<p>真跑起来不是那么回事。**这 49 个文件根本不是 49 个进程，只是 49 份按需塞给子代理的“岗位说明书”。**跑一次 <code>/dev-story</code>，通常只会拉起 1 个程序员 + 1 个引擎专家；走 v1.3.0 的 <code>/prototype</code> 主干道，默认干脆就在你主会话里一把写完，一个子代理都不派；甚至在 v1.3.0 里，连 <code>/design-system</code>、<code>/art-bible</code>、<code>/architecture-review</code>、<code>/code-review</code> 这四个原本要派一堆专家的技能，都把大部分子代理“折叠”回主会话用透镜文档（<code>references/lens-*.md</code>）自己写了。</p>
+<p>明白这一点，再来看这 49 份文件到底是怎么设计的，才不会被数字唬住。</p>
+<h2 id="一个角色文件里藏着哪四个硬参数">一个角色文件里藏着哪四个硬参数<a class="anchor" href="#一个角色文件里藏着哪四个硬参数" aria-label="链接到本节">#</a></h2>
+<p>随便翻开 <code>.claude/agents/gameplay-programmer.md</code>，开头几行 YAML 前置元数据决定了一切：</p>
+<pre><code class="language-yaml">---
+name: gameplay-programmer
+description: &quot;Implements designed mechanics as code ...&quot;
+tools: Read, Glob, Grep, Write, Edit, Bash
+model: inherit
+maxTurns: 20
+---
+</code></pre>
+<p>这四个字段比下面几百行提示词更实在：</p>
+<ul>
+<li><code>name</code> / <code>description</code>：告诉调度者“这活什么时候归它干”。</li>
+<li><code>tools</code>：给子代理划的工具白名单。</li>
+<li><code>model</code>：指定跑在哪个模型档位上。</li>
+<li><code>maxTurns</code>：死循环保险丝，防子代理钻牛角尖烧穿账单。</li>
+</ul>
+<p>把 49 个文件全部盘一遍，分布非常克制：</p>
+<ul>
+<li><strong>模型档位</strong>：<code>inherit</code>（跟随主会话模型）占了 30 个，<code>sonnet</code> 16 个，<code>opus</code> 只有 3 个——正好就是第一层的三位总监（<code>creative-director</code>、<code>technical-director</code>、<code>producer</code>）。</li>
+<li><strong>回合上限</strong>：全部 49 个都设了 <code>maxTurns</code>，落在 10 到 30 之间，多数是 20。</li>
+<li><strong>工具组合</strong>：没有五花八门的权限，拢共就那几种标准配置——能写代码跑命令的拿 <code>Read, Glob, Grep, Write, Edit, Bash</code>；纯写文档的砍掉 <code>Bash</code>；查资料的额外带 <code>WebSearch</code>；极少数管调度的才拿 <code>Agent</code> 工具去派生下级。</li>
+</ul>
+<p>另外注意 v1.3.0 的一个实操小改：<code>release-manager</code> 预加载的技能从旧名 <code>changelog</code> 同步改成了 <code>write-changelog</code>；其余 38 个角色文件把以前“大喊大叫式的禁令”改成了写明原因的平实措辞，且早在 v1.2.0 就修掉了“让子代理原地等用户点 yes”的死胡同（子代理没法直接弹窗问人，现在统一改成带着草稿和问题结束回合，交回给父技能去问你）。</p>
+<h2 id="三层架构与七条协作规矩">三层架构与七条协作规矩<a class="anchor" href="#三层架构与七条协作规矩" aria-label="链接到本节">#</a></h2>
+<p>49 个角色按真实游戏工作室切成了三层：</p>
+<ol>
+<li><strong>总监层（3 个）</strong>：<code>creative-director</code> 盯玩法愿景，<code>technical-director</code> 盯架构底线，<code>producer</code> 盯排期和范围。</li>
+<li><strong>部门主管层（8 个）</strong>：游戏设计、主程序、美术、音频、叙事、QA、发布、本地化。</li>
+<li><strong>专家层（38 个）</strong>：除了玩法、引擎、AI、网络、工具、UI 程序员和各类策划/美术/QA/运维专家外，还包括三大重引擎的专属小队——Godot（1 主 4 子）、Unity（1 主 4 子）、Unreal（1 主 4 子）。注意 <strong>Web 引擎没有单独的引擎专家角色</strong>，遇到 Web 项目的引擎检查，直接由 <code>lead-programmer</code> 对照 <code>docs/engine-reference/web/</code> 顶上。</li>
+</ol>
+<p>光有人不够，还得立上下级规矩。<code>.claude/docs/coordination-rules.md</code> 写了 7 条：</p>
+<ol>
+<li><strong>垂直委派</strong>：总监派主管，主管派专家，复杂拍板不跳级。</li>
+<li><strong>水平咨询</strong>：平级之间可以互相请教，但不能越权替对方做决定。</li>
+<li><strong>冲突升级</strong>：意见打架找共同上级；实在没有，玩法问题归创意总监，技术问题归技术总监。</li>
+<li><strong>变更传播</strong>：跨部门大改动找制作人统一协调。</li>
+<li><strong>严禁单方面越界改文件</strong>：没拿到明确委派，不许动别人目录里的东西。</li>
+<li><strong>大文档按节读</strong>：派活时指明需要哪一节，子代理先 Grep 标题再按行号读（整篇硬吞超 40 KB 会被 <code>validate-read.sh</code> 直接拦停）。</li>
+<li><strong>绝不替用户往上游提 Issue/PR</strong>：就算踩到 Godot 或 Unity 插件的真 bug，也只给你起草好报告草稿，由你自己去提交，绝不冒充用户对外发声。</li>
+</ol>
+<h2 id="两个很容易撞墙的工程细节">两个很容易撞墙的工程细节<a class="anchor" href="#两个很容易撞墙的工程细节" aria-label="链接到本节">#</a></h2>
+<h3 id="细节一-为什么不是-每次写文件都弹窗问你">细节一：为什么不是“每次写文件都弹窗问你”<a class="anchor" href="#细节一-为什么不是-每次写文件都弹窗问你" aria-label="链接到本节">#</a></h3>
+<p>按协作原则，Agent 写任何文件前都得问一句“May I write this to [path]?”。如果这条死板执行，一次派出去 5 个子代理写分析报告，你屏幕会被 5 次确认弹窗轰炸到崩溃。</p>
+<p>所以角色文件里都写死了一个<strong>带边界的豁免</strong>：只要子代理是由上层编排技能派生的，并且简报里<strong>点名了新文件的目标路径</strong>，子代理就可以直接落盘，不用再弹窗。但豁免卡得很死：</p>
+<ul>
+<li>只允许建在 <code>production/</code>、<code>docs/</code>、<code>tests/</code> 下的<strong>新文件</strong>；</li>
+<li>绝不能覆盖或修改已有源码和配置；</li>
+<li>路径必须由上层技能指定，子代理自己临时想出来的路径不算；</li>
+<li>如果是你直接叫这个角色干活，或者上层没点名路径，照样得先问你。</li>
+</ul>
+<p>（<code>active.md</code> 追加和 Agent 记忆目录也在免问豁免列表里。）这相当于把审批粒度从“每个临时报告文件”打包成了“每个工作阶段”。</p>
+<h3 id="细节二-别把-model-当成省钱开关">细节二：别把 <code>model:</code> 当成省钱开关<a class="anchor" href="#细节二-别把-model-当成省钱开关" aria-label="链接到本节">#</a></h3>
+<p><code>.claude/docs/model-tiers.md</code>（v1.3.0 更新记录了 Sonnet 5.5 / Haiku 5.5 映射）里特意戳破了一个常见误会：<strong>技能的 <code>model:</code> 和角色的 <code>model:</code> 生效条件完全不同。</strong></p>
+<ul>
+<li><strong>技能的 <code>model:</code></strong>：只有当你<strong>亲手敲 <code>/skill-name</code></strong> 且没开 auto 模式（或目标档位是 sonnet/opus）时才切模型；如果是模型自己通过 <code>Skill</code> 工具触发的技能，直接沿用当前主会话模型，压根不会降档。所以别指望在 Sonnet 会话里让模型自动调一个 <code>haiku</code> 技能来省钱。</li>
+<li><strong>角色的 <code>model:</code></strong>：子代理跑在独立上下文里，它的 <code>model:</code> 会真生效。这就是为什么 30 个角色故意写 <code>inherit</code>——跟着你主会话走，既不用你逐个维护版本号，也防止你在低成本会话里不知不觉被拉去跑 Opus。</li>
+</ul>
+<h2 id="v1-3-0-的反思-四个技能把子代理-折-回来了">v1.3.0 的反思：四个技能把子代理“折”回来了<a class="anchor" href="#v1-3-0-的反思-四个技能把子代理-折-回来了" aria-label="链接到本节">#</a></h2>
+<p>如果你去翻 v1.3.0 的 CHANGELOG，会发现一个特别务实的逆向演进——<strong>四个大技能主动少派子代理了</strong>：</p>
+<ul>
+<li><code>/design-system</code>：以前要一口气拉起 8 个专家子代理各写各的，现在改成主会话自己依次戴上不同的“专家透镜”（读 <code>references/lens-*.md</code>）把各章节写完。</li>
+<li><code>/art-bible</code>：同样折叠回主会话，唯独第 1–4 节和第 9 节继续派给 <code>art-director</code>（因为作者实测这几节还是独立角色写得更好）。</li>
+<li><code>/architecture-review</code>：不再单独拉引擎专家子代理，主会话自己对照引擎参考文档过一遍。</li>
+<li><code>/code-review</code>：只留 1 个引擎助手，可测试性检查改由主会话自己扛。</li>
+</ul>
+<p>49 个角色文件都还在，但作者用实际行动证明了一件事：<strong>多 Agent 不是越拆越细就越厉害</strong>——省掉无谓的上下文搬运和重复读文件，把独立子代理留给真正需要隔离视野或实测效果明显更好的环节，才是真工程。</p>
+<h2 id="源码里一处真实存在的规则打架">源码里一处真实存在的规则打架<a class="anchor" href="#源码里一处真实存在的规则打架" aria-label="链接到本节">#</a></h2>
+<p>静下心对比文件，你还能抓到一处有意思的内部张力：<code>.claude/agents/gameplay-programmer.md</code> 里斩钉截铁地写着“必须为所有玩法逻辑写单元测试，不得跳过”；可到了 <code>/dev-story</code> 跑 <code>qa.level: minimal</code> 时，技能简报里却明令“不要为这个故事写测试文件，本档位豁免测试”。</p>
+<p>这两个文件会在一次 <code>minimal</code> 任务里同时躺进子代理的上下文。通常模型会听更具体、更靠后的技能简报，但规则打架本身是真实存在的——任何把“通用岗位规范”和“多档位工作流”叠在一起的系统都会遇到这问题。如果要抄这套架构，最好在角色文件开头补一句显式优先级声明：“上层工作流简报里的显式要求，优先于本文件的通用守则”，别赌模型每次都能猜对听谁的。</p>
+<h2 id="常见误解">常见误解<a class="anchor" href="#常见误解" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>误解一：49 个角色会一起干活，所以我一跑命令就得烧 49 份 token。</strong> 错。平时单故事只用 1–2 个，<code>/prototype</code> 主干道甚至 0 个子代理，团队技能默认还会按 <code>team.size: individual</code> 塌缩成 1 个。</li>
+<li><strong>误解二：子代理拿到 <code>tools</code> 白名单就绕过了仓库安全线。</strong> 不会。子代理照样受父会话的 <code>permissions.deny</code> 和生命周期 Hook 管束，而且 <code>SubagentStop</code> 还有专门的审计和产物检查 Hook 盯着它。</li>
+<li><strong>误解三：每个引擎都有对应的一套专家角色。</strong> 只有 Godot、Unity、Unreal 有专属子专家群；v1.3.0 新加的 Web 引擎故意不另造一堆角色，直接复用通用程序员和 <code>lead-programmer</code>。</li>
+</ul>
+<h2 id="练习">练习<a class="anchor" href="#练习" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>如果你要给自己的前端/后端项目抄 CCGS 的角色体系，按“哪些必须拆成独立子代理、哪些折叠成透镜文档”的标准，画一条分界线。</li>
+<li>为什么三位总监是全仓唯三钉在 <code>opus</code> 上的角色，而大多数实现专家反而是 <code>inherit</code> 或 <code>sonnet</code>？</li>
+<li>翻开 <code>.claude/agents/</code>，想想如果一个子代理在写分析报告时自己临时改了个保存路径（没按编排器简报给的路径写），它还享受免确认豁免吗？哪个 Hook 会发现这件事？</li>
+</ol>
+<h2 id="答案提示">答案提示<a class="anchor" href="#答案提示" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>需要大范围只读探索（防污染主上下文）、需要独立对抗视角（如代码审计/美术总监初稿）、或者明确需要隔离工具权限的任务适合独立子代理；共享同一批文档上下文、只是换几个维度补充章节的活，直接用 <code>references/lens-*.md</code> 在主会话里折叠更省钱、信息损失也小。</li>
+<li>总监负责极少触发但影响全局的高杠杆拍板（愿景、架构、排期），值得上最强推理档位；干具体执行活的专家触发频率高，用 <code>inherit</code> 跟着主会话模型走，能把成本控制权还给用户。</li>
+<li>不享受。路径必须由编排器明确点名且限于 <code>production/</code>、<code>docs/</code>、<code>tests/</code> 下的新文件；而且 <code>SubagentStop</code> 挂的 <code>validate-agent-artifact.sh</code> 会去核对简报点名的路径到底落盘没有，没写到指定位置就会拉响告警。</li>
+</ol>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="04-config.html"><small>上一章</small><strong>配置求值：一个 rigor 如何长出六个设置</strong></a><a class="next" href="06-skill-protocol.html"><small>下一章</small><strong>Skill 协议：一条斜杠命令怎么从解析走到交接</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：先看清这东西到底是怎么跑起来的</a><a href="../chapters/01-requirements.html"><span>01</span>需求：一个人写游戏，为什么还要套规矩</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：一个会话，四种约束</a><a href="../chapters/03-onboarding.html"><span>03</span>入门：先玩一把（<code>/prototype</code>）与 Studio Mode（<code>/start</code>）双轨入口</a><a href="../chapters/04-config.html"><span>04</span>配置求值：一个 <code>rigor</code> 如何长出六个设置</a><a href="../chapters/05-agents.html"><span>05</span>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</a><a href="../chapters/06-skill-protocol.html"><span>06</span>Skill 协议：一条斜杠命令怎么从解析走到交接</a><a href="../chapters/07-artifacts.html"><span>07</span>产物模型：一页简报与故事、需求、ADR 三张网</a><a href="../chapters/08-dev-story.html"><span>08</span>实施链路：<code>/dev-story</code> 怎么把故事变成代码</a><a href="../chapters/09-story-done.html"><span>09</span>验收：<code>/story-done</code> 如何堵死“基本完成”</a><a href="../chapters/10-hooks.html"><span>10</span>Hook：十五个检查点里，到底谁真的能拦住</a><a href="../chapters/11-registries.html"><span>11</span>注册表：跨文档事实怎么管才不漂移</a><a href="../chapters/12-teams.html"><span>12</span>协作：团队流水线、默认塌缩与“透镜折叠”</a><a href="../chapters/13-engine.html"><span>13</span>引擎与品类适配：统一引擎表、Web 一等公民与品类库</a><a href="../chapters/14-context.html"><span>14</span>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</a><a href="../chapters/15-security.html"><span>15</span>安全边界：能聊天、有 Hook，不等于有沙箱</a><a href="../chapters/16-verification.html"><span>16</span>验证与演进：Markdown 写的框架，怎么证明自己没改坏</a><a href="../chapters/17-mini-studio.html"><span>17</span>最小实验：用两百行 Python 亲手跑通四条核心约束</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.3.0 源码索引、实测数据、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · CCGS v1.3.0 · 快照 abc0de79d6ce · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

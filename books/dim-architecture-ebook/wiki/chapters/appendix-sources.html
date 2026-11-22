@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从时间总线、分支路由、rutis 跨语言数据面到权限与压缩重放，源码级解剖 arcships/dim Agent v4 架构"><meta name="author" content="独立源码研究">
+<title>附录 A：源码索引、术语与核验命令 · Dim 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">D</span><span>Dim 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Appendix</div><div class="rail-title">附录 A：源码索引、术语与核验命令</div><ol><li><a href="#上游快照信息">上游快照信息</a></li><li><a href="#关键源码与上游文档索引">关键源码与上游文档索引</a></li><li><a href="#核心术语速查">核心术语速查</a></li><li><a href="#常用核验命令">常用核验命令</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">附录 A</div><h1>附录 A：源码索引、术语与核验命令</h1><div class="chapter-meta">arcships/dim v0.1.0-alpha.27 · 快照 2026-11-22 · 约 14 分钟</div></header><div class="prose"><p>本附录汇总本书所依据的上游快照元数据、关键源码与文档索引、核心术语对照，以及可在本地复现的核验命令。</p>
+<h2 id="上游快照信息">上游快照信息<a class="anchor" href="#上游快照信息" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>数值或标识</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>仓库地址</td>
+<td><code>https://github.com/arcships/dim</code></td>
+</tr>
+<tr>
+<td>固定提交</td>
+<td><code>88a3df3669405730cbee6bfd113a7f75cf520677</code></td>
+</tr>
+<tr>
+<td>工作区版本</td>
+<td><code>0.1.0-alpha.27</code></td>
+</tr>
+<tr>
+<td>快照采集日期</td>
+<td><code>2026-11-22</code></td>
+</tr>
+<tr>
+<td>Rust 版本与 Edition</td>
+<td><code>1.100</code> / <code>2024</code></td>
+</tr>
+<tr>
+<td>核心依赖基线</td>
+<td><code>rutis = &quot;0.23.0&quot;</code>、<code>aimux-* = &quot;=0.6.1&quot;</code>、<code>rquickjs = &quot;0.14&quot;</code>、<code>tokio = &quot;1.53.3&quot;</code>、<code>axum = &quot;0.8&quot;</code>、<code>jiff = &quot;0.2.46&quot;</code></td>
+</tr>
+<tr>
+<td>工作区实测规模</td>
+<td>28 个 Cargo 成员（23 业务 crate + 2 xtask + 3 测试 crate）；111 个目录服务（75 <code>data</code> / 36 <code>internal</code>）；20 个分支 Capability；3 个内置运行时插件包；26 份 ADR</td>
+</tr>
+</tbody></table></div>
+<h2 id="关键源码与上游文档索引">关键源码与上游文档索引<a class="anchor" href="#关键源码与上游文档索引" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>主题</th>
+<th>上游路径</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>工作区与依赖基线</td>
+<td><code>Cargo.toml</code>、<code>AGENTS.md</code>、<code>README.md</code></td>
+</tr>
+<tr>
+<td>时间总线与事件驱动契约</td>
+<td><code>docs/architecture/rust-agent/time-bus.md</code>、<code>docs/architecture/rust-agent/event-driven-flows.md</code>、<code>docs/architecture/rust-agent/principles.md</code>、<code>docs/architecture/rust-agent/timeline-storage.md</code></td>
+</tr>
+<tr>
+<td>事件类型与 13 保留域</td>
+<td><code>crates/dim-agent-types/src/events.rs</code>、<code>crates/dim-agent-types/tests/fixtures/</code></td>
+</tr>
+<tr>
+<td>运行时内核与分发器</td>
+<td><code>crates/dim-agent-runtime/src/core/timeline.rs</code>、<code>crates/dim-agent-runtime/src/core/dispatcher.rs</code>、<code>crates/dim-agent-runtime/src/assembly.rs</code>、<code>crates/dim-agent-runtime/src/parts.rs</code></td>
+</tr>
+<tr>
+<td>分支时间线与默认分支</td>
+<td><code>docs/design/timeline-branches.md</code>、<code>docs/architecture/rust-agent/plugins/TimelineTree.md</code>、<code>docs/architecture/rust-agent/plugins/BranchTool.md</code>、<code>crates/dim-agent-capabilities/src/timeline_tree.rs</code></td>
+</tr>
+<tr>
+<td>rutis 装配与跨语言数据面</td>
+<td><code>docs/design/rutis-usage.md</code>、<code>docs/design/plugin-contract.md</code>、<code>docs/design/service-faces.md</code>、<code>docs/architecture/rust-agent/generated/catalog.md</code>、<code>docs/adr/002-plugin-scope.md</code>、<code>docs/adr/015-scopes-are-plugins.md</code>、<code>docs/adr/025-rutis-0-23.md</code></td>
+</tr>
+<tr>
+<td>内置运行时插件与自演化</td>
+<td><code>runtime/default-plugins.json</code>、<code>runtime/runtimes.json</code>、<code>runtime/package.json</code>、<code>runtime/plugins/plugin-authoring/skills/plugin-authoring/SKILL.md</code>、<code>runtime/plugins/workflow/</code>、<code>runtime/plugins/light-ocr/</code></td>
+</tr>
+<tr>
+<td>上下文准备与压缩检查点</td>
+<td><code>docs/architecture/rust-agent/plugins/ContextPreparation.md</code>、<code>crates/dim-agent-capabilities/src/context_preparation.rs</code>、<code>crates/dim-agent-capabilities/src/history.rs</code></td>
+</tr>
+<tr>
+<td>权限、审批与执行隔离</td>
+<td><code>docs/architecture/rust-agent/plugins/Permission.md</code>、<code>docs/adr/003-approval-scope.md</code>、<code>docs/adr/009-permission-decides.md</code>、<code>docs/adr/010-sandbox-opt-in.md</code>、<code>docs/adr/012-session-grants.md</code>、<code>docs/adr/017-independent-permission-controls.md</code>、<code>docs/adr/018-permission-is-the-preset.md</code></td>
+</tr>
+<tr>
+<td>Code Mode 与 Aimux</td>
+<td><code>crates/dim-codemode/src/config.rs</code>、<code>crates/dim-codemode/src/interpreter.rs</code>、<code>crates/dim-codemode/src/session.rs</code>、<code>crates/dim-agent-aimux/README.md</code>、<code>crates/dim-agent-aimux/src/driver.rs</code></td>
+</tr>
+<tr>
+<td>App Server、CLI、Web 与 ACP</td>
+<td><code>crates/dim-app-server/README.md</code>、<code>crates/dim-cli/README.md</code>、<code>crates/dim-acp/src/gateway.rs</code>、<code>docs/design/acp-gateway-implementation.md</code></td>
+</tr>
+<tr>
+<td>静态门禁与装配图生成</td>
+<td><code>xtask/src/main.rs</code>、<code>xtask/check/src/lib.rs</code>、<code>xtask/check/src/boundaries.rs</code>、<code>xtask/check/src/literal_main.rs</code></td>
+</tr>
+</tbody></table></div>
+<h2 id="核心术语速查">核心术语速查<a class="anchor" href="#核心术语速查" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>术语</th>
+<th>在 Dim 中的精确含义</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Timeline（时间总线）</td>
+<td>单条分支的有序持久化事件流，分配单调 <code>sequence</code>，区隔 <code>committed()</code> 与 <code>published()</code> 双水位</td>
+</tr>
+<tr>
+<td>Capability（能力）</td>
+<td>注入 <code>dispatcher</code> 或 <code>timeline</code> 的分支级状态机部件，受时间总线规则约束；不注入这两者的只是普通部件</td>
+</tr>
+<tr>
+<td><code>before</code> 钩子</td>
+<td>仅限进程内 Rust 在分支提交锁内同步运行的草稿变形链，不改历史、不阻写入、出错回退原草稿</td>
+</tr>
+<tr>
+<td>Data Face（数据面）</td>
+<td>在目录共享且在 <code>host_key(name)</code> 挂有 <code>HostDispatch</code> 的跨语言公开服务，参数、返回值与错误全为 serde 数据</td>
+</tr>
+<tr>
+<td>起点（root）与默认分支（default branch）</td>
+<td>起点恒为 id <code>main</code> 且永不结束；默认分支是当前会话对话路由位置，由写在 <code>main</code> 上的 <code>branch/default</code> 决定</td>
+</tr>
+<tr>
+<td>脱离工作（detached work）</td>
+<td>越过发起它的 turn 继续运行的异步工作（如 <code>BackgroundExec</code>、协作任务），归发起能力自持并用活动持有保护空闲关机</td>
+</tr>
+<tr>
+<td><code>RecoverySnapshot</code></td>
+<td>存于 <code>timeline_snapshots</code> 的可丢弃派生加速缓存（带 SHA-256 摘要），损坏或缺失时自动回退完整事实重放</td>
+</tr>
+</tbody></table></div>
+<h2 id="常用核验命令">常用核验命令<a class="anchor" href="#常用核验命令" aria-label="链接到本节">#</a></h2>
+<p>上游仓库核验（在 <code>arcships/dim</code> 仓库根目录执行）：</p>
+<pre><code class="language-sh">cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo run --locked -p xtask-check
+cargo run --locked -p xtask -- check
+</code></pre>
+<p>本书教学模型与出版产物核验（在本书仓库根目录执行）：</p>
+<pre><code class="language-sh">python3 -m unittest discover -s examples -v
+python3 scripts/make_diagrams.py
+node wiki/build.mjs
+python3 scripts/make_epub.py
+python3 scripts/check_links.py
+</code></pre>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="13-teaching-model.html"><small>上一章</small><strong>零依赖 Python 教学模型与 18 个单元测试</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言与全景导读</a><a href="../chapters/01-why-not-a-chat-loop.html"><span>01</span>为什么不用普通对话循环</a><a href="../chapters/02-workspace-and-scopes.html"><span>02</span>28 个 Crate 与三层作用域</a><a href="../chapters/03-time-bus.html"><span>03</span>时间总线与只认序号的事实流</a><a href="../chapters/04-event-driven-contracts.html"><span>04</span>事件驱动契约：Dispatcher、before 与重启重建</a><a href="../chapters/05-timeline-branches.html"><span>05</span>分支时间线：默认分支、父子通信与配额路由</a><a href="../chapters/06-rutis-and-data-faces.html"><span>06</span>rutis 插件引擎与跨语言数据面</a><a href="../chapters/07-self-evolving-plugins.html"><span>07</span>在会话里给自己写插件与热重载自演化</a><a href="../chapters/08-context-compaction-and-replay.html"><span>08</span>上下文投影、压缩与历史渲染边界</a><a href="../chapters/09-detached-work-and-permissions.html"><span>09</span>脱离工作、工具审批与权限边界</a><a href="../chapters/10-codemode-and-aimux.html"><span>10</span>Code Mode 与 Aimux 模型宿主</a><a href="../chapters/11-server-cli-web-and-protocols.html"><span>11</span>App Server、CLI、Web 与 ACP / MCP 网关</a><a href="../chapters/12-tradeoffs-and-boundaries.html"><span>12</span>架构权衡与工程边界</a><a href="../chapters/13-teaching-model.html"><span>13</span>零依赖 Python 教学模型与 18 个单元测试</a><a href="../chapters/appendix-sources.html"><span>A</span>附录 A：源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · arcships/dim v0.1.0-alpha.27 · 快照 88a3df366940 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

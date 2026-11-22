@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从文档解析、切分、混合检索到纠错、图谱、评估与上线边界的 RAG 工程实战指南"><meta name="author" content="独立源码研究">
+<title>证据组装：检索到了，还要让模型完整读到 · RAG 工程实战</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">RAG</span><span>RAG 工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 08</div><div class="rail-title">证据组装：检索到了，还要让模型完整读到</div><ol><li><a href="#邻域扩展必须锁死文档-版本与权限">邻域扩展必须锁死文档、版本与权限</a></li><li><a href="#固定窗口与-rse-的取舍">固定窗口与 RSE 的取舍</a></li><li><a href="#上下文压缩最怕误删限定词与否定词">上下文压缩最怕误删限定词与否定词</a></li><li><a href="#打包预算一定要把标签和分隔符算进去">打包预算一定要把标签和分隔符算进去</a></li><li><a href="#引用只能从-injected-ids-里产生">引用只能从 injected_ids 里产生</a></li><li><a href="#本章对应代码与资料">本章对应代码与资料</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 08 章</div><h1>证据组装：检索到了，还要让模型完整读到</h1><div class="chapter-meta">RAG_Techniques 快照 2026-11-02 · 约 10 分钟</div></header><div class="prose"><p>排障时经常遇到一种让人摸不着头脑的现象：翻开检索日志，验签片段排第一，幂等片段排第二，召回和排序全对；可最后模型给出来的回答还是漏掉了幂等。顺着链路往后查一步才发现，组装上下文的预算太紧，放完第一条加上来源标签就快满额，第二条直接被静默丢弃了。检索做对了，交付环节把证据截断了，用户看到的照样是错误答案。</p>
+<h2 id="邻域扩展必须锁死文档-版本与权限">邻域扩展必须锁死文档、版本与权限<a class="anchor" href="#邻域扩展必须锁死文档-版本与权限" aria-label="链接到本节">#</a></h2>
+<p>第 4 章把块切小是为了召回精准，到了组装阶段再把相邻语境补回来。执行下面这条命令就能看到效果：</p>
+<pre><code class="language-bash">python3 examples/mini_rag.py \
+  --query &quot;回调处理顺序&quot; --mode bm25 --k 1 --window 1
+</code></pre>
+<p>只取 top-1 候选时，BM25 只召回了 <code>callback-v2:0</code>；加上 <code>--window 1</code> 后，<code>Retriever.expand()</code> 以命中块为中心，在同一个 <code>doc_id</code>、同一个 <code>version</code>、且再次通过 <code>visible(user)</code> 校验的集合里拉出 <code>abs(position - center.position) &lt;= 1</code> 的邻段，把 <code>callback-v2:1</code> 顺带补齐，并按原文 <code>position</code> 顺序排好、按 ID 去重。</p>
+<p>这套边界挡住了三类常见事故：不会把退款规范里的 <code>position=1</code> 拼到回调规范后面；不会把已废弃的 <code>callback-v1:1</code> 混进 v2 窗口；也不会把紧挨着公开段落的 Bob 私人笔记带进 Alice 的上下文。到了生产存储层，查找邻块应当走文档主键加位置范围查询（比如数据库复合索引或键值存储），不要为了取前后两段再对向量库扫一遍。</p>
+<h2 id="固定窗口与-rse-的取舍">固定窗口与 RSE 的取舍<a class="anchor" href="#固定窗口与-rse-的取舍" aria-label="链接到本节">#</a></h2>
+<p>固定半径窗口逻辑直观，缺点是不管前后段跟当前问题有没有关系都会一起带进来。如果一段回调规范后面紧跟着一段毫不相干的商户入驻说明，<code>radius=1</code> 就会塞进噪声。</p>
+<p>相关片段提取（Relevant Segment Extraction，上游 <code>relevant_segment_extraction.ipynb</code>）换了种拼装方式：根据各块的相关性得分分布，动态合并得分高的连续区段，跳过低分段落。它能减少无关背景，但需要调片段得分阈值与连续区段惩罚参数，也要多一套回归用例。无论用固定窗口还是 RSE，都别把“物理相邻”当成“逻辑同条件”：规范里前后紧挨着的两节，完全可能写着国内渠道和海外渠道两套相反的结算规则，保留清晰的章节标题边界最保险。</p>
+<h2 id="上下文压缩最怕误删限定词与否定词">上下文压缩最怕误删限定词与否定词<a class="anchor" href="#上下文压缩最怕误删限定词与否定词" aria-label="链接到本节">#</a></h2>
+<p>文档太长、上下文塞不下时，上下文压缩（Contextual Compression，上游 <code>contextual_compression.ipynb</code> 在 LangChain 1.x 中使用 <code>langchain_classic.retrievers.ContextualCompressionRetriever</code> 和 <code>LLMChainExtractor</code>）会先让模型挑出与问题相关的句子或做一次摘要。</p>
+<p>压缩规范类文本风险很高。原文写着“先验签，再核对商户号、订单号、金额和币种，核对成功后才更新支付状态”，压缩器如果为了精简改成“验签后更新支付状态”，长度省了一半，业务条件却被砍废了。优先采用抽取式裁剪（只保留原句，不改写措辞），并把抽取结果绑定回父片段 ID；如果必须做生成式摘要，专门针对否定词、金额阈值和前置条件做抽样核对。</p>
+<h2 id="打包预算一定要把标签和分隔符算进去">打包预算一定要把标签和分隔符算进去<a class="anchor" href="#打包预算一定要把标签和分隔符算进去" aria-label="链接到本节">#</a></h2>
+<p>很多线上“超出上下文长度”报错，是因为预算只算了正文字符数，漏算了片段编号、来源路径、换行分隔符、系统提示词和工具定义。配套 <code>pack_context(chunks, budget=1200)</code> 故意把整块开销算得很实：</p>
+<pre><code class="language-python">block = f&quot;[{chunk.id}] {chunk.source}\n{chunk.text}&quot;
+cost = len(block) + (2 if blocks else 0)
+if used + cost &lt;= budget:
+    blocks.append(block)
+    selected.append(chunk.id)
+    used += cost
+</code></pre>
+<p>它坚持按整块装入，宁可跳过超预算的块也不把一句话从中间劈断，避免把“不重复发货”截成“重复发货”；同时返回 <code>(context, injected_ids)</code>，让下游和日志一眼看见究竟哪些块真正进了模型。上线接大模型时，记得把这里的字符计数换成对应模型的真实 Tokenizer，并提前扣出系统指令、历史对话、用户问题和预期输出空间。</p>
+<p>另外，贪心按序打包并不天然保证多子问题均衡覆盖。如果一个问题拆出了验签和幂等两路子查询，打包器可能需要按子问题配额各保底留一条，避免第一路把预算吃干抹净。</p>
+<h2 id="引用只能从-injected-ids-里产生">引用只能从 <code>injected_ids</code> 里产生<a class="anchor" href="#引用只能从-injected-ids-里产生" aria-label="链接到本节">#</a></h2>
+<p>交给生成器之后，系统提示和后置校验要死守一条规则：回答里出现的每一个引用编号，必须严格属于本次实际交付的 <code>injected_ids</code> 子集，绝不允许模型引用被预算裁掉的候选，更不允许凭记忆编造编号。</p>
+<p>编号存在只是第一关，更难的是逐句核对支持性（grounding）：编号指向的原文到底支不支持前面那句结论。上游 <code>explainable_retrieval.ipynb</code> 演示了让模型解释“为什么这条片段与问题相关”，这种解释有助于调试召回，但“包含相同关键词所以相关”不等于“这条现行规则支持你的最终结论”。界面上把结论和原文摘录并排展示，往往比多写一段流畅的解释更能帮值班工程师迅速确认对错。</p>
+<h2 id="本章对应代码与资料">本章对应代码与资料<a class="anchor" href="#本章对应代码与资料" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="appendix-code.html">邻域扩展 <code>expand</code> 与预算打包 <code>pack_context</code></a></li>
+<li><a href="appendix-code.html">窗口边界与打包计数测试</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/context_enrichment_window_around_chunk.ipynb">上游 Context Enrichment（LangChain）</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/context_enrichment_window_around_chunk_with_llamaindex.ipynb">上游 Context Enrichment（LlamaIndex 0.14）</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/relevant_segment_extraction.ipynb">上游 Relevant Segment Extraction</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/contextual_compression.ipynb">上游 Contextual Compression</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/explainable_retrieval.ipynb">上游 Explainable Retrieval</a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="07-query-enhancement.html"><small>上一章</small><strong>查询增强：用户不一定会说出幂等这个词</strong></a><a class="next" href="09-evaluation.html"><small>下一章</small><strong>评估：两条高分结果，未必够答完一个问题</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-opening.html"><span>00</span>开篇：文档都在库里，助手为什么还会答错</a><a href="../chapters/01-requirements.html"><span>01</span>需求篇：先框住哪些问题必须答对</a><a href="../chapters/02-architecture.html"><span>02</span>技术方案：从需求推导一条可追踪的链路</a><a href="../chapters/03-ingestion.html"><span>03</span>资料入库：先把文档读对，再谈检索</a><a href="../chapters/04-chunking.html"><span>04</span>文档切分：验签和幂等，为什么总只召回一半</a><a href="../chapters/05-baseline.html"><span>05</span>基础检索：先交付一条能复现的离线链路</a><a href="../chapters/06-fusion-reranking.html"><span>06</span>混合检索与重排：把不同候选放进同一张账</a><a href="../chapters/07-query-enhancement.html"><span>07</span>查询增强：用户不一定会说出幂等这个词</a><a href="../chapters/08-context.html"><span>08</span>证据组装：检索到了，还要让模型完整读到</a><a href="../chapters/09-evaluation.html"><span>09</span>评估：两条高分结果，未必够答完一个问题</a><a href="../chapters/10-corrective.html"><span>10</span>纠错检索：找不到以后，系统走哪一条路</a><a href="../chapters/11-hierarchy-memory.html"><span>11</span>层次索引与记忆：问题开始面向整份资料</a><a href="../chapters/12-graph.html"><span>12</span>图谱检索：从模块一路查到技术负责人</a><a href="../chapters/13-multimodal-agent.html"><span>13</span>多模态与 Agent：处理图表文档与多步任务</a><a href="../chapters/14-production.html"><span>14</span>上线边界：权限、快照、停服与故障不能靠提示词兜底</a><a href="../chapters/15-wrap-up.html"><span>15</span>完结篇：用一次请求串起整套设计</a><a href="../chapters/appendix-map.html"><span>A</span>附录 A：上游 47 份 Notebook 与 21 份脚本阅读地图</a><a href="../chapters/appendix-sources.html"><span>B</span>附录 B：源码快照、论文范围、术语与研究边界</a><a href="../chapters/appendix-code.html"><span>C</span>附录 C：配套教学实现与样例数据</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · RAG_Techniques 2fd7bd0ffe5b（2026-11-02）· 核对 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

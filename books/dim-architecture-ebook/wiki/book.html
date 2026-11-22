@@ -1,0 +1,1568 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从时间总线、分支路由、rutis 跨语言数据面到权限与压缩重放，源码级解剖 arcships/dim Agent v4 架构"><meta name="author" content="独立源码研究">
+<title>离线合订本 · Dim 架构解剖</title>
+<style>@font-face{font-family:BookSerif;src:local("Charter"),local("Bitstream Charter");font-display:swap}
+:root{color-scheme:light;--paper:#f6f1e7;--paper-2:#ebe3d4;--ink:#20251f;--muted:#686d64;--forest:#174f42;--amber:#8f451f;--line:#cbc2b2;--code:#18231f;--code-ink:#e8eadf;--reader-size:20px;--progress:0%;--serif:BookSerif,"Source Han Serif SC","Noto Serif CJK SC","Songti SC",serif;--sans:"IBM Plex Sans","Noto Sans CJK SC",system-ui,sans-serif;--mono:"IBM Plex Mono","SFMono-Regular",Consolas,monospace}
+:root[data-theme="dark"]{color-scheme:dark;--paper:#171b18;--paper-2:#202720;--ink:#e5e1d6;--muted:#a6aa9e;--forest:#78b9a5;--amber:#f0a26b;--line:#39423b;--code:#0f1311;--code-ink:#e2e8df}
+:root[data-theme="light"]{color-scheme:light}
+@media(prefers-color-scheme:dark){:root[data-theme="auto"]{color-scheme:dark;--paper:#171b18;--paper-2:#202720;--ink:#e5e1d6;--muted:#a6aa9e;--forest:#78b9a5;--amber:#f0a26b;--line:#39423b;--code:#0f1311;--code-ink:#e2e8df}}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;background:var(--paper)}
+body{margin:0;color:var(--ink);background:var(--paper);font-family:var(--serif);text-rendering:optimizeLegibility}
+a{color:var(--forest);text-decoration-thickness:.07em;text-underline-offset:.18em}
+a:hover{color:var(--amber)}
+button,input{font:inherit}
+button{color:inherit}
+.skip{position:fixed;left:1rem;top:-5rem;z-index:99;padding:.7rem 1rem;background:var(--ink);color:var(--paper)}
+.skip:focus{top:1rem}
+.progress{position:fixed;z-index:20;inset:0 0 auto;height:3px;background:linear-gradient(90deg,var(--amber) var(--progress),transparent 0)}
+.topbar{height:62px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 max(20px,calc((100vw - 1180px)/2));font-family:var(--sans);position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--paper) 94%,transparent);backdrop-filter:blur(10px)}
+.brand{display:flex;align-items:center;gap:12px;color:var(--ink);text-decoration:none;font-weight:700;letter-spacing:-.02em}
+.brand-mark{display:grid;place-items:center;width:31px;height:31px;border:1px solid var(--forest);color:var(--forest);font-family:var(--mono);font-size:11px;transform:rotate(-2deg)}
+.tools{display:flex;align-items:center;gap:4px}
+.tool-button{border:0;background:transparent;min-width:42px;min-height:42px;padding:0 10px;cursor:pointer;color:var(--muted);font-family:var(--sans);font-size:13px}
+.tool-button:hover,.tool-button:focus-visible{color:var(--ink);background:var(--paper-2);outline:none}
+main{min-height:calc(100vh - 62px)}
+.hero{max-width:1180px;margin:auto;padding:clamp(60px,10vw,132px) 24px 70px;display:grid;grid-template-columns:minmax(0,1.35fr) minmax(260px,.65fr);gap:clamp(40px,8vw,110px);border-bottom:1px solid var(--line)}
+.kicker{font:600 12px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--amber);margin:0 0 24px}
+.hero h1{font-size:clamp(44px,7vw,88px);line-height:.98;letter-spacing:-.055em;font-weight:600;margin:0;max-width:850px}
+.hero h1 em{font-style:normal;color:var(--forest)}
+.dek{font-size:clamp(20px,2.1vw,27px);line-height:1.5;color:var(--muted);max-width:760px;margin:30px 0 0}
+.hero-aside{align-self:end;border-left:1px solid var(--line);padding-left:28px;font:14px/1.65 var(--sans);color:var(--muted)}
+.hero-aside strong{display:block;color:var(--ink);font-size:15px;margin-bottom:8px}
+.snapshot{display:grid;grid-template-columns:auto 1fr;gap:5px 16px;margin-top:22px;font-family:var(--mono);font-size:11px}.snapshot dt{color:var(--amber)}.snapshot dd{margin:0;color:var(--ink);overflow-wrap:anywhere}
+.home-grid{max-width:1180px;margin:auto;padding:62px 24px 100px;display:grid;grid-template-columns:220px 1fr;gap:clamp(38px,7vw,90px)}
+.home-intro{font:14px/1.7 var(--sans);color:var(--muted);position:sticky;top:95px;align-self:start}.home-intro h2{font:700 14px/1.2 var(--sans);color:var(--ink);margin:0 0 13px}.home-intro a{display:inline-block;margin-top:10px}
+.contents{border-top:2px solid var(--ink)}
+.chapter-row{display:grid;grid-template-columns:54px 1fr auto;gap:20px;align-items:baseline;padding:20px 4px;border-bottom:1px solid var(--line);text-decoration:none;color:var(--ink)}
+.chapter-row:hover{color:var(--ink);background:var(--paper-2)}
+.chapter-no{font:12px/1 var(--mono);color:var(--amber)}
+.chapter-row h3{font-size:clamp(19px,2vw,25px);line-height:1.25;margin:0;font-weight:600;letter-spacing:-.02em}
+.chapter-row p{font:13px/1.4 var(--sans);color:var(--muted);margin:4px 0 0}
+.arrow{font-family:var(--sans);color:var(--forest)}
+.reader-layout{display:grid;grid-template-columns:minmax(180px,260px) minmax(0,860px);gap:clamp(40px,7vw,100px);max-width:1260px;margin:auto;padding:58px 24px 120px}
+.chapter-rail{font-family:var(--sans);font-size:13px;color:var(--muted);position:sticky;top:100px;align-self:start;max-height:calc(100vh - 130px);overflow:auto;padding-right:15px}.rail-label{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--amber);margin-bottom:16px}.rail-title{font:600 16px/1.35 var(--serif);color:var(--ink);margin-bottom:22px}.chapter-rail ol{padding:0;margin:0;list-style:none;border-top:1px solid var(--line)}.chapter-rail li{border-bottom:1px solid var(--line)}.chapter-rail li a{display:block;padding:10px 2px;text-decoration:none;color:var(--muted)}.chapter-rail li a:hover{color:var(--forest)}
+.chapter{min-width:0}.chapter-head{padding-bottom:36px;border-bottom:1px solid var(--line);margin-bottom:42px}.chapter-number{font:600 12px/1 var(--sans);letter-spacing:.14em;color:var(--amber);text-transform:uppercase}.chapter-head h1{font-size:clamp(37px,5.5vw,64px);line-height:1.06;letter-spacing:-.045em;margin:15px 0 0;font-weight:600}.chapter-meta{font:13px/1.6 var(--sans);color:var(--muted);margin-top:18px}
+.prose{font-size:var(--reader-size);line-height:1.86;letter-spacing:.005em}.prose>p:first-of-type{font-size:calc(var(--reader-size) * 1.12);line-height:1.72}.prose h2{font-size:clamp(27px,3.4vw,38px);line-height:1.25;letter-spacing:-.025em;margin:2.1em 0 .75em;padding-top:.2em}.prose h3{font-size:1.18em;line-height:1.4;margin:1.8em 0 .55em}.anchor{margin-left:.35em;color:var(--muted);font:400 .55em var(--sans);text-decoration:none;opacity:0}.prose h2:hover .anchor,.prose h3:hover .anchor,.anchor:focus{opacity:1}.prose p{margin:0 0 1.25em}.prose strong{font-weight:700}.prose ul,.prose ol{margin:0 0 1.4em;padding-left:1.4em}.prose li{padding-left:.3em;margin:.35em 0}.prose li::marker{color:var(--amber)}.prose blockquote{margin:2em 0;padding:.4em 0 .4em 1.3em;border-left:3px solid var(--amber);color:var(--muted);font-style:normal}.prose hr{border:0;border-top:1px solid var(--line);margin:3em 0}
+.prose code{font:0.82em/1.45 var(--mono);background:var(--paper-2);padding:.1em .35em;border-radius:2px;overflow-wrap:anywhere}.prose pre{position:relative;margin:1.8em 0 2em;padding:22px 24px;background:var(--code);color:var(--code-ink);overflow:auto;border-radius:2px;box-shadow:inset 4px 0 var(--forest)}.prose pre code{font-size:13px;line-height:1.65;background:transparent;padding:0;white-space:pre;overflow-wrap:normal}.copy{position:absolute;right:8px;top:8px;border:1px solid #52615a;background:#222e29;color:#dfe6dd;padding:5px 9px;font:11px var(--sans);cursor:pointer}.copy:hover{background:#35463f}
+.table-wrap{overflow-x:auto;margin:1.8em 0}.prose table{width:100%;border-collapse:collapse;font:14px/1.55 var(--sans);min-width:530px}.prose th{text-align:left;color:var(--ink);border-bottom:2px solid var(--ink);padding:10px 12px}.prose td{border-bottom:1px solid var(--line);padding:10px 12px;vertical-align:top}.prose tr:hover td{background:var(--paper-2)}
+.chapter-nav{display:grid;grid-template-columns:1fr 1fr;gap:18px;border-top:1px solid var(--line);margin-top:70px;padding-top:26px;font-family:var(--sans)}.chapter-nav a{text-decoration:none;padding:16px 0}.chapter-nav small{display:block;color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:5px}.chapter-nav strong{font-size:15px}.chapter-nav .next{text-align:right;grid-column:2}
+.menu-panel{width:min(520px,calc(100vw - 24px));max-height:calc(100vh - 24px);border:1px solid var(--line);background:var(--paper);color:var(--ink);padding:0;margin:12px 12px 12px auto}.menu-panel::backdrop{background:rgba(8,12,9,.56)}.menu-head{position:sticky;top:0;background:var(--paper);display:flex;justify-content:space-between;align-items:center;padding:17px 20px;border-bottom:1px solid var(--line);font:600 14px var(--sans)}.menu-list{padding:10px 20px 30px}.menu-list a{display:grid;grid-template-columns:36px 1fr;gap:10px;padding:12px 0;border-bottom:1px solid var(--line);text-decoration:none;color:var(--ink);font-size:16px}.menu-list span{font:11px var(--mono);color:var(--amber)}
+.search-page{max-width:930px;margin:auto;padding:70px 24px 120px}.search-page h1{font-size:clamp(42px,6vw,72px);letter-spacing:-.045em;margin:0 0 35px}.search-input{width:100%;border:0;border-bottom:2px solid var(--ink);background:transparent;color:var(--ink);font:clamp(22px,4vw,38px)/1.4 var(--serif);padding:10px 0;outline:none}.search-input:focus{border-color:var(--amber)}.search-hint{font:15px/1.7 var(--sans);color:var(--muted);margin-top:30px}.search-hit a{display:grid;grid-template-columns:52px 1fr;text-decoration:none;color:var(--ink);border-bottom:1px solid var(--line);padding:23px 0}.search-hit span{font:11px var(--mono);color:var(--amber);grid-row:1/3}.search-hit h2{font-size:23px;margin:0}.search-hit p{font:14px/1.6 var(--sans);color:var(--muted);margin:7px 0 0}.search-hit a:hover{background:var(--paper-2)}
+.site-footer{border-top:1px solid var(--line);padding:28px 24px;text-align:center;font:12px/1.6 var(--sans);color:var(--muted)}
+@media(max-width:820px){.hero{grid-template-columns:1fr;padding-top:65px}.hero-aside{border-left:0;border-top:1px solid var(--line);padding:22px 0 0}.home-grid{grid-template-columns:1fr}.home-intro{position:static}.reader-layout{display:block;padding-top:38px}.chapter-rail{display:none}.topbar{padding:0 12px}.brand span:last-child{display:none}.chapter-row{grid-template-columns:42px 1fr}.chapter-row .arrow{display:none}}
+@media(max-width:520px){.hero{padding-left:18px;padding-right:18px}.hero h1{font-size:43px}.home-grid,.reader-layout,.search-page{padding-left:18px;padding-right:18px}.chapter-head h1{font-size:38px}.prose{line-height:1.78}.prose pre{margin-left:-18px;margin-right:-18px;border-radius:0;padding:20px 18px}.chapter-nav{grid-template-columns:1fr}.chapter-nav .next{grid-column:1;text-align:left}.chapter-row{padding:17px 0}.tool-button{padding:0 7px;min-width:38px}.theme-label{display:none}}
+@media print{.topbar,.progress,.skip,.chapter-rail,.chapter-nav,.menu-panel,.site-footer,.copy{display:none!important}.reader-layout{display:block;max-width:none;padding:0}.chapter{max-width:none}.prose{font-size:11pt;color:#000}.prose pre{white-space:pre-wrap;break-inside:avoid}.prose a{color:#000}.chapter-head{margin-top:0}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+.volume{display:block;max-width:960px}.volume-cover{padding:80px 0 110px;border-bottom:1px solid var(--line);line-height:1.8}.volume-cover h1{font-size:54px;font-weight:600;margin:30px 0 0;letter-spacing:0}.volume-cover h2{font-size:32px;font-weight:400;margin-top:0}.volume-cover p{overflow-wrap:anywhere}.volume-toc{padding:40px 0;line-height:2}.book-section{margin-top:100px}.prose details{margin:1.8em 0;padding:18px 0;border-block:1px solid var(--line)}.prose summary{cursor:pointer;font:500 16px/1.6 var(--sans)}.prose details[open] summary{margin-bottom:16px}.chapter-head h1,.hero h1{letter-spacing:0}.tool-button{min-width:44px;min-height:44px}a:focus-visible,button:focus-visible{outline:2px solid var(--forest);outline-offset:3px}
+@media print{@page{size:A5;margin:16mm 14mm 18mm}html,body{background:white!important;color:#222!important}.volume{padding:0}.volume-cover{break-after:page;padding:32mm 0 0;border:0;min-height:140mm}.volume-cover h1{font-size:30pt}.volume-cover h2{font-size:18pt}.volume-cover p{font-size:10pt}.volume-toc{break-after:page;font-size:10pt;line-height:1.85;padding:0}.volume-toc h1{font-size:20pt}.book-section{break-before:page;margin:0}.chapter-head{padding-bottom:6mm;margin-bottom:8mm;break-after:avoid}.chapter-head h1{font-size:25pt}.chapter-number{font-size:9pt}.prose{font-size:10.5pt;line-height:1.75;orphans:3;widows:3}.prose>p:first-of-type{font-size:11pt}.prose h2{font-size:16pt;margin:1.4em 0 .7em;break-after:avoid}.prose h3{font-size:12pt;break-after:avoid}.prose table{min-width:0;font-size:8pt;table-layout:fixed}.prose td,.prose th{padding:6px;overflow-wrap:anywhere}.table-wrap{overflow:visible}.prose pre{background:#f2f2ec;color:#222;padding:10px;box-shadow:none;margin:10px 0;break-inside:auto}.prose pre code{white-space:pre-wrap;overflow-wrap:anywhere;font-size:7.5pt;line-height:1.6}.prose code{background:none;font-size:.8em}.prose ul{padding-left:1em}.prose li{overflow-wrap:anywhere}.prose a{text-decoration:none;color:#222}.prose details{font-size:9pt}.anchor{display:none}.book-section .prose li a{font-size:9pt}}
+.concept-diagram{margin:2em 0;overflow-x:auto;padding:18px 0;border-block:1px solid var(--line)}.concept-diagram svg{display:block;width:100%;min-width:620px;height:auto;color:var(--forest);font-family:var(--sans)}.concept-diagram figcaption{font:13px/1.5 var(--sans);color:var(--muted);margin-top:8px}
+
+/* ebook-reader-polish v1 */
+:root{--eb-light-accent:#174f42;--eb-dark-accent:#9bc8b3}
+/* Shared reading refinements. Embedded in each book so offline copies stay portable. */
+@media screen {
+  :root {
+    --eb-accent:var(--forest,var(--accent,var(--brand,#1b365d)));
+    --eb-line:var(--line,var(--rule,#d8d5c9));
+    --eb-panel:var(--paper-2,var(--paper-deep,var(--panel,#eeece2)));
+  }
+  html {scroll-padding-top:88px;scrollbar-color:var(--eb-line) var(--paper);scrollbar-width:thin}
+  :root[data-theme="light"] {color-scheme:light;--paper:#faf8f2;--paper-2:#f0ece2;--paper-deep:#f0ece2;--panel:#f0ece2;--ink:#262b27;--muted:#5d665e;--line:#d4d8ce;--rule:#d4d8ce;--code:#f0ece2;--code-ink:#283b33;--forest:var(--eb-light-accent,#29564c);--accent:var(--eb-light-accent,#29564c);--brand:var(--eb-light-accent,#29564c)}
+  :root[data-theme="dark"] {color-scheme:dark;--paper:#171d19;--paper-2:#222b24;--paper-deep:#222b24;--panel:#222b24;--ink:#e3e7de;--muted:#b0bbad;--line:#455044;--rule:#455044;--code:#202a24;--code-ink:#e3e7de;--forest:var(--eb-dark-accent,#9bc8b3);--accent:var(--eb-dark-accent,#9bc8b3);--brand:var(--eb-dark-accent,#9bc8b3)}
+  @media(prefers-color-scheme:dark) {:root:not([data-theme="light"]):not([data-theme="dark"]){color-scheme:dark;--paper:#171d19;--paper-2:#222b24;--paper-deep:#222b24;--panel:#222b24;--ink:#e3e7de;--muted:#b0bbad;--line:#455044;--rule:#455044;--code:#202a24;--code-ink:#e3e7de;--forest:var(--eb-dark-accent,#9bc8b3);--accent:var(--eb-dark-accent,#9bc8b3);--brand:var(--eb-dark-accent,#9bc8b3)}}
+  body {font-variant-numeric:tabular-nums;overflow-wrap:break-word}
+  .layout code,.layout pre {background:var(--eb-panel);color:var(--ink)}
+  .layout th {background:var(--eb-panel)}
+  .layout blockquote {border-left-width:1px}
+  .reading .lesson-note,.reading .book-diagram {background:var(--eb-panel)}
+  ::selection {background:color-mix(in srgb,var(--eb-accent) 22%,var(--paper));color:var(--ink)}
+  input {caret-color:var(--eb-accent)}
+  h1,h2,h3,h4 {text-wrap:balance;letter-spacing:0}
+  p,li {text-wrap:pretty}
+  .kicker,.eyebrow {display:none}
+  .topbar {background:var(--paper);backdrop-filter:none;min-height:64px;height:auto;gap:12px}
+  .brand {letter-spacing:0;min-width:0}
+  .brand-mark {transform:none;border:0;font-size:14px;font-weight:600;white-space:nowrap;min-width:44px;width:auto}
+  .hero {padding-top:64px;padding-bottom:48px;gap:56px}
+  .hero h1 {font-size:clamp(36px,4.5vw,58px);line-height:1.25;letter-spacing:0}
+  .hero .dek {font-size:21px;line-height:1.8;margin-top:22px;max-width:34em}
+  .hero-aside {font-size:14px;line-height:1.8;border-left:1px solid var(--eb-line)}
+  .home-grid {padding-top:42px}
+  .home-intro {font-size:15px;line-height:1.8}
+  .chapter-row {gap:18px;padding:21px 4px;transition:background-color 120ms ease-out}
+  .chapter-row h3 {font-size:22px;line-height:1.5;letter-spacing:0}
+  .chapter-row p {font-size:14px;line-height:1.7;margin-top:6px}
+  .chapter-row:focus-visible {outline-offset:-2px}
+  .reader-layout {grid-template-columns:220px minmax(0,780px);gap:64px;padding-top:44px}
+  .chapter-rail {font-size:14px;line-height:1.65;top:96px;max-height:calc(100dvh - 120px)}
+  .rail-label {letter-spacing:.03em}
+  .rail-title {font-size:17px;line-height:1.65}
+  .chapter-rail li a {padding:11px 4px}
+  .chapter-rail a[aria-current="location"],nav.toc>a[aria-current="location"] {color:var(--eb-accent);font-weight:600;text-decoration:underline;text-underline-offset:5px}
+  .chapter-head {padding-bottom:28px;margin-bottom:32px}
+  .chapter-head h1 {font-size:clamp(32px,3.6vw,46px);line-height:1.4;letter-spacing:0}
+  .chapter-meta {font-size:14px;line-height:1.8}
+  .chapter-number {letter-spacing:.02em}
+  .prose,.content,.reading {line-height:1.9;letter-spacing:0}
+  .prose>p:first-of-type {font-size:inherit;line-height:inherit}
+  .prose p,.content p,.reading p {margin-bottom:1.25em}
+  .prose h2,.content h2,.reading h2 {font-size:1.45em;line-height:1.5;letter-spacing:0;margin-top:2.1em;margin-bottom:.7em;border-left:0;padding-left:0}
+  .prose h3,.content h3,.reading h3 {font-size:1.15em;line-height:1.6}
+  .prose blockquote,.reading blockquote {font-style:normal;border-left-width:1px}
+  .anchor {opacity:.55;padding:4px}
+  .table-wrap {max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-width:thin;margin:1.7em 0}
+  .table-wrap table {min-width:560px;font-size:15px;line-height:1.75;table-layout:auto}
+  .table-wrap:focus-visible,pre:focus-visible {outline:2px solid var(--eb-accent);outline-offset:4px}
+  pre {max-width:100%;tab-size:4;overscroll-behavior-inline:contain;scrollbar-width:thin;box-shadow:none}
+  .prose pre,.content pre {padding:54px 22px 22px}
+  .prose pre code,.content pre code {font-size:14px;line-height:1.8}
+  .copy {min-height:44px;min-width:52px;top:5px;right:8px;font-size:12px;border-color:color-mix(in srgb,var(--code-ink,var(--ink)) 35%,transparent);background:var(--code);color:var(--code-ink,var(--ink))}
+  .book {width:min(100% - 48px,780px);padding-top:46px}
+  .home-title {font-size:clamp(34px,4.5vw,52px);line-height:1.3;letter-spacing:0}
+  .content h1 {font-size:clamp(30px,3.5vw,42px);line-height:1.45}
+  .deck {line-height:1.85}
+  .resume {box-shadow:none;border-block:1px solid var(--eb-line);padding:20px 0;background:transparent}
+  .toolbar {display:none}
+  .control,.tool-button {min-height:44px;min-width:44px;font-size:14px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none}
+  [data-reader-theme] {appearance:none;background:transparent;border:1px solid var(--eb-line);color:var(--muted);border-radius:3px;padding:8px 10px;cursor:pointer;font:14px/1.6 var(--sans,"Noto Sans CJK SC",sans-serif)}
+  button,a,input,summary {touch-action:manipulation}
+  a:focus-visible,button:focus-visible,summary:focus-visible,input:focus-visible {outline:2px solid var(--eb-accent);outline-offset:3px}
+  .search-input {font-size:20px;min-height:52px;border-radius:2px}
+  .search-page h1 {font-size:clamp(32px,4vw,48px);line-height:1.4;letter-spacing:0}
+  .search-hit h2 {line-height:1.6}
+  .reader-book-toc {position:sticky;top:28px;align-self:start;max-height:calc(100dvh - 60px);overflow:auto}
+  .reader-book-toc>summary {display:none}
+  .reader-book-toc nav.toc {position:static;max-height:none}
+  .reader-mobile-toc {display:none}
+  .reader-mobile-toc summary {min-height:48px;cursor:pointer;display:flex;align-items:center;font:500 15px/1.7 "Noto Sans CJK SC",sans-serif}
+  .reader-mobile-toc ol {margin:0 0 18px;padding-left:22px;font:15px/1.8 "Noto Sans CJK SC",sans-serif}
+  .reader-mobile-toc a {display:block;padding:8px 0;text-decoration:none}
+  .cover {padding-top:58px;padding-bottom:46px}
+  .cover h1 {font-size:clamp(36px,4.5vw,58px);line-height:1.3;letter-spacing:0}
+  .cover .intro {line-height:1.85}
+  .layout {grid-template-columns:225px minmax(0,780px);gap:52px;max-width:1180px}
+  .layout>main {max-width:780px;font-size:20px;line-height:1.9}
+  .layout h1#cover {font-size:44px;line-height:1.4;letter-spacing:0}
+  .layout h1 {line-height:1.5;letter-spacing:0}
+  .layout h2 {border-left:0;padding-left:0;margin-top:2em}
+  nav.toc>a {padding:10px 4px}
+  .tools a,.tools button {min-height:44px;display:inline-flex;align-items:center;justify-content:center}
+  .volume {display:block;max-width:880px}
+  @media(max-width:1000px) {
+    .reader-layout {display:block;max-width:828px;padding-inline:24px}
+    .chapter-rail {display:none}
+    .reader-book-toc {position:static;max-height:none;margin-bottom:30px;border-bottom:1px solid var(--eb-line)}
+    .reader-book-toc>summary {display:flex;align-items:center;min-height:48px;cursor:pointer;font:500 16px/1.7 sans-serif}
+    .reader-mobile-toc {display:block;border-block:1px solid var(--eb-line);margin:0 0 32px}
+    .layout {display:block;padding:28px 24px 80px}
+    nav.toc {columns:2;position:static;max-height:none}
+  }
+  @media(max-width:700px) {
+    .topbar {padding:8px 14px;gap:6px;flex-wrap:wrap}
+    .brand {font-size:14px;line-height:1.6;max-width:100%;overflow-wrap:anywhere}
+    .brand span:last-child {display:none}
+    .topbar .tools {margin-left:auto;gap:0}
+    .topbar .spacer {min-width:0}
+    .hero {display:block;padding:38px 20px 34px}
+    .hero h1 {font-size:36px;line-height:1.4}
+    .hero .dek {font-size:19px;line-height:1.9}
+    .hero-aside {margin-top:28px;border-left:0;border-top:1px solid var(--eb-line);padding:20px 0 0}
+    .home-grid {display:block;padding:30px 20px 70px}
+    .home-intro {position:static;margin-bottom:28px}
+    .chapter-row h3 {font-size:20px}
+    .reader-layout {padding:30px 20px 80px}
+    .chapter-head h1 {font-size:32px}
+    .prose,.content,.reading {line-height:1.9}
+    .prose pre {margin-inline:0;padding-inline:16px}
+    .book {width:calc(100% - 40px);padding-top:32px}
+    .home-title,.content h1 {font-size:32px;line-height:1.4}
+    .topbar .brand {max-width:calc(100% - 150px);white-space:normal}
+    .reader-tools {flex-wrap:wrap}
+    .bar-inner {gap:8px;flex-wrap:wrap}
+    .layout>main {font-size:19px}
+    .layout h1#cover {font-size:34px}
+    nav.toc {columns:1}
+    .search-page {padding-top:36px}
+    .chapter-nav {margin-top:44px}
+  }
+  @media(prefers-reduced-motion:reduce) {html{scroll-behavior:auto}.chapter-row,.control{transition:none}}
+}
+@media print {.reader-mobile-toc,.reader-book-toc,[data-reader-theme],.copy{display:none!important}}
+
+@media screen and (max-width:520px){.concept-diagram svg{min-width:560px}}
+@media print{.concept-diagram{break-inside:avoid;overflow:visible;padding:10px 0}.concept-diagram svg{min-width:0;width:100%;max-width:100%}.concept-diagram figcaption{font-size:8pt}}
+</style>
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="#main"><span class="brand-mark">D</span><span>Dim 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <span class="tool-button">Ctrl+F 查找</span>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout volume"><article class="chapter"><section class="volume-cover"><p>源码驱动的架构解剖 · Agent v4 + rutis 0.23</p><h1>Dim 架构解剖</h1><h2>时间总线、分支路由与全插件运行时</h2><p>前言 · 13 章 · 附录</p><p>arcships/dim 0.1.0-alpha.27<br>88a3df3669405730cbee6bfd113a7f75cf520677<br>快照日期 2026-11-22</p><p>独立源码分析，非官方文档。基于固定提交静态源码核验与离线教学模型，不代表线上生产压测。</p></section><section class="volume-toc"><h1>全书目录</h1><ol><li><a href="#00-preface">前言与全景导读</a></li><li><a href="#01-why-not-a-chat-loop">为什么不用普通对话循环</a></li><li><a href="#02-workspace-and-scopes">28 个 Crate 与三层作用域</a></li><li><a href="#03-time-bus">时间总线与只认序号的事实流</a></li><li><a href="#04-event-driven-contracts">事件驱动契约：Dispatcher、before 与重启重建</a></li><li><a href="#05-timeline-branches">分支时间线：默认分支、父子通信与配额路由</a></li><li><a href="#06-rutis-and-data-faces">rutis 插件引擎与跨语言数据面</a></li><li><a href="#07-self-evolving-plugins">在会话里给自己写插件与热重载自演化</a></li><li><a href="#08-context-compaction-and-replay">上下文投影、压缩与历史渲染边界</a></li><li><a href="#09-detached-work-and-permissions">脱离工作、工具审批与权限边界</a></li><li><a href="#10-codemode-and-aimux">Code Mode 与 Aimux 模型宿主</a></li><li><a href="#11-server-cli-web-and-protocols">App Server、CLI、Web 与 ACP / MCP 网关</a></li><li><a href="#12-tradeoffs-and-boundaries">架构权衡与工程边界</a></li><li><a href="#13-teaching-model">零依赖 Python 教学模型与 18 个单元测试</a></li><li><a href="#appendix-sources">附录 A：源码索引、术语与核验命令</a></li></ol></section><section class="book-section" id="00-preface"><header class="chapter-head"><div class="chapter-number">00</div><h1>前言与全景导读</h1></header><div class="prose"><p>给一个编码 Agent 加上工具审批、后台长命令、并行排查分支、跨语言插件和会话重启恢复之后，多数原型里那段几十行的 <code>while</code> 对话循环会迅速失控。两个客户端同时点下同意和拒绝，工具到底执行几次；子任务跑在后台时用户按了中断，进程要不要杀；插件热重载之后，已经在途的模型请求怎么收尾，才不会把同一个写文件操作跑两遍。</p>
+<p><code>arcships/dim</code> 给出的解法，是把整个 Agent 运行时改写成一张围绕事件序号运转的状态机网络。在固定提交 <code>88a3df3669405730cbee6bfd113a7f75cf520677</code>（工作区版本 <code>0.1.0-alpha.27</code>，快照日期 2026-11-22）的源码里，Dim 用 Rust 2024 和 <code>rutis 0.23.0</code> 搭起了一套完全由插件组成的运行时（项目内称 Agent v4）：28 个 Cargo 工作区成员、111 个真实装配服务、20 个分支级 Capability、3 个内置运行时插件包以及 26 份架构决策记录（ADR 001 至 026）。</p>
+<p>这本书不复述产品宣传页，也不把设计文档当实现现状。整本书按源码实情拆解 Dim 的六根承重柱：三层作用域如何消灭胶水层，时间总线（Time Bus）怎样把并发竞争压成单调序号，分支时间线怎样同时支撑默认分支切换与受保护祖先链配额，<code>rutis</code> 如何通过跨语言数据面让 Rust、TypeScript 和 Python 共用同一套契约，上下文压缩为什么把不可变摘要与可丢弃快照拆开，以及权限系统在 ADR 003 到 ADR 018 之间经历过哪些真实取舍与回撤。</p>
+<h2 id="00-preface--阅读路线">阅读路线<a class="anchor" href="#00-preface--阅读路线" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>章节区间</th>
+<th>核心问题</th>
+<th>建议读者重点关注</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>第 1 至 2 章</td>
+<td>为什么放弃普通对话循环，28 个 Crate 怎么分层</td>
+<td>Process / Session / Branch 作用域划分与五种跨层关系</td>
+</tr>
+<tr>
+<td>第 3 至 4 章</td>
+<td>事件怎么写、怎么落盘、怎么按序消费</td>
+<td><code>committed</code> 与 <code>published</code> 双水位、<code>before</code> 钩子、副作用不重放</td>
+</tr>
+<tr>
+<td>第 5 章</td>
+<td>一条会话怎么长出多条并行行为线</td>
+<td>起点 <code>main</code> 与可移动默认分支、三键块、<code>DEFAULT_MAX_OPEN_LINES</code></td>
+</tr>
+<tr>
+<td>第 6 至 7 章</td>
+<td>插件系统怎样跨语言并支持会话内自写</td>
+<td><code>HostDispatch</code> 数据面、75/111 迁移现状、<code>plugin-authoring</code></td>
+</tr>
+<tr>
+<td>第 8 至 9 章</td>
+<td>长会话如何控内存，危险动作谁拍板</td>
+<td><code>RecoverySnapshot</code> SHA-256 校验、脱离工作持有、ADR 018 预设收敛</td>
+</tr>
+<tr>
+<td>第 10 至 11 章</td>
+<td>脚本编排、模型接入与多端协议怎么对接</td>
+<td><code>rquickjs</code> 边界、Aimux 缓存断点、App Server RPC v3 与 ACP 网关</td>
+</tr>
+<tr>
+<td>第 12 至 13 章</td>
+<td>代价在哪里，怎么用最少代码验证核心不变量</td>
+<td><code>xtask-check</code> 静态门禁、已知窗口期代价、18 个 Python 单元测试</td>
+</tr>
+</tbody></table></div>
+<h2 id="00-preface--研究口径与边界">研究口径与边界<a class="anchor" href="#00-preface--研究口径与边界" aria-label="链接到本节">#</a></h2>
+<p>本书属于独立源码分析，非 <code>arcships/dim</code> 官方文档。正文引用的文件路径、结构体名称、事件键、服务目录统计与配置上限均核对自上游仓库快照 <code>88a3df3669405730cbee6bfd113a7f75cf520677</code>（<code>v0.1.0-alpha.27</code>）。文中区分三类信息：静态源码与生成目录中的实装事实、上游设计文档或 ADR 中声明的契约与演进意图、以及第 13 章零依赖 Python 教学模型 <code>examples/mini_dim.py</code> 的离线验证结果。本书未执行生产集群压测或真实大模型基准评测，涉及吞吐与延迟的数据均明确标注上游文档原始测试口径。</p>
+</div></section><section class="book-section" id="01-why-not-a-chat-loop"><header class="chapter-head"><div class="chapter-number">01</div><h1>为什么不用普通对话循环</h1></header><div class="prose"><p>写一个最小可用的编程 Agent 并不难：维护一个 <code>messages</code> 数组，循环调用模型接口，拿到 <code>tool_use</code> 就本地执行函数，把结果塞回数组再调下一轮。这套结构在单终端、同步工具、单次问答的场景里跑得顺手，但在真实工程里很快会撞上四堵墙。</p>
+<p>第一堵墙是并发竞态。客户端不只是终端一个窗口，用户可能同时开着本地 TUI 和 Web 工作区，甚至还有一个 ACP 协议网关连在同一个后台守护进程上。模型发出一个需要确认的写文件请求后，两个界面几乎同时回传审批结果，一个点同意、一个点拒绝，或者用户在审批刚发出的瞬间按下了中断键。如果审批状态只存在 <code>while</code> 循环的局部变量或内存哈希表里，谁先拿到锁、网络回调快慢一毫秒，就会让客户端看到的终态和实际执行的动作对不上。</p>
+<p>第二堵墙是崩溃与热重载后的重放灾难。Agent 正在执行第 12 轮，调用了一个外部脚本或创建了子分支，守护进程突然重启，或者用户在会话中途修改并重载了一个插件。普通循环要想恢复现场，通常只能把历史对话重新喂给逻辑层，一不小心就会触发重复写文件、重复拉起子任务，或者把未结算的审批请求永久卡死在界面上。</p>
+<p>第三堵墙是上下文膨胀与旁路污染。随着功能增多，压缩摘要、Hook 注入、技能指令、后台命令通知、多分支状态提示都想往模型输入里塞文字。如果每个功能都直接拼接 <code>messages</code> 数组，很快就没人说得清某段提示词是谁在什么时候加进去的，压缩之后哪些系统状态该保留、哪些临时通知该扔掉，历史导出和模型实际看到的输入也会彻底分家。</p>
+<p>第四堵墙是跨语言扩展的胶水爆炸。很多 Agent 框架允许外部用 TypeScript 或 Python 写工具，但一旦插件需要读取会话配置、订阅事件流、注册自定义 RPC 方法或管理跨会话的定时任务，宿主就得手写一大堆语言桥接器和注册表，结果核心模块和外围扩展纠缠成一团。</p>
+<h2 id="01-why-not-a-chat-loop--dim-的反常识起点">Dim 的反常识起点<a class="anchor" href="#01-why-not-a-chat-loop--dim-的反常识起点" aria-label="链接到本节">#</a></h2>
+<p>面对这四堵墙，<code>arcships/dim</code> 在 Agent v4 里做了一个看起来很重、实际极其克制的架构决定：把内存里的控制流全部降级为围绕日志运转的状态机。上游在 <code>docs/architecture/rust-agent/time-bus.md</code> 里把这条根基写得很直白：Timeline 是每条分支的时间总线，事件写上总线，总线分配序号，按序号依次驱动订阅它的状态机，持久化只是总线的性质，时间定序才是它的本质。</p>
+<p>这个起点带来三条直接推论，贯穿了整个 28 Crate 的代码库：</p>
+<p><strong>一切先后只看序号。</strong> 网络响应快慢、协程调度顺序、插件订阅注册的先后，都不构成业务语义上的顺序。两次审批响应竞争同一个请求，谁分到的 <code>sequence</code> 在前谁就生效，另一条自动失效；中断信号 <code>stop/interrupt</code> 与迟到的工具请求谁先谁后，同样由序号一锤定音。</p>
+<p><strong>副作用留在总线外，总线上只记结果。</strong> 调大模型、跑 Shell 命令、写磁盘文件都在总线之外异步发生，总线只记录开启事实和终态事实。无论是进程崩溃重启，还是插件热重载换代，新一代状态机从明确的序号截点接手历史，只折叠内存视图和结算未闭合的在途工作，绝不重放任何过去的副作用。</p>
+<p><strong>宿主内核不写业务逻辑，一切能力皆插件。</strong> 连核心的对话主循环 <code>Loop</code>、输入队列 <code>InputQueue</code>、提示词管理 <code>Prompt</code>、权限裁决 <code>Permission</code>、审批门禁 <code>Approval</code>、分支树 <code>TimelineTree</code> 都是装配在 <code>rutis</code> 上的插件部件。在 <code>docs/architecture/rust-agent/generated/catalog.md</code> 记录的真实 App Server 产品装配里，共有 20 个分支级状态机（Capability）各自消费自己关心的事件键，互相不读对方内存，也不替对方改状态。</p>
+<h2 id="01-why-not-a-chat-loop--两种架构的工程对照">两种架构的工程对照<a class="anchor" href="#01-why-not-a-chat-loop--两种架构的工程对照" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>传统对话循环（Chat Loop）</th>
+<th>Dim Agent v4（时间总线 + 插件状态机）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>并发裁决</td>
+<td>依赖协程锁与回调到达时序</td>
+<td>统一写入分支 Timeline，以单调 <code>sequence</code> 裁决</td>
+</tr>
+<tr>
+<td>崩溃与重载</td>
+<td>易丢在途状态或重复执行副作用</td>
+<td>副作用不重放，按截点重建视图并结算未决操作</td>
+</tr>
+<tr>
+<td>上下文组装</td>
+<td>各模块直接修改 <code>messages</code> 列表</td>
+<td>仅已采用输入与工具结果入上下文，渲染与存储分离</td>
+</tr>
+<tr>
+<td>后台长任务</td>
+<td>往往引入独立全局任务调度层</td>
+<td>归发起能力自持，以 <code>SessionLifecycle::take_hold</code> 保护空闲卸载</td>
+</tr>
+<tr>
+<td>并行探索</td>
+<td>复制完整对话数组或另起无关联进程</td>
+<td>同 Session 内按父历史截点分叉，共享事实不共享上下文</td>
+</tr>
+<tr>
+<td>扩展机制</td>
+<td>宿主暴露特定语言的工具回调钩子</td>
+<td>1 个进程行注册多作用域部件，经跨语言数据面互通</td>
+</tr>
+</tbody></table></div>
+<p>这条路线显然有门槛：一个简单的功能也要先想清楚状态归谁、事实怎么记、重启后怎么从历史恢复。但正因为把规则压在了基础设施层，Dim 才能在同一个 Rust 二进制里同时撑起终端 TUI、Web 工作区、ACP 网关、rquickjs 代码执行、分支时间线和会话内热写 TypeScript 插件，而没有在模块之间堆出失控的特殊分支。后面几章会沿着真实的 Crate 边界、事件流与源码细节，把这套骨架一层层拆开。</p>
+</div></section><section class="book-section" id="02-workspace-and-scopes"><header class="chapter-head"><div class="chapter-number">02</div><h1>28 个 Crate 与三层作用域</h1></header><div class="prose"><p>打开一个中大型 Rust 工作区，最怕看到所有业务代码都堆在 <code>server</code> 里，或者底层 <code>types</code> 偷偷反向引用了上层实现。Dim 根目录 <code>Cargo.toml</code> 里一共列了 28 个工作区成员（<code>crates/</code> 下 23 个业务与协议包、<code>xtask</code> 与 <code>xtask/check</code> 共 2 个工程门禁包、<code>tests/</code> 下 3 个集成与扩展测试包，另有 <code>vendor/grok-build</code> 处于 <code>exclude</code>）。这套拆法由 <code>xtask/check/src/boundaries.rs</code> 在编译之外强制校验单向依赖红线，不靠口头约定。</p>
+<h2 id="02-workspace-and-scopes--28-个工作区成员的分层地图">28 个工作区成员的分层地图<a class="anchor" href="#02-workspace-and-scopes--28-个工作区成员的分层地图" aria-label="链接到本节">#</a></h2>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 406" width="420" height="406" role="img" aria-label="工作区四层依赖与三层作用域树">
+<title>工作区四层依赖与三层作用域树</title>
+<defs><marker id="02-workspace-and-scopes--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="12" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">28 个 Cargo 成员 · 依赖自上而下受 xtask-check 硬门禁约束</text><rect x="8" y="22" width="294" height="40" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="16" y="37.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.4" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">协议与入口层</text><text x="16" y="51.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">dimcode · dim-cli · dim-acp · dim-client · web</text><text x="308" y="45" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.0" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">薄客户端 / 网关</text><line x1="155" y1="62" x2="155" y2="70" stroke="var(--line)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="70" width="294" height="40" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="16" y="85.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.4" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">宿主与业务装配层</text><text x="16" y="99.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">dim-app-server · aimux · codemode · goal · scheduler</text><text x="308" y="93" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.0" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">进程装配 / RPC v3</text><line x1="155" y1="110" x2="155" y2="118" stroke="var(--line)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="118" width="294" height="40" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="16" y="133.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.4" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">能力插件层</text><text x="16" y="147.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">dim-agent-capabilities（20 个分支 Capability）</text><text x="308" y="141" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.0" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">Loop / 权限 / 树</text><line x1="155" y1="158" x2="155" y2="166" stroke="var(--line)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="166" width="294" height="40" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="16" y="181.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.4" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">运行内核与契约层</text><text x="16" y="195.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">dim-agent-runtime（rutis 0.23）→ dim-agent-types</text><text x="308" y="189" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.0" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">总线 / 13 保留域</text><line x1="8" y1="220" x2="412" y2="220" stroke="var(--line)" stroke-width="0.7" stroke-dasharray="3 3"/><text x="8" y="236" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">三层作用域树（ADR 002 / ADR 015）：按状态所有者放置部件</text><rect x="8" y="246" width="404" height="38" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="16" y="261.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Process 根作用域（58 个服务）</text><text x="16" y="275.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">SessionStore · Provider · Mcp · SkillsCatalog · Settings · PartRegistry</text><rect x="26" y="294" width="386" height="38" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="34" y="309.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Session 作用域（31 个服务，一个主体）</text><text x="34" y="323.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">TimelineTree · ToolRegistry · PromptRegistry · WorkspaceTools</text><rect x="44" y="342" width="368" height="38" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="52" y="357.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Branch 作用域（22 个服务，一条行为线）</text><text x="52" y="371.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">Timeline · Dispatcher · Loop · InputQueue · Permission · Approval</text><line x1="22" y1="284" x2="22" y2="313" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><line x1="40" y1="332" x2="40" y2="361" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><text x="8" y="396" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--amber)" text-anchor="start" opacity="1">可见性：向父级注入服务；向下经 treeCommands；兄弟分支不直接互调。</text>
+</svg><figcaption>工作区四层依赖与三层作用域树</figcaption></figure>
+<p>上面这张图把代码仓库的静态依赖和运行时的作用域树摆在了一起。上半部分是编译期可见的包分层，<code>xtask-check</code> 用四条硬检查卡死反向依赖：<code>dim-agent-types</code> 不允许依赖运行时或能力层，<code>dim-agent-runtime</code> 不能碰 <code>dim-agent-capabilities</code> 和 <code>dim-app-server</code>，<code>dim-agent-capabilities</code> 不能反向依赖 <code>dim-app-server</code>，而 <code>xtask-check</code> 自身甚至不允许依赖任何 <code>dim-*</code> 包或 <code>rutis</code>，保证纯静态检查不用等整个业务工作区编译完就能秒跑。</p>
+<p>把 28 个成员按职责收拢，可以分成五组：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>分组</th>
+<th>包含成员</th>
+<th>核心职责</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>契约与运行内核（2）</td>
+<td><code>dim-agent-types</code>、<code>dim-agent-runtime</code></td>
+<td>定义 <code>AgentEvent</code>、13 个保留域、冻结的 v1 线格式，以及 <code>Timeline</code>、<code>Dispatcher</code>、<code>AgentBuilder</code> 和 <code>PartRegistry</code></td>
+</tr>
+<tr>
+<td>核心能力与模型宿主（6）</td>
+<td><code>dim-agent-capabilities</code>、<code>dim-agent-aimux</code>、<code>dim-agent-attachments</code>、<code>dim-agent-questions</code>、<code>dim-agent-scheduler</code>、<code>dim-event-hub</code></td>
+<td>提供 20 个分支 Capability、Aimux 多协议模型宿主、附件、交互式提问、定时唤醒与 <code>/loop</code>、跨会话事件中心</td>
+</tr>
+<tr>
+<td>可选业务插件（9）</td>
+<td><code>dim-codemode</code>、<code>dim-goal</code>、<code>dim-session-title</code>、<code>dim-oauth</code>、<code>dim-report</code>、<code>dim-modality</code>、<code>dim-image-understanding</code>、<code>dim-ocr</code>、<code>dim-modality-aimux</code></td>
+<td>rquickjs 代码沙箱、Pursuit 目标推进、自动会话标题、账户 OAuth、本地诊断报告、多模态任务与本地 OCR</td>
+</tr>
+<tr>
+<td>宿主、协议与客户端（6）</td>
+<td><code>dim-app-server</code>、<code>dim-client</code>、<code>dim-acp</code>、<code>dim-cli</code>、<code>dimcode</code>、<code>dim-migration</code></td>
+<td>SQLite 持久化与守护进程、共享 RPC 帧传输、ACP 协议网关、Ratatui 终端客户端、单二进制入口与旧版数据离线迁移</td>
+</tr>
+<tr>
+<td>门禁与测试（5）</td>
+<td><code>xtask</code>、<code>xtask/check</code>、<code>tests/extension-a</code>、<code>tests/extension-b</code>、<code>tests/integration</code></td>
+<td>生成真实装配图与服务目录、执行静态 AST 检查、验证跨包扩展和端到端行为流程</td>
+</tr>
+</tbody></table></div>
+<p>其中有一个很务实的细节：<code>dimcode</code> 单独作为一个二进制入口 crate，把 <code>dim-cli</code> 和 <code>dim-app-server</code> 打进同一个可执行文件里。终端启动守护进程时，并不是去装第二个独立安装包，而是通过 <code>&lt;home&gt;/rust/dimcode-server</code> 链接调起自身的 <code>app-server</code> 子命令，既方便用 <code>ps</code> 或 <code>pgrep dimcode-server</code> 区分客户端与守护进程，又避免了双二进制版本漂移。</p>
+<h2 id="02-workspace-and-scopes--为什么按状态所有者划三层作用域">为什么按状态所有者划三层作用域<a class="anchor" href="#02-workspace-and-scopes--为什么按状态所有者划三层作用域" aria-label="链接到本节">#</a></h2>
+<p>把包拆清楚只解决了编译期问题，运行时部件该放哪儿更容易踩坑。<code>docs/adr/002-plugin-scope.md</code> 记了一段真实弯路：早期设计曾为了减少能力数量，把大部分新功能塞进 Process 进程级作用域。结果这些进程级插件既要给某个 Session 提供工具，又要监听某个 Session 的事件，还要往具体某条分支写输入，于是设计里被迫长出了一堆接线模块：扩展注册表、注册端口、Session 访问宿主、进程级订阅转发、聚合插件。每个接线模块存在的唯一理由，都是把放错位置的插件硬连回它原本该待的作用域。</p>
+<p>ADR 002 拍板撤回了所有接线模块，定下一条铁律：作用域不按模块大小划分，而是按状态属于谁、生命周期跟谁走来划分。</p>
+<p><strong>Process 根作用域</strong>放跨会话共享或比单个会话活得更久的东西。真实装配目录里有 58 个进程级服务，包括 SQLite 存储 <code>sqliteStorage</code> 与 <code>store</code>、模型供应商目录 <code>providerService</code>、全局设置 <code>settings</code>、技能目录 <code>skillsCatalog</code>、MCP 配置管理 <code>mcpService</code>、宿主进程执行端口 <code>hostPlatform</code>、文件系统端口 <code>fsHost</code>，以及跨会话运行的定时调度器 <code>scheduleJobs</code> 和工作流引擎 <code>workflowRuns</code>。</p>
+<p><strong>Session 作用域</strong>代表一个主体，也就是与用户交互的同一个“我”。它持有该主体全部行为线共用的身份、工作区路径、工具注册表 <code>toolRegistry</code>、提示词源 <code>promptRegistry</code>、工作区文件工具 <code>toolHost</code>、文件访问事实 <code>FileAccessFacts</code>、分支目录 <code>timelineTree</code> 与 <code>treeCommands</code>。共 31 个 Session 级服务。只要任务需要换一个独立身份、独立系统提示或独立工作目录，就必须新建 Session（例如协作子代理或分叉会话），不能硬塞成同一 Session 里的分支。</p>
+<p><strong>Branch 作用域</strong>代表这个主体的一条并行行为线。它拥有自己的 <code>timeline</code> 与 <code>dispatcher</code>，以及围绕这条线折叠出的全部状态机：<code>Loop</code>、<code>InputQueue</code>、<code>Prompt</code>、<code>ContextPreparation</code>、<code>ContextUsage</code>、<code>ToolBinding</code>、<code>ToolExecutor</code>、<code>Permission</code>、<code>Approval</code>、<code>BranchLine</code>、<code>TreeTimeline</code>、<code>BackgroundExec</code>、<code>WaitBranch</code> 等，共 22 个分支级服务。</p>
+<h2 id="02-workspace-and-scopes--五种合法跨层关系与-adr-015-的轻量化重构">五种合法跨层关系与 ADR 015 的轻量化重构<a class="anchor" href="#02-workspace-and-scopes--五种合法跨层关系与-adr-015-的轻量化重构" aria-label="链接到本节">#</a></h2>
+<p>在 <code>docs/architecture/rust-agent/principles.md</code> 第 2 节里，三层作用域之间的交互被收敛成五种明确关系，其余路径一律禁止：</p>
+<ol>
+<li><strong>分支使用能力</strong>：分支部件向上注入 Session 或 Process 服务，例如 <code>Permission</code> 注入 <code>S:CommandRules</code> 与 <code>S:SessionConfig</code>。</li>
+<li><strong>能力在某条分支上被使用</strong>：Session 级工具或方法入口在收到调用时，按调用方携带的 <code>branch_id</code> 路由到该分支的服务，比如 <code>BranchTool</code> 每次调用再查找调用线的 <code>BranchLine</code>。</li>
+<li><strong>能力影响分支</strong>：能力按自身契约向一条或多条分支写输入或事件，例如 <code>Goal</code> 向目标分支写入评估结果。</li>
+<li><strong>分支影响分支</strong>：严格限定在父子之间，通过向对方写入 <code>input/message</code> 或通过工具分页读取对方已提交历史完成，异步且不互相阻塞等待；兄弟分支之间不可见、不互调。</li>
+<li><strong>Session 管理自己的分支</strong>：分支目录、身份预留、创建、就绪发布与关闭结算由 Session 级的 <code>TimelineTree</code> 独占，但分支内由时间线推出来的业务状态绝不泄漏回 Session 层。</li>
+</ol>
+<p>到了 <code>rutis 0.23.0</code>（ADR 015 与 ADR 025），这套作用域树又完成了一次关键瘦身。早期 Session 和 Branch 都是 <code>rutis-loader</code> 里的实例组（instanced loader group），每次打开会话或新建分支都要扫描全量 loader 条目表，连 MCP 连接代次和技能内容也成了嵌套 loader 实例。升级到 <code>rutis 0.23.0</code> 后，宿主可以用 <code>mark_scope</code> 把普通插件标记为作用域根，于是 Session 成为 Agent 挂载的普通子插件，Branch 成为 Session 挂载的普通子插件，Skills 内容与 MCP 连接代次则直接成为各自所属部件的子插件。<code>Loader::entries()</code> 里从此只剩进程行和 Agent 锚点行，创建与关闭会话直接走 <code>rutis</code> 原生的父子所有权树，不再需要扫描或维护第二套实例表。</p>
+<p>理解了 28 个 Crate 的单向边界和三层作用域树，就能看清 Dim 最底层那根脉络：每条分支里真正负责把状态机串起来的时间总线。</p>
+</div></section><section class="book-section" id="03-time-bus"><header class="chapter-head"><div class="chapter-number">03</div><h1>时间总线与只认序号的事实流</h1></header><div class="prose"><p>如果把一条分支上发生的所有事情摊平来看，并发 bug 的根源几乎都来自同一个错觉：代码以为先发起的操作会先完成，或者以为写进了内存就已经生效。在 <code>crates/dim-agent-runtime/src/core/timeline.rs</code> 和 <code>docs/architecture/rust-agent/timeline-storage.md</code> 中，Dim 把这条链路切成了两个清晰的水位和一个单调递增的序号，彻底剥离了执行耗时与业务先后。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 368" width="420" height="368" role="img" aria-label="时间总线写入、落盘与按序派发链路">
+<title>时间总线写入、落盘与按序派发链路</title>
+<defs><marker id="03-time-bus--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="12" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">写入与分发分离：已提交（热窗口）不等于已发布（已落盘）</text><rect x="8" y="22" width="404" height="42" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="16" y="37.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">1. append / append_batch_registered</text><text x="16" y="51.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">能力提交 EventDraft，核心禁止扩展写入 13 个 RESERVED_DOMAINS</text><line x1="210" y1="64" x2="210" y2="76" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="76" width="404" height="42" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="16" y="91.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">2. before 同步变形链（提交锁内，仅 Rust）</text><text x="16" y="105.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">逐个变换草稿并记录 TraceStep；任意钩子报错则回退原草稿提交</text><line x1="210" y1="118" x2="210" y2="130" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="130" width="404" height="42" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="16" y="145.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">3. 分配单调 sequence + 登记回调</text><text x="16" y="159.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">写锁内登记关联状态；登记失败整批中止，不留脏锚点</text><line x1="210" y1="172" x2="210" y2="184" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="184" width="404" height="42" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="16" y="199.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">4. 热窗口暂存 + SQLite WAL 写入轮</text><text x="16" y="213.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">synchronous=FULL（macOS 开 fullfsync）；输出行按 20ms 节流合批</text><line x1="210" y1="226" x2="210" y2="238" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="238" width="404" height="42" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="16" y="253.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">5. 推进发布水位 published()</text><text x="16" y="267.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">落盘返回后推进水位；外部读取与 Dispatcher 只消费已发布事件</text><line x1="210" y1="280" x2="210" y2="292" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="292" width="404" height="42" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="16" y="307.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">6. Dispatcher 严格按序派发</text><text x="16" y="321.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">订阅方经 consume() 先暂存再重建，只处理高于截点的实时事实</text><text x="8" y="356" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--forest)" text-anchor="start" opacity="1">副作用发生在总线外：重启与重载按同一协议从截点重建，绝不重放外部动作。</text>
+</svg><figcaption>时间总线写入、落盘与按序派发链路</figcaption></figure>
+<h2 id="03-time-bus--信封结构与-13-个核心保留域">信封结构与 13 个核心保留域<a class="anchor" href="#03-time-bus--信封结构与-13-个核心保留域" aria-label="链接到本节">#</a></h2>
+<p>写上时间总线的每一条事实都装在 <code>crates/dim-agent-types/src/events.rs</code> 定义的 <code>AgentEvent</code> 信封里。信封只包含六个顶层字段：<code>id</code>（事件唯一标识）、<code>sequence</code>（分支内单调无符号整数序号）、<code>create_at</code>（Unix 毫秒时间戳）、可选的 <code>tags</code>、可选的 <code>parent_call_id</code>（用于标记 Code Mode 等嵌套工具调用产生的子事件），以及展平后的 <code>kind: EventKind</code>。</p>
+<p>这里有一条很巧妙的上下文防火墙：<code>AgentEvent::context_flags()</code> 会先检查 <code>parent_call_id.is_some()</code>，只要事件带有父调用标识，直接返回 <code>(false, false)</code>。像 Code Mode 脚本内部触发的所有子工具调用事件，虽然照常记录在时间线上供审计和调试，但永远不会被当作主模型的上下文输入。</p>
+<p>为了防止外部插件冒充核心状态机的事实，<code>dim-agent-types</code> 明确划定了 13 个核心保留域 <code>RESERVED_DOMAINS</code>：</p>
+<p><code>input</code>、<code>stop</code>、<code>approval</code>、<code>permission</code>、<code>exec</code>、<code>turn</code>、<code>prompt</code>、<code>context</code>、<code>model</code>、<code>step</code>、<code>branch</code>、<code>collaboration</code>、<code>session</code>。</p>
+<p>核心 <code>EventKind</code> 枚举覆盖了这 13 个域下的全部强类型事件（从 <code>input/message</code>、<code>input/consumed</code> 到 <code>branch/default</code>、<code>session/forked</code>）。外部扩展只能通过 <code>EventKind::Extension(ExtensionEvent)</code> 写入自己命名的域，且域和事件名都不能为空、不能包含 <code>/</code> 或 <code>*</code>。一旦扩展试图往 13 个保留域里塞不透明载荷，Timeline 在入口直接拒绝。</p>
+<h2 id="03-time-bus--已提交与已发布-为什么要分双水位">已提交与已发布：为什么要分双水位<a class="anchor" href="#03-time-bus--已提交与已发布-为什么要分双水位" aria-label="链接到本节">#</a></h2>
+<p>沿着图里的写入链路往下走，能力调用 <code>Timeline::append</code>、<code>append_registered</code> 或 <code>append_batch_registered</code> 时，函数是同步返回的，并不等待磁盘 fsync。在提交锁内部，Timeline 依次做三件事：跑完进程内同步的 <code>before</code> 变形链、分配连续的 <code>sequence</code>、执行产生方的登记回调（登记失败则整批中止，什么也不落盘）。通过之后，事件进入内存热窗口并塞进 <code>TimelineStore</code> 的后台写入队列，此时分支的 <code>committed()</code> 水位推进。</p>
+<p>但 <code>committed()</code> 推进不代表事件已经对外生效。后台写入任务（SQLite 实现位于 <code>SessionStorePlugin</code>）按轮次把所有 Session 的待写批次打包进同一个 SQLite 事务，开启 WAL 模式与 <code>synchronous=FULL</code>（macOS 上额外开启 <code>fullfsync</code>），保证事务返回即真正落盘。只有事务提交成功后，写入任务才在释放写锁之后推进各分支的发布水位 <code>published()</code>，并唤醒该分支的 <code>Dispatcher</code>。</p>
+<p>这种双水位设计把进程崩溃和断电的后果缩减到了三种清晰状态：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>中断时刻</th>
+<th>磁盘上的事实</th>
+<th>恢复后的行为</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>事务提交前崩溃</td>
+<td>该轮事件不存在</td>
+<td>这些事件从未发布，也没有被任何订阅者消费，系统回退到上一轮水位</td>
+</tr>
+<tr>
+<td>事务提交后、发布前崩溃</td>
+<td>该轮事件已完整落盘</td>
+<td>此前尚未分发，重启后各能力按统一恢复协议读取历史并接手</td>
+</tr>
+<tr>
+<td>发布后崩溃</td>
+<td>事件存在且已进入分发</td>
+<td>状态机从历史恢复等价状态，不重复执行外部副作用</td>
+</tr>
+</tbody></table></div>
+<p>两类读者的可见边界也跟着双水位分开：分支内部的能力在重建或复核时，可以通过 <code>Timeline</code> 读到 <code>committed()</code>（包含热窗口里已受理但尚未落盘的尾部）；而 <code>Dispatcher</code>、分支外部的 <code>Branch</code> 与 <code>Session</code> 门面、以及所有 RPC 客户端，只能看到 <code>published()</code> 之前的事件。对外部世界来说，一条事件只有落盘发布了才算数。</p>
+<h2 id="03-time-bus--存储层的物理优化-去重-合行与-20ms-节流">存储层的物理优化：去重、合行与 20ms 节流<a class="anchor" href="#03-time-bus--存储层的物理优化-去重-合行与-20ms-节流" aria-label="链接到本节">#</a></h2>
+<p>把模型流式输出的每一个 token 增量和每一轮完整的消息数组都原样写进 SQLite，很快就会把磁盘和 I/O 打爆。Dim 在不破坏逻辑事件序号的前提下，在存储边界做了三项物理压缩，而且全部对上层透明：</p>
+<p><strong>内容寻址的消息链表。</strong> 每轮 <code>context/prepare</code> 和 <code>model/call</code> 携带的 <code>request.messages</code> 往往与上一轮共享 95% 以上的前缀。SQLite 存储把每条消息存成 Session 内容表里按内容哈希寻址的链表节点，指向前一个节点的地址；<code>tools</code> 和 <code>system</code> 也按内容哈希去重。事件正文里只存最后一个节点的地址、长度以及 <code>tools</code> 与 <code>system</code> 的引用编号。</p>
+<p><strong>流式输出合行与事务内热缓存。</strong> 同一分支、同一请求下连续产生的 <code>step/text</code> 或 <code>step/thinking</code> 增量，在物理表里合并为同一条输出行（受 1 秒或 4 KB 阈值切分），行内按序保存各逻辑事件的 <code>id</code>、<code>sequence</code>、<code>create_at</code>、<code>tags</code> 和 <code>delta</code>。写入器在同一个事务内按分支缓存最后一条输出行的已解码结构，后续增量直接内存追加，免去反复查表和解析 JSON，非输出事件到达或事务结束时立刻失效。</p>
+<p><strong>分流式写入轮节流。</strong> 后台写入器在上一轮提交完成后，只要队列里还有普通批次（比如工具调用、审批、输入采用），立刻开始下一轮提交，不人为加延迟。只有当队列里全部是流式输出行增量时，才等到距上一轮开始满 20 毫秒再合并提交，把纯流式输出压在每秒至多 50 次 WAL fsync。</p>
+<p><code>docs/architecture/rust-agent/timeline-storage.md</code> 坦诚记录了这套策略的实测权衡：在 Apple M4 上用 <code>timeline_acceptance rounds 64 200 64</code> 实测（64 条流式分支每秒各 200 增量，叠加 64 条依赖写入链），普通批次不等待让依赖链每步发布延迟中位数从 22 ms 降到了 9 ms、吞吐翻了 1.8 倍，但代价是每秒写入轮次升到 97 轮、WAL 写入量从每秒 40 MB 升到 80 MB（因为普通批次顺带把所有在等的流式增量一起带走了）。上游团队明确记下了这个代价，并决定暂不打破“一轮取走全部待写批次”的简单模型。</p>
+<p>读写并发同样做了收敛：所有只读查询走按需创建的只读连接池，上限 4 条连接，空闲时收缩回 1 条，读操作在语句开始时的最新提交快照上执行，不抢写连接互斥锁；大 Session 的分叉与删除则通过复制连接按每 256 个逻辑序号、每 1024 个内容哈希分块提交，每块之间把写锁让给正常的写入轮。</p>
+<p>当事件稳稳落盘并推进发布水位之后，真正决定业务怎么流转的，是站在总线另一端的 <code>Dispatcher</code> 和一整套事件驱动契约。</p>
+</div></section><section class="book-section" id="04-event-driven-contracts"><header class="chapter-head"><div class="chapter-number">04</div><h1>事件驱动契约：Dispatcher、before 与重启重建</h1></header><div class="prose"><p>把事件写进 SQLite 只是前半场。如果订阅者各自开后台线程轮询数据库、或者在处理回调里同步等一个耗时 30 秒的模型请求，整个分支的顺序语义就会瞬间瓦解。Dim 用四个机制把消费端锁死在可预测的轨道上：单分支 <code>Dispatcher</code>、提交锁内的 <code>before</code> 同步变形链、<code>consume</code> 重建交接协议，以及不经时间线的轻量广播通道 <code>SessionBroadcast</code>。</p>
+<h2 id="04-event-driven-contracts--dispatcher-一条分支唯一的顺序读者">Dispatcher：一条分支唯一的顺序读者<a class="anchor" href="#04-event-driven-contracts--dispatcher-一条分支唯一的顺序读者" aria-label="链接到本节">#</a></h2>
+<p>在 <code>crates/dim-agent-runtime/src/core/dispatcher.rs</code> 里，<code>Dispatcher</code> 挂载在每条分支的私有总线通道 <code>dim/timeline/{instance}/committed</code> 上。每当 <code>Timeline</code> 推进发布水位，热窗口里的已发布事件按 <code>sequence</code> 从小到大送进 <code>Dispatcher</code>，再逐条匹配订阅者注册的键模式：精确键（如 <code>approval/request</code>）、域通配（如 <code>approval/*</code>）或全局通配（<code>*</code>）。</p>
+<p>事件处理器（handler）有两条不能碰的红线：</p>
+<p>第一，<strong>handler 绝对不能等慢操作</strong>。网络请求、工具执行、磁盘冷读、子分支构建都不允许卡在 handler 里。<code>docs/architecture/rust-agent/event-driven-flows.md</code> 规定得很清楚：能力在 handler 返回之前，把异步工作登记到自己持有的任务表里就立刻返回。等异步任务将来跑完，再通过 <code>Timeline::append</code> 把结果事实写到时间线尾部，交给后面的分发轮次消费。</p>
+<p>第二，<strong>错误与 panic 必须归属到具体订阅者</strong>。<code>SubscriptionListener::on_event</code> 用 <code>catch_unwind</code> 包住同步启动和异步 future 轮询。一旦某个订阅者返回 <code>Err</code> 或发生 panic，Dispatcher 会把故障归因到该订阅者名称，通过 <code>Dispatcher::fail</code> 终止该分支的后续派发并上报，而不是悄无声息地跳过一条事实继续往下跑。</p>
+<h2 id="04-event-driven-contracts--九条时间线扩展规则的核心约束">九条时间线扩展规则的核心约束<a class="anchor" href="#04-event-driven-contracts--九条时间线扩展规则的核心约束" aria-label="链接到本节">#</a></h2>
+<p><code>docs/architecture/rust-agent/principles.md</code> 第 4 节写下了通过时间线扩展行为的九条规则，其中四条直接决定了业务代码的写法：</p>
+<p><strong>改别人的状态，只能写指令事件。</strong> 调用方永远不直接调同步方法去修改另一个模块的内存状态，也不替状态所有者写结果事件。审批是最典型的例子：外部客户端发来决定后，经入口写入 <code>approval/respond</code>；<code>Approval</code> 状态机按序号读到指令，只有第一条对未决请求有效的指令会被采纳，后面抢跑的指令直接忽略，不需要为“什么都没发生”再多写一条无用事件。输入撤回同理：入口写 <code>input/withdraw</code>，<code>InputQueue</code> 只有在还握着这条未采用输入时才写 <code>input/deleted</code>。</p>
+<p><strong>交接一旦完成，原模块就不再插手。</strong> 当 <code>InputQueue</code> 写出 <code>input/applied</code>，这条输入的所有权就正式移交给了 <code>Loop</code>。交接之前可以用 <code>input/withdraw</code> 撤回；交接之后想停下来，只能走新所有者的指令 <code>stop/interrupt</code>。</p>
+<p><strong>原子批次一起落盘，但消费端按条可见。</strong> 需要同时生效的事实（例如 <code>Prompt</code> 变更、<code>input/applied</code> 与 <code>context/configured</code>）由产生方打包进一次 <code>append_batch_registered</code> 提交，起决定作用的事件放在批次最后。订阅者看不到批次边界，只按序号一条条收，需要校验批次终点的地方（如历史分页、分叉切点）统一通过 <code>Timeline::batch_end</code> 查询存储记录的批次元数据。</p>
+<p><strong>写入前复核由状态机自负其责，且只看已消费状态。</strong> 状态机先做决定、稍后才提交写入时，不能去偷看时间线尾部尚未被自己消费的事件，只能拿自身已消费的状态复核。即便生产方在消费中断前写出了迟到请求，消费方按序处理时也会依据自己已经消费到的 <code>stop/interrupt</code> 把属于该 turn 的请求取消掉。</p>
+<h2 id="04-event-driven-contracts--before-钩子-受限的可信变形器"><code>before</code> 钩子：受限的可信变形器<a class="anchor" href="#04-event-driven-contracts--before-钩子-受限的可信变形器" aria-label="链接到本节">#</a></h2>
+<p>有时宿主需要在事件真正落盘前改写草稿，比如注入元数据、重写测试用的候选载荷，或者统一规范化字段。Dim 没有让外部去篡改已提交历史，而是在 <code>Timeline</code> 的提交锁内部提供了一条同步瀑布链 <code>BeforeCommit</code>（<code>crates/dim-agent-runtime/src/core/timeline.rs</code>）。</p>
+<p><code>before</code> 的边界被卡得非常窄：</p>
+<ul>
+<li>它只在写入前同步变换当前 <code>EventDraft</code>，不能改写已经提交的历史，也不能阻止写入或等待任何异步 I/O。</li>
+<li>因为运行在分支提交锁内部，任何跨进程 RPC 都可能把整条分支锁死，所以只有进程内的 Rust 插件可以注册 <code>before</code>，TypeScript 和 Python 插件无法注册（ADR 001）。</li>
+<li>每一个钩子的输入和变形结果都会被记录成 <code>TraceStep</code>，挂在 <code>TimelineTrace</code> 里随事件一起持久化，通过 <code>dimcode export</code> 可以完整导出审计轨迹。</li>
+<li>一旦链上任意一个 <code>before</code> 钩子报错或 panic，整条链直接回退，提交<strong>最初的原始草稿</strong>，且不会让分支提交锁中毒。</li>
+<li>产生方登记状态和后续执行，一律以 <code>before</code> 变形后最终提交的事件为准，绝不能继续拿着提交前的候选变量干活，也不做二次校验去反对可信变形。</li>
+</ul>
+<h2 id="04-event-driven-contracts--副作用不重放与-consume-重建协议">副作用不重放与 <code>consume</code> 重建协议<a class="anchor" href="#04-event-driven-contracts--副作用不重放与-consume-重建协议" aria-label="链接到本节">#</a></h2>
+<p>在 Dim 的世界观里，插件热重载和进程崩溃重启对新一代状态机来说是同一件事，走的也是同一套交接协议：<code>Dispatcher::consume</code>（<code>docs/design/plugin-contract.md</code> 第 5.2 节）。</p>
+<p>普通写法很容易掉进漏事件或重复事件的坑：如果先读历史再订阅，读历史期间新到达的事件会漏掉；如果先订阅再读历史，重叠区间的事件会被处理两遍。<code>Dispatcher::consume</code> 用一个极简的暂存闸门堵死了这个窗口：</p>
+<ol>
+<li>先向 Dispatcher 注册监听，进入 <code>holding = true</code> 状态，期间到达的实时匹配事件全部暂存进 <code>Held.events</code> 列表。</li>
+<li>执行该能力提供的 <code>rebuild</code> 回调。回调在分支 <code>Timeline</code> 上固定一个查询截点 <code>cutoff</code>（内部重建可包含已提交未发布的尾部），只查询自己折叠状态所需的事件字段，按历史恢复内存视图，并把上一代留在半路的在途操作结算成终态（绝不重新发起外部工具或模型请求），最后把 <code>cutoff</code> 返回给 Dispatcher。</li>
+<li>Dispatcher 把 <code>holding</code> 切回 <code>false</code>，只把 <code>Held.events</code> 里序号<strong>严格大于 <code>cutoff</code></strong> 的事件按序喂给实时 handler，之后无缝衔接后续实时事件。</li>
+</ol>
+<p>每条事件在重建和实时两个阶段合起来恰好处理一次，既不丢、也不重。</p>
+<p>这套要求同时划清了内存状态的合法性边界（<code>time-bus.md</code> 第 3 条）：任何跨工作、跨代使用的业务状态，都必须能由“时间线历史 + 重读外部配置状态”恢复到等价。唯独已结算的在途 I/O 局部控制状态是例外，比如单次模型调用失败后的重试计数、退避等待预算、凭据刷新标记，它们只属于当前这一次调用，重载时原调用直接按失败或取消结算，不会把重试计数带进下一项工作。</p>
+<h2 id="04-event-driven-contracts--时间线事实-vs-总线通知-什么该落盘">时间线事实 vs 总线通知：什么该落盘<a class="anchor" href="#04-event-driven-contracts--时间线事实-vs-总线通知-什么该落盘" aria-label="链接到本节">#</a></h2>
+<p>不是所有消息都值得占用时间线序号。<code>principles.md</code> 第 4 节第 9 条定了一个很硬的筛选条件：只有影响后续业务决定的事实才进 Timeline。</p>
+<p>给界面展示的实时进度、进程级状态变化（比如会话标题更新、Provider 目录变更、设置修订）不进 Timeline，而是走 <code>rutis</code> 根上的扁平事件总线。每条会话有一条由 <code>SessionBroadcast</code> 插件维护的命名通道 <code>session/{sessionId}</code>，负责把本会话各分支已经分发的事件零拷贝（<code>Arc&lt;AgentEvent&gt;</code>）广播给订阅方，同时转发进程级所有者发出的 <code>SessionNotice</code>、宿主观察屏障 <code>Fence { recipient, token }</code> 以及卸载时的 <code>Closed</code>。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>传输通道</th>
+<th>持久化与重放</th>
+<th>顺序保证</th>
+<th>典型用途</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>分支 Timeline + Dispatcher</td>
+<td>SQLite WAL 持久化，按 <code>consume</code> 重建</td>
+<td>分支内严格单调 <code>sequence</code></td>
+<td>输入、模型调用、工具结果、审批、分支创建、压缩</td>
+</tr>
+<tr>
+<td><code>session/{sessionId}</code> 广播</td>
+<td>不持久化、不补发、无订阅即丢弃</td>
+<td>同分支与分发序一致，跨分支按发出序</td>
+<td>TUI / Web / ACP 客户端实时流、UI 通知、交付屏障</td>
+</tr>
+<tr>
+<td><code>settings/{source}</code> 等总线事件</td>
+<td>不持久化、不重放</td>
+<td>单事件名内按发出序启动监听</td>
+<td>配置变更提醒、<code>skills/catalog</code>、<code>agent/session-deleted</code></td>
+</tr>
+</tbody></table></div>
+<p>因为总线事件不重放，任何消费总线事件的部件（比如 <code>SessionTitle</code> 监听 <code>input/applied</code>）都必须具备从 Timeline 或所有者状态重新读取的能力，这样漏掉一次总线事件顶多延迟动作，不会破坏状态一致性。</p>
+<p>把单条分支的时间线和分发契约夯实之后，下一步就能顺理成章地看一条会话如何长出一整棵分支树。</p>
+</div></section><section class="book-section" id="05-timeline-branches"><header class="chapter-head"><div class="chapter-number">05</div><h1>分支时间线：默认分支、父子通信与配额路由</h1></header><div class="prose"><p>排查一个棘手的线上 Bug 时，工程师常会同时顺着两条线索查：一边读重试逻辑的实现代码，一边对照单元测试看失败路径有没有覆盖，或者顺手让另一条思路试一个备选改法。普通单线对话里，一旦模型在同一个上下文窗口里同时追两个假设，文件片段、报错日志和半成品结论就会混成一锅粥，回退也只能靠手动撤回或者复制整个会话。</p>
+<p>Dim 在同一 Session 内部引入了分支时间线（Timeline Branches）。在本次快照 <code>88a3df3669405730cbee6bfd113a7f75cf520677</code>（直接对应上游最新合入的 PR #1917 <code>branch-default-routing</code> 以及 <code>v0.1.0-alpha.27</code> 的默认分支改动）中，这套机制刚刚完成了从“一切围绕 <code>main</code>”到“起点 <code>main</code> 与可移动默认分支分离”的完整落地。</p>
+<h2 id="05-timeline-branches--先分清三种容易混淆的概念">先分清三种容易混淆的概念<a class="anchor" href="#05-timeline-branches--先分清三种容易混淆的概念" aria-label="链接到本节">#</a></h2>
+<p>在源码 <code>docs/design/timeline-branches.md</code> 第 2 节里，Dim 把分支、协作子代理和会话分叉划得清清楚楚：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>机制</th>
+<th>本质</th>
+<th>历史起点</th>
+<th>身份与工具</th>
+<th>协作方式</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>分支（Branch）</td>
+<td>同一个 Agent 主体在同 Session 内的另一条行为线</td>
+<td>继承父分支切点之前的只读事实，之后各自独立</td>
+<td>共用 Session 的系统提示、工具、模型、权限与工作区</td>
+<td>仅父子间异步互写输入和按页互读，无交付结果合同</td>
+</tr>
+<tr>
+<td>协作子代理（Collaboration Member）</td>
+<td>另一个拥有独立 Profile 的 Agent，住在独立 Session 里</td>
+<td>从领队下发的任务开始，不带领队历史</td>
+<td>独立的指令、模型策略和工具集</td>
+<td>领队派活，完成后自动回传结果，子代理不能再委派</td>
+</tr>
+<tr>
+<td>会话分叉（Fork）</td>
+<td>从 <code>main</code> 某个静止点复制出的全新独立 Session</td>
+<td>复制 <code>main</code> 到切点的历史，末尾写入 <code>session/forked</code></td>
+<td>复制当时的配置快照，之后完全独立</td>
+<td>分叉后互不关联</td>
+</tr>
+</tbody></table></div>
+<p>判断标准很简单：需要换一个身份、换一套角色指令或换一个隔离的工作目录时，走协作子代理或分叉；同一个 Agent 想基于同一段已知事实并行推进多条线索，走分支。分支之间<strong>共享历史事实，但不共享上下文</strong>：每条分支有自己的 <code>Timeline</code>、<code>Dispatcher</code> 和上下文压缩节奏，子分支只在切点之前共享祖先链上的只读事件段。</p>
+<h2 id="05-timeline-branches--起点-main-可移动默认分支与配额保护链">起点 <code>main</code>、可移动默认分支与配额保护链<a class="anchor" href="#05-timeline-branches--起点-main-可移动默认分支与配额保护链" aria-label="链接到本节">#</a></h2>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 328" width="420" height="328" role="img" aria-label="分支时间线、保护路径配额与三键状态">
+<title>分支时间线、保护路径配额与三键状态</title>
+<defs><marker id="05-timeline-branches--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="12" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">起点 main 恒可开线；默认分支沿 branch/default 移动并保护其祖先链</text><rect x="128" y="24" width="164" height="42" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="136" y="39.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">main（起点 / Root）</text><text x="136" y="53.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">恒可开工具线 · 永不结束</text><line x1="175" y1="66" x2="92" y2="92" stroke="var(--forest)" stroke-width="1.05" marker-end="url(#arrow)"/><line x1="210" y1="66" x2="210" y2="92" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><line x1="245" y1="66" x2="336" y2="92" stroke="var(--muted)" stroke-width="1.05" stroke-dasharray="4 3" marker-end="url(#arrow)"/><rect x="8" y="92" width="140" height="48" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="16" y="107.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.0" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">分支 A（工具线）</text><text x="16" y="121.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">受保护祖先链</text><text x="16" y="133.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">不计入配额 · 禁止 end</text><rect x="156" y="92" width="114" height="48" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="164" y="107.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.0" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">分支 C（工具线）</text><text x="164" y="121.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">非保护路径</text><text x="164" y="133.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">占 1 个工具线名额</text><rect x="278" y="92" width="134" height="48" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="286" y="107.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.0" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">插件线（Goal 评估）</text><text x="286" y="121.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">source=host</text><text x="286" y="133.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">不可选主线 · 不占名额</text><line x1="78" y1="140" x2="78" y2="166" stroke="var(--forest)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="166" width="176" height="50" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="16" y="181.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.0" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">分支 B（当前默认分支）</text><text x="16" y="195.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">可开工具线 · 省略 branchId 路由至此</text><text x="16" y="207.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">切回 main 后 A 与 B 一起恢复计额</text><line x1="184" y1="191" x2="224" y2="191" stroke="var(--amber)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="224" y="166" width="188" height="50" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="232" y="181.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.0" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">分支 D（B 开的工具线）</text><text x="232" y="195.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">新开子线不在保护链上</text><text x="232" y="207.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">预留时在树锁内扣 1 个配额</text><line x1="8" y1="230" x2="412" y2="230" stroke="var(--line)" stroke-width="0.7" stroke-dasharray="3 3"/><text x="8" y="245" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">三条独立键控状态块（压缩后各自独立重放，互不覆盖）</text><rect x="8" y="254" width="128" height="46" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="16" y="269.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">branch:line</text><text x="16" y="283.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">本线身份与主线状态</text><text x="16" y="295.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">切换默认分支时重申</text><rect x="146" y="254" width="128" height="46" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="154" y="269.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">branch:roster</text><text x="154" y="283.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">本线开启的活跃工具线</text><text x="154" y="295.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">子线继承时自动退役</text><rect x="284" y="254" width="128" height="46" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="292" y="269.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">branch:parent</text><text x="292" y="283.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">父线最新 head 与读游标</text><text x="292" y="295.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">只传位置不传父线正文</text><text x="8" y="316" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.1" font-weight="400" fill="var(--amber)" text-anchor="start" opacity="1">默认上限 DEFAULT_MAX_OPEN_LINES = 4；权威事实 branch/default 只写在 main 上。</text>
+</svg><figcaption>分支时间线、保护路径配额与三键状态</figcaption></figure>
+<p>读懂分支树，最关键的是区分两个长期容易混为一谈的角色：<strong>起点（root）<strong>和</strong>默认分支（default branch）</strong>。</p>
+<p>起点永远是 id 为 <code>main</code>（源码常量 <code>ROOT_BRANCH_ID</code>）的那条没有父节点的线，界面中文名叫“起点”。它永不结束，即使整个 Session 关闭也不是分支意义上的 <code>end</code>。</p>
+<p>默认分支则是当前会话对话所在的位置，界面中文名叫“主线”。所有省略了 <code>branchId</code> 的客户端请求都会路由到当前默认分支。会话刚建好时，默认分支就是起点 <code>main</code>；之后用户可以通过界面或 RPC 把任意一条打开的对话线（工具线或用户线）设为新的默认分支，也可以随时切回起点。决定谁是默认分支的唯一权威事实，是写在起点 <code>main</code> 上的非模型事件 <code>branch/default { branch, from }</code>。因为起点永不结束，恢复多分支会话时只需用 <code>timeline_events_by_kind</code> 索引查一次起点上最新的一条 <code>branch/default</code> 或 <code>session/forked</code> 就能还原：如果最新的是 <code>session/forked</code>，说明这是分叉出来的新会话，复制过来的旧 <code>branch/default</code> 自动作废，默认分支回到起点；如果目标分支已结束或是插件线，同样安全回退到起点。</p>
+<p>更精妙的设计藏在<strong>开线权</strong>和<strong>工具线配额</strong>的联动里（<code>crates/dim-agent-capabilities/src/timeline_tree.rs</code> 中的 <code>admit_open</code>、<code>can_open</code>、<code>counted_tool_lines</code> 和 <code>protects</code>）：</p>
+<ul>
+<li><strong>谁能用 <code>branch</code> 工具开新线</strong>：只有两条线被允许，一是起点 <code>main</code>（无论它此刻是不是默认分支），二是当前默认分支。其他所有工具线、曾经当过默认分支的线、以及插件线调用 <code>create</code> 都会被拒绝并返回 <code>branch_not_opener</code>。这样做是为了保证用户把主线切到子分支 B 后，如果仍想在起点 <code>main</code> 上基于起点的新进展开一条并行线，起点依然有开线权；而前任默认分支失去开线权后，仍保留并继续协调它此前已经开启的子线。</li>
+<li><strong>配额怎么算才不会卡死用户</strong>：<code>BranchTool</code> 对整个 Session 的活跃工具线设了默认上限 <code>DEFAULT_MAX_OPEN_LINES = 4</code>。计算配额时，统计全树中所有仍打开或处于预留状态的 <code>BranchSource::Tool</code> 工具线，但<strong>排除受保护路径</strong>，也就是当前默认分支及其通向起点的全部祖先链。用户线（<code>BranchSource::User</code>）和插件线（<code>BranchSource::Host</code>，例如 Goal 的评估线）不计入配额。</li>
+<li><strong>在树锁内预留即扣额</strong>：<code>TimelineTree::open_tool_line</code> 把开线资格检查、已计数工具线统计与新分支身份预留放进同一把树锁内原子完成。构建中尚未发布的预留分支已经占住名额，防止并发两个 <code>create</code> 挤爆最后一个槽位；发布成功时不重复扣额，构建彻底失败写下 <code>branch/create-failed</code> 时立刻释放名额。</li>
+<li><strong>切换默认分支绝不强关旧线</strong>：假设配额为 2，树上已有 <code>main → A → B</code> 两条工具线且当前默认分支是 B，此时 A 和 B 都在保护链上，计额为 0，B 又开了子线 C（计额变为 1）。如果用户把默认分支切回 <code>main</code>，A、B、C 瞬间全部退出保护链，计额跳成 3（超过上限 2）。Dim 的规则是：切换操作本身直接成功，绝不擅自关闭任何已有分支，只是之后再调 <code>branch create</code> 会因 <code>branch_limit_reached</code> 被拒绝，直到有工具线结束腾出名额。</li>
+<li><strong>结束保护与级联关闭</strong>：<code>TreeCommands::end</code> 拒绝结束起点、当前默认分支以及默认分支的任何祖先（<code>branch_cannot_end</code>），因为结束一条线会先级联结束它下面的所有打开子孙，再按子到父的顺序在父线上写 <code>branch/ended</code>。此外，工具线只能结束自己（<code>end</code> 动作不带目标参数），用户线只能由用户结束，插件线遵循其创建插件的协议。</li>
+</ul>
+<h2 id="05-timeline-branches--切点固定与构建生命周期">切点固定与构建生命周期<a class="anchor" href="#05-timeline-branches--切点固定与构建生命周期" aria-label="链接到本节">#</a></h2>
+<p>模型通过 <code>branch</code> 工具创建子分支时，如果不显式指定切点 <code>at</code>，<code>BranchTool</code> 不会草率地取父分支当前的尾部，而是通过事件查询定位本次模型请求的 <code>step/model-start</code> 序号并减 1，把默认截点钉在本次请求开始之前。原因很实际：此时模型输出和多工具调用批次都还没闭合，如果切在半截，子分支继承到的会是缺少 <code>tool_result</code> 的残缺轮次，直接触发模型接口报错。</p>
+<p>创建流程走标准的事件驱动交接：调用方在父分支提交 <code>branch/create</code> 并原子预留子分支 id → 父分支的 <code>TreeTimeline</code> 消费该事件，向 Session 的 <code>TimelineTree</code> 登记异步构建任务后立刻返回 → <code>TimelineTree</code> 按固定祖先截点初始化子分支，写入 <code>branch/start</code> 并等待分发完（让 <code>Prompt</code> 写入常驻系统内容），再写入首条 <code>mode=queue</code> 的初始输入 → 子分支公开发布。</p>
+<p>即使发起 <code>branch</code> 工具调用的那个 turn 在提交 <code>branch/create</code> 后被用户打断，工具调用会按取消结算，但已经提交的分支构建归 Session 所有，不会半途撤销；只有整个 Session 关闭时，才会停止准入、取消在建任务并等待完整回滚。重启恢复时也有明确的完成判据：子分支存在 <code>branch/start</code> 且其后存在首条 <code>Queue</code> 输入才算创建成功，否则统一补写 <code>branch/create-failed</code> 收口。</p>
+<h2 id="05-timeline-branches--父子通信-游标续读与三条独立键控块">父子通信、游标续读与三条独立键控块<a class="anchor" href="#05-timeline-branches--父子通信-游标续读与三条独立键控块" aria-label="链接到本节">#</a></h2>
+<p>分支之间没有共享内存，也没有全局广播消息板。<code>branch</code> 工具只允许沿亲缘边（父子之间）通信和读取，兄弟分支或祖孙分支互发消息、互读历史一律返回 <code>branch_not_kin</code>；涉及插件线的消息或读取返回 <code>branch_not_tool_line</code>。</p>
+<p>发消息本质上是调用 <code>TreeCommands.input</code> 往对方时间线塞一条带 <code>&lt;dim-branch-message from=&quot;C&quot; to=&quot;P&quot;&gt;</code> 标记的 <code>input/message</code>，只开放两种模式：<code>append</code>（默认，搭对方下一次模型请求的顺风车，不主动开 turn，也不唤醒 <code>wait</code>）和 <code>steer</code>（切入对方当前 turn 下一步，若对方空闲则直接开新 turn 并唤醒 <code>wait</code>）。普通 RPC 客户端提交只能写操作者内容，不能写原始 raw 块，因此外部无法伪造分支消息标记。</p>
+<p>拉取对方进展则靠 <code>branch read { branch, after?, limit? }</code>。它通过 <code>TreeCommands.page_end</code> 对齐原子批次终点，再按只读显示字段查询，不解码庞大的模型请求体。游标规则高度对称：子线首次读父线自动从自己的切点之后起步（即使显式传 <code>after: 0</code> 也会被抬高到切点，因为切点之前的历史本来就是子线自己的）；父线首次读子线从 0 起步。每次成功读取都会在调用方自己的 <code>step/tool-use</code> 与 <code>step/tool-result</code> 里留下记录，<code>BranchLine</code> 在重启后按需定位目标的最后一次成功读取即可恢复游标，无需全量重放。</p>
+<p>为了避免子分支在上下文压缩后忘了自己是谁、或者把父分支的工具名册误当成自己的，<code>BranchLine</code> 和 <code>TimelineTree</code> 在 <code>InputBlock::Raw</code> 上拆出了<strong>三条互不干扰的键控状态块</strong>（<code>key</code> 相同的新块覆盖旧块，压缩后每个活跃键独立重放最新一块）：</p>
+<ol>
+<li><strong><code>branch:line</code>（身份与主线状态）</strong>：记录本线 id、父线、切点、用途与当前是否为主线。每当默认分支切换时，<code>BranchLine</code> 在进出默认分支的非起点线上各写一条新的 <code>branch:line</code> 状态说明，逐字节重申出生身份并更新规则（起点永远不写，因为它的规则不受默认分支切换影响）。</li>
+<li><strong><code>branch:roster</code>（活跃工具线名册）</strong>：记录本线用 <code>branch</code> 工具开启且尚未结束的工具线列表（不含用户线和插件线）。子分支如果从父分支的截点继承了活跃的 <code>branch:roster</code>，<code>TimelineTree</code> 会在子分支开局输入里紧跟一条带 <code>retire: true</code> 的 <code>branch:roster</code> 块把继承来的名册退役，避免子分支把父分支的手下当成自己开的。</li>
+<li><strong><code>branch:parent</code>（父线进展提示）</strong>：当父线结束一个 turn 且有了新活动时，子线的 <code>BranchLine</code> 写一条只含父线最新 <code>head</code> 序号和自己读游标的 <code>&lt;dim-branch-parent&gt;</code> 块，绝不把父线正文塞进子线上下文，由子线自己决定要不要调 <code>read</code> 去拉取。</li>
+</ol>
+<p>最后还有一条贴心的防空等机制：一条非默认分支的工具线结束 turn 时，如果它这轮既没给父线发过 <code>steer</code>、没调用 <code>end</code>、也没挂着未消费的驱动输入（且创建时没配 <code>idleNotice: none</code>），<code>BranchLine</code> 会自动给父线发一条 <code>&lt;dim-branch-idle&gt;</code> steer 通知，防止父线一直在 <code>wait</code> 里干等沉默的子线；而一旦这条工具线被用户切成了默认分支，空闲通知立刻停止，免得用户每次跟主线聊天都把原来的父线吵醒。</p>
+<p>把分支树内部这四个部件（<code>TimelineTree</code>、<code>TreeTimeline</code>、<code>BranchTool</code>、<code>BranchLine</code>）合起来看，它们全都是标准的 <code>rutis</code> 插件部件。下一章我们直接切到插件引擎本身，看 Dim 如何靠 <code>rutis 0.23.0</code> 和跨语言数据面把 Rust、TypeScript、Python 揉进同一张依赖图里。</p>
+</div></section><section class="book-section" id="06-rutis-and-data-faces"><header class="chapter-head"><div class="chapter-number">06</div><h1>rutis 插件引擎与跨语言数据面</h1></header><div class="prose"><p>很多用 Rust 写核心的 Agent 运行时，做到一半都会卡在扩展层：Rust trait 在进程内很好用，可一旦想让用户用 TypeScript 或 Python 写插件，就不得不给每个核心接口手写一套 JSON-RPC 适配层，最后 Rust 版接口和跨语言接口越跑越远，文档里写一套、代码里两套。</p>
+<p>Dim 在 <code>docs/design/rutis-usage.md</code> 和 <code>docs/design/service-faces.md</code> 里定了一条近乎苛刻的收敛原则：<strong>公开服务只有一张合同，就是跨语言数据面（Data Face）；不写第二套适配层，也不留两套业务逻辑。</strong></p>
+<h2 id="06-rutis-and-data-faces--为什么选-rutis-0-23-0-以及单行装配模型">为什么选 rutis 0.23.0，以及单行装配模型<a class="anchor" href="#06-rutis-and-data-faces--为什么选-rutis-0-23-0-以及单行装配模型" aria-label="链接到本节">#</a></h2>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 262" width="420" height="262" role="img" aria-label="rutis 跨语言运行时与数据面边界">
+<title>rutis 跨语言运行时与数据面边界</title>
+<defs><marker id="06-rutis-and-data-faces--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="12" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">rutis 0.23.0（协议 5）：每个插件占 1 行进程配置，服务面统一为数据面</text><rect x="8" y="24" width="178" height="124" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="16" y="39.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Rust 宿主内核</text><text x="16" y="53.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">1. 进程根与共享目录（111 服务）</text><text x="16" y="65.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">2. 75 个跨语言 data 数据面</text><text x="16" y="78.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">3. 36 个 internal(reason) 私有面</text><text x="16" y="90.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">4. Session / Branch = 普通插件</text><text x="16" y="103.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">   （ADR 015 mark_scope）</text><text x="16" y="115.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">5. xtask types 生成 .d.ts 契约</text><rect x="226" y="24" width="186" height="56" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="234" y="39.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Node / TypeScript 运行时</text><text x="234" y="53.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">@arcships/rutis 0.23 · Cordis 4</text><text x="234" y="65.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">workflow / light-ocr / 自写插件</text><text x="234" y="78.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">通过 partRegistry 登记定义</text><rect x="226" y="92" width="186" height="56" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="234" y="107.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">Python 运行时（py:&lt;module&gt;）</text><text x="234" y="121.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">独立进程会话 · isolate 表解析</text><text x="234" y="133.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">相同 inject / use / provide</text><text x="234" y="146.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">与 Rust/TS 互调同一数据面</text><line x1="186" y1="48" x2="226" y2="48" stroke="var(--amber)" stroke-width="1.05" marker-end="url(#arrow)"/><line x1="226" y1="62" x2="186" y2="62" stroke="var(--amber)" stroke-width="1.05" marker-end="url(#arrow)"/><line x1="186" y1="114" x2="226" y2="114" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><line x1="226" y1="128" x2="186" y2="128" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="162" width="404" height="72" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="16" y="177.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">数据面契约（HostDispatch at host_key(name) + 共享目录项）</text><text x="16" y="191.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">参数、返回值、错误均为 serde 数据（{code, message}）；句柄与 &amp;mut 不跨语言</text><text x="16" y="203.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">对象拆成 id + 操作（execHost / fsHost / store / timelineStore / toolRegistry）</text><text x="16" y="216.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">单帧 16 MiB 上限，超长走 0.23 chunk 分片（单片 8 MiB，默认上限 256 MiB）</text><text x="16" y="228.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">禁止手写第二层适配逻辑：Rust 本地绑定与跨语言线协议共用同一所有者实现</text><text x="8" y="250" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.1" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">注意：before 回调在提交锁内同步运行，禁止跨进程调用，只限进程内 Rust 注册。</text>
+</svg><figcaption>rutis 跨语言运行时与数据面边界</figcaption></figure>
+<p>在工作区 <code>Cargo.toml</code> 和 <code>docs/adr/025-rutis-0-23.md</code> 里，Dim 把全栈（Rust 工作区 <code>rutis</code>/<code>rutis-loader</code>/<code>rutis-bridge</code>、<code>xtask</code> 类型生成器、内置 Node 运行时 <code>@arcships/rutis-runtime</code>、TypeScript 插件包以及 Python SDK）统一锁死在 <code>rutis 0.23.0</code>（会话协议版本 5）。没有任何双版本兼容垫片：只要握手对端还在说协议 4，连接直接以 <code>incompatible session</code> 拒绝。</p>
+<p>在装载结构上，Dim 遵循 ADR 006 D3 定下的单行规则：<strong>一个插件在进程配置里只占一个 loader row</strong>，不管它横跨了 Process、Session 还是 Branch 几个作用域。</p>
+<ul>
+<li>插件的入口模块在进程级 <code>apply</code> 里运行一次，从进程服务 <code>partRegistry</code> 登记自己要在每个 Session 或每条 Branch 里挂载的部件。</li>
+<li>Rust 插件注册的是生成器函数（<code>AgentBuilder::feature</code> 或 <code>AgentBuilder::plugin</code>）；TypeScript 和 Python 插件注册的是由 <code>definePlugin</code> 构造出的插件定义（<code>partRegistry.registerDefinition</code>）。</li>
+<li>每当新的 Session 或 Branch 打开，作用域根挂载的 <code>required</code> 和 <code>optional</code> 两个 mounter 会把登记表里的部件实例化为自己的子插件；当原插件卸载或重载时，它登记在 <code>partRegistry</code> 里的定义自动撤回，所有活跃实例里的副本同步卸载。</li>
+</ul>
+<p>对于外部语言插件，唯一需要在启动前静态声明给宿主 loader 目录的，是它打算在 Session 或 Branch 内部向别处提供的服务名（<code>instanceNames</code>），因为 loader 目录在运行时启动前就已经定型。至于工具、提示词源、Session 方法命名空间和宿主管理方法命名空间，在 R6 改造落地之后全部不再占独立服务名，而是由插件在 <code>apply</code> 里直接向各自的所有者注册（<code>toolRegistry.register</code>、<code>promptRegistry.register</code>、<code>sessionMethods.register</code>、<code>managementMethods.register</code>）。注册与调用方生命周期绑定，插件一卸载，注册项立刻自动撤回；如果此时有正在执行的调用，会明确返回可能已生效的状态，后续调用直接拒绝。</p>
+<h2 id="06-rutis-and-data-faces--跨语言数据面的六条硬规定">跨语言数据面的六条硬规定<a class="anchor" href="#06-rutis-and-data-faces--跨语言数据面的六条硬规定" aria-label="链接到本节">#</a></h2>
+<p>要让 Python 插件直接调用 Rust 实现的存储、让 TypeScript 插件直接消费分支事件并注册工具，光有名字解析还不够，接口形状必须天然能过线。<code>docs/design/service-faces.md</code> 给数据面立了六条硬规则：</p>
+<ol>
+<li><strong>输入输出全是 serde 数据</strong>：普通结构体、标量、数组、枚举，绝不出现进程内句柄、<code>Arc&lt;dyn Trait&gt;</code>、<code>&amp;mut</code>、迭代器、通道或 <code>PathBuf</code>/<code>OsString</code>。</li>
+<li><strong>身份一律是值</strong>：Session、Branch、Task、File、Root、Subscription 在接口上都只是字符串或整数 id；id 只是标识，不等于授权。</li>
+<li><strong>操作代替对象</strong>：把原来面向对象式的长生命周期句柄拆成“id + 一组无状态操作”。比如原来的 <code>FileStorage</code> 句柄拆成 <code>fsHost</code>（<code>stat</code>/<code>readBytes</code>/<code>openRead</code>/<code>readAt</code>/<code>closeRead</code>/<code>lock</code>/<code>replace</code> 等 12 个操作），<code>HostPlatform</code> 进程树拆成 <code>execHost</code>，<code>TimelineStore</code> 拆成 17 个操作的 <code>timelineStore</code> 数据面，活对象留在所有者内部托管。</li>
+<li><strong>流靠事件或分页，回调不在锁内跑</strong>：大输出走游标分页；回调函数可以经 bridge 按引用跨语言传递（<code>RemoteFunction</code>），但严禁在提交锁内部同步回调。</li>
+<li><strong>错误是结构化数据</strong>：统一为 <code>{ code, message }</code>，转发方原样透传错误码，绝不靠正则匹配错误文案（ADR 025 D5）。</li>
+<li><strong>取消是协议动作</strong>：调用方丢弃调用或触发取消回调即可经协议通知对端，不在业务参数里塞状态标志。</li>
+</ol>
+<p>在 <code>rutis 0.23.0</code> 的传输层上，单帧默认上限是 16 MiB，但协议 5 新增了 <code>chunk</code> 分片帧：超过 16 MiB 的大帧自动按每片最大 8 MiB 切分并在派发前重组，总上限由 <code>RUTIS_MAX_TRANSFER</code> 控制（默认 256 MiB）。Dim 没有因为有了分片就放任大载荷横飞，而是在应用层主动补回了准入红线，例如 <code>pluginFiles</code> 的文本 <code>replace</code> 明确在写入前拒绝超过 16 MiB 的序列化记录，返回业务错误 <code>too_large</code>。</p>
+<h2 id="06-rutis-and-data-faces--真实装配盘点-75-个数据面与-36-个内部面">真实装配盘点：75 个数据面与 36 个内部面<a class="anchor" href="#06-rutis-and-data-faces--真实装配盘点-75-个数据面与-36-个内部面" aria-label="链接到本节">#</a></h2>
+<p>纸面愿景和工程现状往往有距离，而 Dim 最好的一点是把迁移进度直接写进了 <code>xtask graph</code> 自动生成的 <code>docs/architecture/rust-agent/generated/catalog.md</code>，并用 <code>xtask check</code> 每天巡检。</p>
+<p>按当前提交 <code>88a3df3669405730cbee6bfd113a7f75cf520677</code> 的真实 App Server 产品装配统计，全目录共有 <strong>111 个服务</strong>（Process 58、Session 31、Branch 22）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>分类</th>
+<th>数量</th>
+<th>判定规则（<code>service-faces.md</code> §2.3）</th>
+<th>代表服务</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>data</code>（跨语言数据面）</td>
+<td>75</td>
+<td>在目录中声明为 <code>shared</code> 且在 <code>host_key(name)</code> 挂有 <code>HostDispatch</code></td>
+<td><code>sessions</code>、<code>settings</code>、<code>store</code>、<code>sqliteStorage</code>、<code>fsHost</code>、<code>timelineStore</code>、<code>treeCommands</code>、<code>toolRegistry</code>、<code>timeline</code>、<code>dispatcher</code>、<code>approval</code>、<code>permission</code>、<code>branchLine</code></td>
+</tr>
+<tr>
+<td><code>internal(hot-path)</code></td>
+<td>16</td>
+<td>每轮或每条输入上的高频热路径，尚未操作化</td>
+<td><code>agentLoop</code>、<code>loopState</code>、<code>prompt</code>、<code>contextPreparation</code>、<code>toolExecutor</code>、<code>historyRenderer</code>、<code>managedWorktrees</code></td>
+</tr>
+<tr>
+<td><code>internal(owner-api)</code></td>
+<td>7</td>
+<td>所有者原生 Rust 绑定，大多已有对应数据兄弟</td>
+<td><code>agentIndex</code>（兄弟 <code>sessions</code>）、<code>sessionStore</code>（兄弟 <code>store</code>）、<code>settingsService</code>（兄弟 <code>settings</code>）、<code>modelHost</code>、<code>loader</code>、<code>timelineTree</code></td>
+</tr>
+<tr>
+<td><code>internal(control)</code></td>
+<td>5</td>
+<td>守护进程或作用域控制句柄</td>
+<td><code>serverControl</code>、<code>connectionHub</code>、<code>uiHost</code>、<code>uiExtensions</code>、<code>timelineFactory</code></td>
+</tr>
+<tr>
+<td><code>internal(secret)</code></td>
+<td>3</td>
+<td>含 OAuth 或供应商凭据，凭据留在所有者内部</td>
+<td><code>providerService</code>、<code>grokOAuthService</code>、<code>openAICodexOAuthService</code></td>
+</tr>
+<tr>
+<td><code>internal(host-resource)</code></td>
+<td>3</td>
+<td>宿主本地资源索引或连接解析器</td>
+<td><code>mentionIndex</code>、<code>providerConnectionResolver</code>（另注：<code>hooksService</code> 与 <code>mcpService</code> 已迁成 <code>data</code>）</td>
+</tr>
+<tr>
+<td><code>internal(object)</code></td>
+<td>2</td>
+<td>正在迁往操作面的原生对象包装</td>
+<td><code>fileStorage</code>（数据面 <code>fsHost</code>）、<code>hostPlatform</code>（目标数据面 <code>execHost</code>）</td>
+</tr>
+</tbody></table></div>
+<p><code>xtask check</code> 对这 111 个条目执行六选一硬校：既共享又没 dispatcher 报错，有 dispatcher 却没共享报错，既不共享又不标明合法迁移原因报错，把共享和内部标记混用也报错。任何想跑在独立节点或跨语言运行时里的叶子部件（leaf-ready），要求它 <code>inject</code> 和 <code>provides</code> 的每一个名字都必须是 <code>data</code>。</p>
+<h2 id="06-rutis-and-data-faces--真实跨语言插件长什么样">真实跨语言插件长什么样<a class="anchor" href="#06-rutis-and-data-faces--真实跨语言插件长什么样" aria-label="链接到本节">#</a></h2>
+<p>在 <code>runtime/plugins/</code> 下，仓库自带了两个用 TypeScript 写的生产级跨语言插件，正好展示了这套数据面不是空壳：</p>
+<p><strong><code>runtime/plugins/workflow</code>（多作用域工作流引擎）</strong>，它的 <code>dim-plugin.json</code> 只占一个进程行，入口 <code>index.ts</code> 直接注入 7 个 Rust 提供的进程数据面：<code>sessions</code>、<code>settings</code>、<code>pluginFiles</code>、<code>workflowFiles</code>、<code>managementMethods</code>、<code>partRegistry</code> 和 <code>processActivity</code>，同时反向向全进程提供一个异步数据面 <code>workflowRuns { call: &quot;async&quot; }</code>。进程入口在 <code>apply</code> 里注册工作流设置源、注册管理 RPC 方法，再通过 <code>partRegistry.registerDefinition</code> 把 <code>session.ts</code> 里的 Session 部件挂进每一个会话，给模型提供 <code>workflow</code> 工具。整个引擎（定义解析、DAG 调度、持久化、状态机）全用 TypeScript 写成，却与 Rust 宿主无缝共享会话启动、停止、权限上限校验和空闲关机保护（<code>processActivity.hold</code>）。</p>
+<p><strong><code>runtime/plugins/light-ocr</code>（极简跨语言能力提供者）</strong>，整个 <code>index.ts</code> 不到 35 行，不注入任何宿主服务，只在 <code>apply</code> 里提供一个单方法异步数据面 <code>ocrHelper { describe: &quot;async&quot; }</code>，告诉 Rust 侧的 <code>dim-ocr</code> 和 <code>dim-modality</code> 本地 <code>node</code> 可执行文件路径、<code>helper.cjs</code> 位置和只读目录列表，随后实际的受限子进程执行仍交回 Rust 的 <code>HostPlatform</code> 监管。</p>
+<p>同时，<code>xtask types</code> 会根据所有标记了 <code>#[rutis::service]</code> 的 Rust 类型自动生成 <code>npm/branch-services.d.ts</code>（在 <code>rutis 0.23</code> 下全部输出为 <code>type</code> 别名而非 <code>interface</code>），并由 <code>xtask check</code> 检查新鲜度。只要 Rust 侧改了一个数据面字段，TypeScript 侧的类型定义就会立刻报过时。</p>
+<p>有了这套单行装载、跨语言数据面和热卸载基础设施，Dim 才得以实现它最具辨识度的产品场景：让 Agent 在正在运行的会话里给自己写一个 TypeScript 插件，当场安装、立刻调用、改完热重载。</p>
+</div></section><section class="book-section" id="07-self-evolving-plugins"><header class="chapter-head"><div class="chapter-number">07</div><h1>在会话里给自己写插件与热重载自演化</h1></header><div class="prose"><p>普通编码 Agent 碰到缺工具的场景，常见做法是让模型临时写一段一次性 Python 或 Bash 脚本跑完就扔。下次再遇到同类任务，它还得重新拼命令行、重新处理边界条件，也没法把这块能力沉淀成带结构化参数校验、独立用户配置项和明确风险等级的一等工具。</p>
+<p>Dim 给出的路径完全不同：因为运行时本身就是插件化的，而且内置了 Node 运行时（<code>runtime/runtimes.json</code> 固定 Node <code>24.21.0</code>、Python <code>3.12.15</code> 和 <code>uv 0.13.7</code>，按需下载），用户可以在一个有写权限的会话里，直接让 Dim 给自己写一个 TypeScript 插件，当场用 <code>plugin</code> 工具装进正在运行的守护进程，下一轮模型请求就能直接调用这个新工具，发现 Bug 改完代码原地热重载，全程不需要重启守护进程，也不会丢掉当前会话的上下文。</p>
+<h2 id="07-self-evolving-plugins--plugin-authoring-技能-把装配规矩装进目录"><code>plugin-authoring</code> 技能：把装配规矩装进目录<a class="anchor" href="#07-self-evolving-plugins--plugin-authoring-技能-把装配规矩装进目录" aria-label="链接到本节">#</a></h2>
+<p>仓库内置的三个默认或可选插件包位于 <code>runtime/plugins/</code>，<code>runtime/default-plugins.json</code> 默认启用了其中的 <code>plugin-authoring</code>：</p>
+<pre><code class="language-json">{
+  &quot;plugins&quot;: {
+    &quot;plugin-authoring&quot;: &quot;plugins/plugin-authoring&quot;
+  },
+  &quot;optional&quot;: {
+    &quot;light-ocr&quot;: &quot;plugins/light-ocr&quot;
+  },
+  &quot;locked&quot;: [&quot;PluginManager&quot;, &quot;Rpc&quot;, &quot;Transport&quot;]
+}
+</code></pre>
+<p>这里有两处值得细看的设计。一是 <code>locked</code> 列表把 <code>PluginManager</code>、<code>Rpc</code>、<code>Transport</code> 锁成不可被插件管理操作卸载或禁用的核心行，防止模型或误操作把自己和外部的通信链路拆掉。二是 <code>plugin-authoring</code> 本身并不是一段代码，它的 <code>dim-plugin.json</code> 只声明了 <code>&quot;skills&quot;: &quot;skills&quot;</code>，向 <code>SkillsCatalog</code> 贡献了一份教模型怎么写 Dim 插件的技能文档 <code>runtime/plugins/plugin-authoring/skills/plugin-authoring/SKILL.md</code>。</p>
+<p>按这份技能文档，一个最小可运行的 TypeScript 插件目录只需要四个东西，而且<strong>不需要任何编译打包步骤</strong>（Node 24 运行时直接加载 <code>index.ts</code>）：</p>
+<pre><code class="language-text">echo-plugin/
+  dim-plugin.json    # 清单：name、description、code.entry、code.inject
+  index.ts           # 入口模块：直接加载 TypeScript，无需 tsc 构建
+  package.json       # 锁定 @arcships/rutis 版本
+  node_modules/      # 执行 npm install 生成的依赖
+</code></pre>
+<p>代码结构完美复用上一章讲过的“单进程行 + <code>partRegistry</code> 登记多作用域部件”模式：</p>
+<ol>
+<li><code>dim-plugin.json</code> 里声明 <code>&quot;code&quot;: { &quot;entry&quot;: &quot;index.ts&quot;, &quot;inject&quot;: [&quot;partRegistry&quot;, &quot;settings&quot;] }</code>。这里有一条由 <code>rutis 0.23.0</code>（ADR 025 D4）强制校验的规则：入口默认导出实际读取的每一个必填服务，都必须列在 <code>code.inject</code> 中，且外部插件自身的 <code>inject</code> 必须等于或是该列表的子集。</li>
+<li>入口 <code>default</code> 导出在进程作用域执行一次 <code>apply</code>：先向 <code>settings</code> 数据面注册自己的业务配置源（带 JSON Schema、默认值和 <code>userOnly</code> 列表），再向 <code>partRegistry.registerDefinition(&#39;session&#39;, &#39;EchoTools&#39;, tools)</code> 注册 Session 级部件定义。</li>
+<li>Session 部件 <code>tools</code> 注入 <code>[&#39;toolRegistry&#39;, &#39;settings&#39;]</code>，在每个活跃会话（包括<strong>当前正在写这个插件的会话本身</strong>）挂载时，向该会话的 <code>toolRegistry</code> 注册新工具，声明名称（1 到 64 位字母数字及 <code>_</code>/<code>-</code>）、JSON Schema 和必填的 <code>risk</code> 风险等级（<code>read_filesystem</code>、<code>write_filesystem</code>、<code>execute_process</code>、<code>network</code> 或 <code>session</code>）。</li>
+<li>工具处理器收到 <code>call.arguments</code> 后自行校验参数，实时从 <code>settings.read</code> 读取最新业务配置，返回 <code>{ content: string, isError?: boolean }</code>。其中 <code>content</code> 是模型唯一能读到的文本。</li>
+</ol>
+<h2 id="07-self-evolving-plugins--从写代码到热重载的完整链路">从写代码到热重载的完整链路<a class="anchor" href="#07-self-evolving-plugins--从写代码到热重载的完整链路" aria-label="链接到本节">#</a></h2>
+<p>当模型在会话里写好这几个文件并跑完 <code>npm install</code> 后，接下来的自演化动作全靠宿主提供的 <code>plugin</code> 工具完成：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>步骤</th>
+<th><code>plugin</code> 工具子命令</th>
+<th>守护进程内部发生的事</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1. 安装</td>
+<td><code>install &lt;dir&gt;</code></td>
+<td><code>PluginManager</code> 校验清单与依赖，经 <code>rutis/loader</code> 创建新进程行并等待就绪；返回 <code>running</code>、<code>failed</code>（附带错误详情）或 <code>pending</code>（附带 <code>waitingFor</code> 缺失依赖名）</td>
+</tr>
+<tr>
+<td>2. 活体挂载</td>
+<td>无需重启</td>
+<td>进程行 <code>apply</code> 调用 <code>partRegistry.registerDefinition</code> 后，当前打开会话里的 optional mounter 监听到登记表变化，立刻把 <code>EchoTools</code> 挂进本会话并注册工具到 <code>toolRegistry</code></td>
+</tr>
+<tr>
+<td>3. 下一轮即用</td>
+<td>模型下一次请求</td>
+<td><code>ToolBinding</code> 在下一次模型请求装配时读到新工具声明，模型立刻可以调用 <code>echo</code> 测试</td>
+</tr>
+<tr>
+<td>4. 改错与重载</td>
+<td><code>reload &lt;name&gt;</code></td>
+<td>卸载旧一代插件行，自动撤回 <code>partRegistry</code> 定义、<code>settings</code> 源与所有会话里的 <code>toolRegistry</code> 工具注册，重新导入 <code>index.ts</code> 并装配新一代</td>
+</tr>
+<tr>
+<td>5. 动态调参</td>
+<td><code>config &lt;name&gt; set &lt;k&gt; &lt;v&gt;</code></td>
+<td>写入业务配置源，<strong>不触发插件重载</strong>；下次工具调用直接读到新值</td>
+</tr>
+<tr>
+<td>6. 下线</td>
+<td><code>disable &lt;name&gt;</code> / <code>remove &lt;id&gt;</code></td>
+<td>停用或卸载行，等待各会话副本清理完毕</td>
+</tr>
+</tbody></table></div>
+<p>这里藏着三个非常接地气的工程细节，都是只有真跑热重载才会碰上的坑：</p>
+<p>第一，<strong>模块缓存边界</strong>。Node 的 ESM 缓存机制决定了 <code>reload</code> 会重新导入入口文件 <code>index.ts</code>，但不会自动失效 <code>index.ts</code> 再 <code>import</code> 进去的二级子模块。所以 <code>SKILL.md</code> 直接提醒作者：需要频繁边改边重载的逻辑尽量留在 <code>index.ts</code> 里。</p>
+<p>第二，<strong>敏感配置的权限隔离</strong>。如果插件需要用到外部 API Key，可以在注册 <code>settings</code> 的 JSON Schema 里给该字段加上 <code>&quot;writeOnly&quot;: true</code> 并放进 <code>userOnly</code> 列表。这样一来，模型通过 <code>plugin config</code> 既读不到密钥明文，也改不了这个字段，只能由用户本人修改。</p>
+<p>第三，<strong>活会话故障隔离</strong>。如果一个已经发布的会话正在运行，而此时某个插件注册了一个有 Bug 的 Session 部件并挂载失败，<code>rutis-usage.md</code> §2 规定该失败只会记日志并停留在可选部件局部，绝不会把整个已经发布的活会话拖垮。</p>
+<h2 id="07-self-evolving-plugins--一个真实的源码观察-alpha-期的文档版本漂移">一个真实的源码观察：Alpha 期的文档版本漂移<a class="anchor" href="#07-self-evolving-plugins--一个真实的源码观察-alpha-期的文档版本漂移" aria-label="链接到本节">#</a></h2>
+<p>核对当前快照 <code>88a3df3669405730cbee6bfd113a7f75cf520677</code> 的源码时，可以发现一处很真实的 Alpha 期细节：在 ADR 025 把整个工作区、<code>runtime/package.json</code> 和 <code>runtime/plugins/workflow/package.json</code> 全部升级到 <code>@arcships/rutis</code> <code>0.23.0</code> 之后，<code>runtime/plugins/plugin-authoring/skills/plugin-authoring/SKILL.md</code> 第 36 与第 40 行的示例里仍然写着 <code>&quot;@arcships/rutis&quot;: &quot;0.17.1&quot;</code>。因为协议 5 与旧版不兼容，如果用户严格照抄那份技能文档里的 <code>0.17.1</code> 版本号去 <code>npm install</code>，在当前 <code>0.1.0-alpha.27</code> 上握手会直接被拒绝。这类真实的版本同步滞后在快速演进的 Alpha 仓库里很常见，也恰恰说明为什么理解底层 <code>rutis</code> 协议版本与 <code>runtime/package.json</code> 基线比死背示例片段更重要。</p>
+<p>最后别忘了安全底线：能在会话里给自己写插件并加载，前提是用户给了写文件和调用 <code>plugin</code> 工具的权限；一旦插件被装入本地 Node 运行时，它就是受信任的本地代码（AGENTS 规则 11），不是靠 <code>inject</code> 声明就能困住的沙箱。关于权限、配置启用与执行隔离的边界，我们在第 9 章会专门拆解。在这之前，先看看随着会话拉长、工具和插件越来越多，Dim 是怎么控住上下文窗口和内存占用的。</p>
+</div></section><section class="book-section" id="08-context-compaction-and-replay"><header class="chapter-head"><div class="chapter-number">08</div><h1>上下文投影、压缩与历史渲染边界</h1></header><div class="prose"><p>一个持续跑了 2000 步、经历过七八次上下文压缩的长会话，每次发新请求前到底要从数据库里读多少字节？如果每次准备模型请求都把整条分支历史从第 1 条事件全量反序列化进内存，长会话很快就会把守护进程的内存拖爆；反过来，如果把压缩后的消息数组当成唯一真相写死在缓存里，一旦缓存版本升级、校验损坏或者用户把分支切回到更早的历史点，整个会话的上下文就会永久失真。</p>
+<p>Dim 在 <code>ContextPreparation</code>、<code>ContextUsage</code>、<code>HistoryRenderer</code> 和 <code>TimelineStore</code> 之间划出了一道非常干净的边界：<strong>事件事实管真相，恢复快照只管加速，上下文入口只留两条窄门。</strong></p>
+<h2 id="08-context-compaction-and-replay--两条窄门-什么能进入模型上下文">两条窄门：什么能进入模型上下文<a class="anchor" href="#08-context-compaction-and-replay--两条窄门-什么能进入模型上下文" aria-label="链接到本节">#</a></h2>
+<p>在 <code>AGENTS.md</code> 规则 10 和 <code>principles.md</code> §4 规则 6 里，Dim 明确禁止各个业务插件绕开统一路径往模型上下文里塞文字。一条事件能不能变成模型看到的 <code>messages</code>，只有两条合法通道：</p>
+<ol>
+<li><strong>已采用的输入</strong>（经过 <code>InputQueue</code> 交接并由 <code>Loop</code> 消费的 <code>input/consumed</code>，以及由 <code>Prompt</code> 发布的 <code>context/configured</code>）。未经过交接的草稿、被撤回的 <code>input/deleted</code>、被 Hook 拦下的提交、控制类事件（如 <code>approval/*</code>、<code>stop/interrupt</code>、<code>branch/default</code>）天然不会进入模型消息，渲染器不需要到处写黑名单去补漏。</li>
+<li><strong>工具执行结果</strong>（<code>step/tool-result</code> 里的 <code>ToolResult.content</code>）。这里还有一条容易被忽略的约定：<code>ToolResult.content</code> 是模型唯一能读到的文本，而 <code>structuredContent</code> 只留给持久化、客户端 UI 和内部状态机使用。凡是模型后续还需要用到的句柄、任务 id 或分页游标，工具作者必须显式写进 <code>content</code>。</li>
+</ol>
+<p>另外，所有运行时注入（例如技能文本、Hook 附加说明、分支身份块 <code>&lt;dim-branch-line&gt;</code>、分支名册 <code>&lt;dim-branch-roster&gt;</code>、父线进展提示 <code>&lt;dim-branch-parent&gt;</code>）一律包装成带标记的原始块 <code>InputBlock::Raw</code> 通过输入通道写入历史，绝不靠“针对某业务的特殊历史渲染器”在读历史时凭空拼装。这样模型实际看到的输入、客户端回放的记录、以及分支继承的前缀始终来自同一份事实。</p>
+<h2 id="08-context-compaction-and-replay--一次模型请求是怎么准备出来的">一次模型请求是怎么准备出来的<a class="anchor" href="#08-context-compaction-and-replay--一次模型请求是怎么准备出来的" aria-label="链接到本节">#</a></h2>
+<p>当 <code>Loop</code> 准备发起一轮模型调用时，它会先向分支时间线写入 <code>context/prepare</code>，把本次请求的固定截点 <code>through</code> 与一个单次请求局部的投影交接给 <code>ContextPreparation</code>（<code>crates/dim-agent-capabilities/src/context_preparation.rs</code> 与 <code>context_policy.rs</code>）。</p>
+<p>整个准备过程保持单飞（single-flight），同一时间一条分支最多只有一个进行中的准备任务，随时可以被 <code>stop/interrupt</code> 或新的 <code>steer</code> 取消。准备阶段先结合 <code>ContextUsage</code> 记录的累计用量和已知投影边界做数值预算估算：</p>
+<ul>
+<li>如果估算没有超过上下文输入预算，且配置和投影边界没有变化，直接复用数值估算并发布 <code>model/call</code>，不需要对历史做第二次重读或全量投影，也不加载历次旧的模型请求正文。</li>
+<li>如果估算超出了输入预算，或者用户手动触发压缩，<code>ContextPreparation</code> 就在准备流程内部调用绑定的压缩策略宿主 <code>CompactionStrategyHost</code>（在提交 <code>context/compaction-start</code> 与 <code>context/compaction</code> 之间执行），成功后直接采用已提交的压缩事实构建新的 <code>model/call</code>，不会向外发布虚假的“模型调用失败”事件。如果压缩后依然装不下本次请求，则直接按终态失败结束，绝不陷入死循环重试。</li>
+</ul>
+<p>需要注意一个在 <code>event-driven-flows.md</code> §5 里写明的细节：如果在自动压缩正在跑的时候来了新的 <code>steer</code> 输入，<code>ContextPreparation</code> 会等这次压缩把结果落完盘，再替换请求，避免刚刚算好的摘要白白作废。此外，如果宿主没有绑定 <code>CompactionStrategyHost</code>，<code>ContextPreparation</code> 连 <code>dim-digest</code> 的提示词指引条目都不会注册，避免在没有压缩能力的配置里误导模型。</p>
+<h2 id="08-context-compaction-and-replay--不可变摘要事实-vs-可丢弃恢复快照">不可变摘要事实 vs 可丢弃恢复快照<a class="anchor" href="#08-context-compaction-and-replay--不可变摘要事实-vs-可丢弃恢复快照" aria-label="链接到本节">#</a></h2>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 268" width="420" height="268" role="img" aria-label="上下文压缩、SHA-256 恢复快照与回退重放">
+<title>上下文压缩、SHA-256 恢复快照与回退重放</title>
+<defs><marker id="08-context-compaction-and-replay--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="12" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">持久摘要事实与可丢弃快照分离：加速失败永不丢失已完成摘要</text><rect x="8" y="24" width="192" height="56" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="16" y="39.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">1. context/prepare</text><text x="16" y="53.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">固定本次 through 截点与历史前缀</text><text x="16" y="65.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">预算超限时在准备内触发压缩</text><text x="16" y="78.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">单飞追踪，支持 stop/steer 取消</text><line x1="200" y1="52" x2="220" y2="52" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="220" y="24" width="192" height="56" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="228" y="39.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">2. context/compaction（权威）</text><text x="228" y="53.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">随原子批次落盘并发布</text><text x="228" y="65.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">含 cursor、summary 与基线</text><text x="228" y="78.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">不可变事实，不内嵌恢复快照</text><line x1="316" y1="80" x2="316" y2="102" stroke="var(--forest)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="102" width="404" height="56" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="16" y="117.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">3. RecoverySnapshot（可丢弃派生缓存 · timeline_snapshots）</text><text x="16" y="131.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">解释器 dim/context-projection/v4 编码 ProjectionCheckpoint + SHA-256 摘要</text><text x="16" y="143.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">锚定已发布的 completed 压缩事件，记录 resume 事件位置与此前折叠状态</text><text x="16" y="156.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">构建或保存失败只打告警，不回滚摘要事实，也不重跑模型压缩</text><line x1="110" y1="158" x2="110" y2="182" stroke="var(--forest)" stroke-width="1.05" marker-end="url(#arrow)"/><line x1="310" y1="158" x2="310" y2="182" stroke="var(--amber)" stroke-width="1.05" stroke-dasharray="4 3" marker-end="url(#arrow)"/><rect x="8" y="182" width="194" height="58" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="16" y="197.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">校验通过：增量续读</text><text x="16" y="211.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">验证锚点、摘要与 resume 位置</text><text x="16" y="223.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">从 resume 起分页折叠后续事实</text><text x="16" y="236.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">跳过压缩前大段历史与请求正文</text><rect x="218" y="182" width="194" height="58" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="226" y="197.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">缺失 / 损坏 / 越界：安全回退</text><text x="226" y="211.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">自动忽略异常快照，不吞存储错误</text><text x="226" y="223.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">从祖先链起点完整重放事实</text><text x="226" y="236.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">仍采用已提交的 compaction 摘要</text><text x="8" y="256" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.1" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">上下文输入只有两条合法通道：已采用的输入（input/consumed）与工具结果。</text>
+</svg><figcaption>上下文压缩、SHA-256 恢复快照与回退重放</figcaption></figure>
+<p>上面这张图展示了 Dim 解决“长会话低内存”与“历史绝对可重放”矛盾的核心设计，对应 <code>timeline-storage.md</code> 的压缩检查点规范：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>持久化对象</th>
+<th>性质与表位置</th>
+<th>存储内容</th>
+<th>损坏或失败时的后果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>context/compaction</code>（<code>Completed</code>）</td>
+<td>不可变历史事实，随原子批次写入 <code>timeline</code></td>
+<td>来源 <code>through</code>、截断游标 <code>cursor</code>、摘要文本 <code>summary</code>、<code>context_baseline</code> 与诊断信息，<strong>绝对不内嵌快照</strong></td>
+<td>若已提交的 <code>cursor</code> 无法投影到固定历史，准备明确报错失败，不跳过该事实，也不静默重做摘要</td>
+</tr>
+<tr>
+<td><code>RecoverySnapshot</code></td>
+<td>可丢弃的派生缓存，独立存于 <code>timeline_snapshots</code></td>
+<td><code>{ sequence, event_id, interpreter, state }</code>，锚定已发布的 <code>Completed</code> 压缩事件</td>
+<td>构建、编码或保存失败只打告警；读取时若缺失、损坏、校验和不符或越界，静默忽略并回退到完整事实重放，同时完整保留 <code>summary</code></td>
+</tr>
+</tbody></table></div>
+<p>默认的投影解释器标识为 <code>dim/context-projection/v4</code>（位于 <code>HistoryRenderer</code>），它把 <code>ProjectionCheckpoint</code> 编码成带 <strong>SHA-256 摘要</strong>的 <code>state</code>：</p>
+<ul>
+<li><code>resume</code> 记录祖先链上的续读定位三元组 <code>(branch_id, sequence, event_id)</code>，指向压缩游标之后产生第一条保留历史条目的那条事件（且不晚于该次准备的 <code>through</code>）。</li>
+<li><code>state</code> 记录在 <code>resume</code> 之前已经折叠好的全部投影状态：保留起点锚点 <code>retain_from</code>、当前生效的提示词条目与修订号、已投递的上下文基线、已提交但尚未采用的排队输入、最新 <code>context/configured</code>、以及尚未闭合的输出和工具调用。</li>
+</ul>
+<p>读取路径的自我校验非常严格。<code>Timeline::checkpoint</code> 先按解释器版本挑出 <code>sequence &lt;= through</code> 的最新快照，然后去查单个锚点事件（在热窗口里就直接取，不扫描区间），依次验证锚点 <code>event_id</code>、序号、状态是否为 <code>Completed</code>、游标是否匹配、SHA-256 摘要是否一致，再按 <code>resume.event_id</code> 确认续读位置落在当前固定祖先链与 <code>through</code> 范围内。v2 编解码器会自动绕过旧版没有摘要保护的 v1 缓存。只要任何一项检查不通过，系统立刻丢弃这个快照，从祖先链起点按 <code>HistoryRenderer::replay_context</code> 重新分页折叠所有带上下文标志的事实，依然应用已提交的 <code>context/compaction</code> 摘要，产出与快照完全等价的消息列表。</p>
+<p>把键控状态块（第 5 章的 <code>branch:line</code>、<code>branch:roster</code>、<code>branch:parent</code> 以及 <code>Goal</code> 的 <code>goal:state</code>）放进这套机制里看，就会明白它们的配合有多严丝合缝：压缩抹掉了旧对话轮次，但每个活跃键（未设置 <code>retire: true</code>）的最新一块都会被投影状态保留并在压缩后重放，所以分支压缩完既不会忘记自己是谁，也不会忘记自己开过哪几条活跃子线。</p>
+<h2 id="08-context-compaction-and-replay--内存驻留与冷读收敛">内存驻留与冷读收敛<a class="anchor" href="#08-context-compaction-and-replay--内存驻留与冷读收敛" aria-label="链接到本节">#</a></h2>
+<p>为了防止 2000 步的长会话把常驻内存撑大，Dim 把内存生命周期绑死在操作边界上：</p>
+<ul>
+<li>热窗口只保存尚未发布和尚未分发完毕的事件，一旦 <code>Dispatcher</code> 分发完成就移出热窗口，进程内不留已分发事件的全量副本。</li>
+<li><code>HistoryRenderer::rendered_stream</code> 采用分页流式投影，消费完一页就释放该页事件对象；一次读取（<code>read_segments</code> / <code>read_page</code>）内部共享一个解码内容缓存，上限 64 MiB，超限先清空，单次读取结束立刻释放。</li>
+<li><code>ContextPreparation</code> 完成后只保留一个弱引用和数值证据，不跨调用缓存完整的 <code>ModelRequest</code>。</li>
+<li>仓库甚至在 <code>xtask</code> 里专门提供了 <code>context-replay</code>、<code>restore-replay</code> 和 <code>context-breakdown</code> 三个测量子命令，用来直接量化 100 轮模拟会话或真实 SQLite 数据库在恢复、读取、投影和组装请求四个阶段各自申请了多少字节。</li>
+</ul>
+<p>当上下文投影和压缩把对话主链路的资源账算清楚之后，另一块同样棘手的地盘就浮出了水面：脱离当前回合继续跑的后台工作、工具审批竞态，以及从 ADR 003 演进到 ADR 018 的整套权限边界。</p>
+</div></section><section class="book-section" id="09-detached-work-and-permissions"><header class="chapter-head"><div class="chapter-number">09</div><h1>脱离工作、工具审批与权限边界</h1></header><div class="prose"><p>一个能改文件、跑 Shell、连 MCP 服务器的本地编码 Agent，真正容易出事故的往往不是模型写错一行语法，而是权限边界画歪了。早期版本里，Dim 自己也踩过两个很典型的坑：一是给每个基于配置启动的外部命令（MCP、Hook、Workflow、插件）都准备单独搞一套“批准、指纹、撤销”接口，结果把“配置要运行”和“模型临时决定调用工具”混成一团；二是给工具调用设了两套互相打架的准入关卡，上面 <code>Permission</code> 刚判了放行，底下的 <code>HostPlatform</code> 又去读一份独立的 <code>host-isolation.json</code> 把它否决掉，导致用户选了 <code>full-access</code> 却照样跑不动普通构建命令。</p>
+<p>在 <code>docs/adr/</code> 里，ADR 003、009、010、012、014、017 和 018 完整记录了 Dim 怎样把这团乱麻拆成三条互不越权的清晰边界。</p>
+<h2 id="09-detached-work-and-permissions--脱离工作-为什么删掉统一的后台任务层">脱离工作：为什么删掉统一的后台任务层<a class="anchor" href="#09-detached-work-and-permissions--脱离工作-为什么删掉统一的后台任务层" aria-label="链接到本节">#</a></h2>
+<p>先看一类经常让权限和中断逻辑发疯的场景：用户在当前 turn 里让 Agent 启动了一个耗时很长的编译或测试命令（<code>BackgroundExec</code>），或者派出了一个协作子代理（<code>Collaboration</code>）。这个工作越过了发起它的那个 turn 继续在后台跑，等将来跑完时再自动把结果送回分支并唤醒模型。Dim 把这类工作统称为<strong>脱离工作（detached work）</strong>。</p>
+<p>早期实现里曾有过一套共享的 <code>BackgroundTasks</code>、<code>BackgroundTimeline</code>、<code>task</code> 工具以及共享事件 <code>task/started</code>、<code>task/ended</code>、<code>task/stop</code>。后来在 <code>event-driven-flows.md</code> §3 的重构中，这整套统一后台任务层被彻底删除了。原因和第 2 章撤回接线模块如出一辙：把所有后台任务塞进共享管家，既制造了第二份任务状态，又模糊了取消与重启恢复的归属权。</p>
+<p>现在的合同简洁得多：</p>
+<ul>
+<li><strong>谁发起、谁拥有</strong>：任务句柄、取消令牌、输出采集、结果查询工具和重启恢复全部归发起它的能力自持，用 <code>rutis</code> effect 登记卸载清理。结果用所有者自己的事件表达，例如 <code>BackgroundExec</code> 的 <code>exec/started</code> 与 <code>exec/ended</code>，<code>Collaboration</code> 的 <code>collaboration/result</code>。</li>
+<li><strong>两档中断各管各的</strong>：用户按下普通中断发出 <code>scope=turn</code> 的 <code>stop/interrupt</code> 时，<strong>不取消</strong>该 turn 启动的脱离工作，后台进程继续跑，跑完后由所有者在结果事件的分发位置决定是否向分支提交一条 <code>mode=steer</code> 的唤醒输入；只有 <code>scope=branch</code> 的中断才会通知所有者取消本分支全部脱离工作，且必须<strong>先释放资源，再写入终态事件</strong>，且不再触发自动唤醒。</li>
+<li><strong>独立提交结果与唤醒通知</strong>：<code>exec/ended</code> 和附带截断预览的唤醒输入分两次提交（<code>timeline-storage.md</code> 末尾）。这样做的好处是两次提交之间可以正常触发上下文压缩，唤醒输入自带预览、不反向引用 <code>exec/ended</code>，恢复快照也就不需要背着沉重的命令输出事实跑。</li>
+<li><strong>空闲关机保护，但不污染空闲状态</strong>：所有者在接纳每项脱离工作前调用 <code>SessionLifecycle::take_hold()</code> 拿到会话活动持有，直到最后一个结果事实提交后才释放。只要还有活动持有，<code>daemon.shutdown { ifIdle: true }</code> 和会话空闲卸载就会被拒绝（显式关闭则直接停止并清理）。与此同时，<code>Session::idle</code> 依然只看 <code>Loop</code> 是否空闲，不把后台长任务伪装成主循环卡死。</li>
+</ul>
+<h2 id="09-detached-work-and-permissions--三条权限边界与五份核心-adr-的演进">三条权限边界与五份核心 ADR 的演进<a class="anchor" href="#09-detached-work-and-permissions--三条权限边界与五份核心-adr-的演进" aria-label="链接到本节">#</a></h2>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 256" width="420" height="256" role="img" aria-label="工具审批、文件事实、配置启用与执行隔离边界">
+<title>工具审批、文件事实、配置启用与执行隔离边界</title>
+<defs><marker id="09-detached-work-and-permissions--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="12" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">ADR 003 / 009 / 010 / 012 / 018：三条职责边界互不越权</text><rect x="8" y="24" width="260" height="128" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="16" y="39.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">路径 A：模型决策触发的工具调用</text><text x="16" y="53.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">1. Permission 评估三预设（ADR 018）：</text><text x="16" y="65.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">   read-only / workspace-write / full-access</text><text x="16" y="78.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">2. 叠加固定文件事实（FileAccessFacts）</text><text x="16" y="90.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">   + SessionGrants（仅在 Ask 放行，不压 Deny）</text><text x="16" y="103.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">   + CommandRules（deny 永远胜出）+ Hooks 建议</text><text x="16" y="115.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">3. 需询问 → Approval 写 approval/request</text><text x="16" y="128.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">   首条有效 approval/respond 胜出；中断写 cancelled</text><rect x="278" y="24" width="134" height="128" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="286" y="39.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.1" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">执行隔离（可选）</text><text x="286" y="53.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">HostPlatform 只执行</text><text x="286" y="65.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">不再二次否决准入</text><text x="286" y="78.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">（ADR 009）</text><text x="286" y="90.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">沙箱默认关闭</text><text x="286" y="103.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">（ADR 010 opt-in）</text><text x="286" y="115.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">macOS seatbelt</text><text x="286" y="128.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">Linux bwrap</text><line x1="268" y1="86" x2="278" y2="86" stroke="var(--forest)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="166" width="404" height="62" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="16" y="181.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">路径 B：配置驱动的外部执行（ADR 003：不走工具审批）</text><text x="16" y="195.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">覆盖对象：MCP 服务器进程、Hook 命令、Workflow 定义、插件包</text><text x="16" y="207.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">规则：项目目录（.mcp.json / .dimcode）来源默认禁用，只有用户本地配置可启用</text><text x="16" y="220.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">安全策略不写入 Timeline；回放、恢复与分叉绝不恢复或放大既有权限</text><text x="8" y="244" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.1" font-weight="400" fill="var(--amber)" text-anchor="start" opacity="1">exec 不接受模型传入 sandbox/network 参数；模型只能接受环境，不能自选沙箱。</text>
+</svg><figcaption>工具审批、文件事实、配置启用与执行隔离边界</figcaption></figure>
+<p>上面这张图把 Dim 在当前版本收敛出的权限体系拆成了两条执行路径和一个独立的隔离开关，背后对应着几份互相承接、甚至自我推翻的架构决策。</p>
+<h3 id="09-detached-work-and-permissions--adr-003-审批只管模型决定-不管配置文件">ADR 003：审批只管模型决定，不管配置文件<a class="anchor" href="#09-detached-work-and-permissions--adr-003-审批只管模型决定-不管配置文件" aria-label="链接到本节">#</a></h3>
+<p>ADR 003 划出了第一道大坝：</p>
+<ul>
+<li><strong>路径 A（模型决策）</strong>：模型临时决定调用哪个工具（包括调用某个已连上的 MCP 服务器里的工具），归 <code>Permission</code> 和 <code>Approval</code> 裁决。</li>
+<li><strong>路径 B（配置驱动）</strong>：MCP stdio 进程启动、MCP HTTP/SSE 连接、Hook 脚本、Workflow 定义、插件包，这些命令之所以运行是因为配置文件写了它，不是模型临时起意。它们不走审批，没有指纹，也没有 <code>mcp.approve</code> 或 <code>mcp.revoke</code>（这些旧方法直接返回 <code>unknown_method</code>）。</li>
+<li><strong>项目来源默认禁用</strong>：凡是来自工作区项目目录（如 <code>.mcp.json</code>、<code>.dimcode/</code>）的配置条目，默认全部禁用，而且项目文件里的 <code>enabled</code> 字段会被忽略。只有用户通过本地配置操作（记录在用户自己的 <code>mcp-projects</code> 等本地存储里，按规范化工作区路径和条目 id 索引）显式启用后才会运行。</li>
+</ul>
+<p>ADR 003 D4 很坦诚地写明了接受的代价：一旦用户启用了某个项目条目，以后 <code>git pull</code> 拉下新提交改了该条目的命令或参数，不会因为指纹变化再次弹窗询问。启用一个项目条目，本身就意味着信任该项目对这条配置的修改；这本来就不是操作系统级沙箱，真要防恶意代码必须靠进程隔离。</p>
+<h3 id="09-detached-work-and-permissions--adr-009-与-adr-010-permission-拍板-hostplatform-只管执行-沙箱默认关闭">ADR 009 与 ADR 010：Permission 拍板，HostPlatform 只管执行，沙箱默认关闭<a class="anchor" href="#09-detached-work-and-permissions--adr-009-与-adr-010-permission-拍板-hostplatform-只管执行-沙箱默认关闭" aria-label="链接到本节">#</a></h3>
+<p>ADR 009 撤掉了 <code>HostPlatform</code> 内部的 <code>escalation</code> 二次否决门禁，确立了单一决策权：一个工具能不能跑，由 <code>Permission</code> 说了算；<code>HostPlatform</code> 只负责按照当前执行设置去拉起受限或非受限进程，不再反过来推翻已经通过准入的调用。</p>
+<p>紧接着，ADR 010 面对本地编码 Agent 的真实体验做了一次务实纠偏：旧设计默认开启严格沙箱并断网，导致没写过策略文件的普通用户一上手就找不到 <code>$HOME</code> 下的工具链，包管理器连不上网，连常规开发都跑不动。ADR 010 决定：</p>
+<ol>
+<li><strong>沙箱改为 opt-in（默认关闭）</strong>：由用户在设置里通过开关决定是否开启进程隔离（macOS 用 seatbelt，Linux 用 <code>bwrap</code>，Windows 暂无沙箱后端，开启后准备阶段直接报 <code>isolation_unavailable</code>）；旧的 <code>host-isolation.json</code> 与 <code>host.isolation.*</code> 管理接口全部移除。</li>
+<li><strong>剥夺模型自选沙箱的权利</strong>：<code>exec</code> 工具彻底删掉了 <code>sandbox</code>、<code>paths</code> 和 <code>network</code> 参数，任何仍传 <code>sandbox</code> 字段的调用直接按 <code>exec_invalid_request</code> 拒绝。模型只能接受宿主给定的环境，永远不能通过调工具给自己松绑。</li>
+<li><strong><code>full-access</code> 不改变沙箱开关</strong>：<code>full-access</code> 的语义严格限定为“不再弹窗询问工具审批”，它不会悄悄关掉用户打开的沙箱，也不会打开网络。</li>
+</ol>
+<h3 id="09-detached-work-and-permissions--adr-012-与-adr-014-固定文件事实与会话级持久化授权">ADR 012 与 ADR 014：固定文件事实与会话级持久化授权<a class="anchor" href="#09-detached-work-and-permissions--adr-012-与-adr-014-固定文件事实与会话级持久化授权" aria-label="链接到本节">#</a></h3>
+<p>对于 <code>read</code>、<code>grep</code>、<code>glob</code>、<code>write</code>、<code>edit</code> 这些文件操作，ADR 014 把裁决依据固定成四类事实，由 Session 级部件 <code>FileAccessFacts</code> 统一计算：<code>workspace</code>（工作区目录及经 Git 验证的受管 worktree 根目录）、<code>system</code>（平台系统只读根）、<code>owned</code>（本会话通过 <code>SessionFiles</code> 拥有或由本会话生成的命令输出文件）以及 <code>grant</code>（会话级授权）。路径检查排在工具白名单前面，先统一展开 <code>~</code>、<code>..</code> 和符号链接，再做裁决。</p>
+<p>当文件操作落在工作区之外触发询问时，如果每次恢复会话都要让用户重复点同意，体验会很差。ADR 012 引入了持久化的 <code>session_grants</code> 表（按 <code>(session_id, path)</code> 建键，记录 <code>kind: file | dir</code> 和 <code>mode: read | write</code>），并严格锁死了四条安全约束：</p>
+<ul>
+<li>授权仅在 <code>Permission</code> 判为 <code>Ask</code> 时生效，<strong>绝不能把 <code>Deny</code> 洗白成 <code>Allow</code></strong>，在 <code>read-only</code> 预设下写授权完全不起作用；读授权也不能放行写操作。</li>
+<li>授权只属于当前 Session，重启可恢复，随会话删除事务一起清空，但分叉出的新 Session 和协作子代理<strong>不继承</strong>任何授权。</li>
+<li><strong>模型永远不能写授权</strong>：没有暴露给模型的 <code>add</code> / <code>remove</code> 工具，审批回复里也没有授权字段，领队模型替协作子代理答复审批时也不能写入授权；客户端是在用户点击“本会话允许”后，先调 <code>session.grants.add</code> 再回答 <code>approval.respond</code>。</li>
+<li>目录授权按规范化路径前缀匹配而非 inode，读取授权失败一律默认拒绝。</li>
+</ul>
+<h3 id="09-detached-work-and-permissions--adr-017-到-adr-018-一次诚实的交互回撤">ADR 017 到 ADR 018：一次诚实的交互回撤<a class="anchor" href="#09-detached-work-and-permissions--adr-017-到-adr-018-一次诚实的交互回撤" aria-label="链接到本节">#</a></h3>
+<p>从 ADR 017 到 ADR 018 的转折，非常值得做产品和架构的工程师反复细看。ADR 017 当时觉得单个预设名说不清“文件范围”和“工具是否询问”，于是把 <code>PermissionPolicy</code> 扩出了两个可选覆盖字段 <code>fileAccess</code> 和 <code>toolApproval</code>，并在 <code>/permissions</code> 面板上摆了文件访问、工具审批、进程隔离三个独立控件。</p>
+<p>上线后团队很快发现这套拆分反而把用户搞糊涂了：三个预设本身就已经把最合理的组合定死了，拆开之后暴露出来的组合（比如“路径无限制但每次调工具都要问”，或者“路径只读却跳过所有工具询问”）几乎没人真的想要；而且把属于 <code>ExecutionSettings</code> 的进程隔离硬塞进 <code>/permissions</code> 面板，反而让一个菜单背后挂了两个不同所有者。</p>
+<p>于是 ADR 018 干脆利落地把拆分撤了回去：</p>
+<ul>
+<li><code>/permissions</code> 面板只留三个预设：<code>read-only</code>、<code>workspace-write</code>、<code>full-access</code>，不再把文件范围和工具审批拆成独立控件，进程隔离退回 Settings 里的执行设置。</li>
+<li><code>PermissionPolicy</code> 删掉 <code>fileAccess</code> 和 <code>toolApproval</code>，只保留 <code>preset</code>、<code>allowedTools</code> 和 <code>disallowedTools</code>（显式拒绝永远压过显式允许，且两张列表永远不能绕过文件事实或进程隔离）。</li>
+<li>为了不重写用户磁盘上按 ADR 017 写下的旧 <code>permission/changed</code> 事件和定时任务文档，<code>PermissionPolicy</code> 主动拿掉了 <code>#[serde(deny_unknown_fields)]</code>，让旧记录里的那两个字段反序列化时被安静忽略。ADR 018 顺手把代价明明白白写进文档：这相当于放弃了对策略 JSON 拼写错误的解析拦截，拼错的字段会回退为默认行为；但外层的 Scheduler 任务和 Workflow 运行文档依然保持严格校验。</li>
+</ul>
+<h2 id="09-detached-work-and-permissions--分支级审批状态机-双端抢答与中断竞争">分支级审批状态机：双端抢答与中断竞争<a class="anchor" href="#09-detached-work-and-permissions--分支级审批状态机-双端抢答与中断竞争" aria-label="链接到本节">#</a></h2>
+<p>沿着规则落地到代码里，每一次工具调用在 <code>ToolExecutor</code> 执行之前，都要穿过分支级 <code>Approval</code> 状态机（<code>docs/architecture/rust-agent/plugins/Permission.md</code> 与 <code>event-driven-flows.md</code> §2）：</p>
+<ol>
+<li><code>Approval::admit</code> 调用 <code>Permission::admit_decision</code>，依次结合预设、命令规则（<code>user/permission</code> 里的 <code>exact</code>/<code>prefix</code> 词级匹配，无项目级来源）、文件事实，若结果不是 <code>deny</code>，再按名称顺序询问已注册的工具顾问（例如 <code>HooksBranch</code> 注册的 <code>PreToolUse</code> 钩子，组合规则为任意 <code>deny</code> &gt; 任意 <code>ask</code> &gt; 任意 <code>allow</code>，顾问无权推翻既有的 <code>deny</code>）。</li>
+<li>若最终判定需要询问，<code>Approval</code> 向本分支时间线写入 <code>approval/request { approval_id, source, call, reason }</code>，通过 <code>SessionBroadcast</code> 推给所有在线客户端（新附着的客户端通过 <code>attach</code> 补发当前未决请求）。</li>
+<li>两个客户端同时抢答 <code>allow</code> 和 <code>deny</code>，或者用户在审批等待期间按下中断键，所有动作都转成写向同一条分支时间线的事实：<code>approval/respond</code> 或 <code>stop/interrupt</code>。</li>
+<li><code>Approval</code> 只按 <code>Dispatcher</code> 分发到的序号裁决：如果 <code>approval/respond</code> 先到且请求仍在未决表里，首个有效决定胜出，后面迟到的回复直接丢弃；如果 <code>stop/interrupt</code> 先到，或者同意后工具尚未启动时收到中断，<code>Approval</code> 写下 <code>approval/cancelled</code> 结案。每个已提交的 <code>approval/request</code> 都保证有且仅有一次终态结算，每次工具调用最多执行一次。</li>
+</ol>
+<p>权限和审批守住了外部动作的入口，而模型侧的两大核心引擎，则是下一章要拆解的内嵌 JavaScript 沙箱 Code Mode 和统一多协议模型宿主 Aimux。</p>
+</div></section><section class="book-section" id="10-codemode-and-aimux"><header class="chapter-head"><div class="chapter-number">10</div><h1>Code Mode 与 Aimux 模型宿主</h1></header><div class="prose"><p>让大模型批量查 20 个文件、过滤出 3 处匹配再交叉比对，如果每次读取都走一轮“模型生成 <code>tool_use</code> → 宿主执行 → 把几千行原文塞回上下文 → 模型再调下一轮”，不仅慢、费 Token，还会把大量中间噪音永久留在对话历史里。另一方面，真正把请求发给 OpenAI、Anthropic、Gemini 或兼容网关时，各家在多模态工具结果、提示词缓存断点、HTTP 重定向安全、请求体上限和流式录制上的细微差异，稍不留神就会变成线上故障。</p>
+<p>Dim 用两个职责极其聚焦的 crate 分别解决这两件事：<code>crates/dim-codemode</code> 和 <code>crates/dim-agent-aimux</code>。</p>
+<h2 id="10-codemode-and-aimux--code-mode-用-rquickjs-把工具编排压回单次调用">Code Mode：用 rquickjs 把工具编排压回单次调用<a class="anchor" href="#10-codemode-and-aimux--code-mode-用-rquickjs-把工具编排压回单次调用" aria-label="链接到本节">#</a></h2>
+<p><code>dim-codemode</code> 基于 <code>rquickjs 0.14</code>（启用了 <code>futures</code> 和 <code>parallel</code> 特性），按三层作用域拆成三个部件：进程级保存运行表 <code>CodeModeRuns</code>，Session 级 <code>CodeModeSessionPlugin</code> 向 <code>toolRegistry</code> 注册名为 <code>codemode</code>（<code>risk: &quot;session&quot;</code>）的工具，分支级把调用接到本分支的 <code>ToolExecutor</code>。</p>
+<p>模型调用 <code>codemode</code> 时传入的是一段纯 JavaScript 异步函数体（支持顶层 <code>await</code> 和 <code>return</code>）。<code>crates/dim-codemode/src/interpreter.rs</code> 每次执行都会新建一个全新的 <code>AsyncRuntime</code> 和 <code>AsyncContext</code>，<strong>里面没有 Node API、没有文件系统、没有网络、没有定时器，甚至没有 <code>console</code></strong>。宿主往这个全新上下文里注入的唯一对象是 <code>tools</code>，只暴露三个方法：</p>
+<ul>
+<li><code>tools.list()</code>：返回本次模型请求可见的工具摘要列表 <code>[{ name, description }]</code>（主动剔除了 <code>codemode</code> 自己，防止递归套娃）。</li>
+<li><code>tools.describe(name)</code>：按需返回某个工具的完整 JSON Schema 声明。</li>
+<li><code>tools.call(name, args)</code>：异步调用该工具，失败时抛出携带 <code>code</code>、<code>message</code> 和可选 <code>data</code> 的 <code>ToolCallError</code>。</li>
+</ul>
+<p>这里有三条设计原则，直接体现了 Dim 不搞旁路的克制：</p>
+<p><strong>第一，子调用绝不绕过权限与审批。</strong> <code>tools.call</code> 通过 <code>NestedToolHost</code> 经过本分支的 <code>ToolExecutor</code>、<code>ToolBinding</code> 和 <code>Approval</code>，不会直接调底层文件或 Shell 函数。脚本里哪怕写了一百行循环，每一次外部读写或命令执行照样受当前会话的权限预设、文件事实和人工审批门禁约束，取消令牌也通过 <code>cancel.child_token()</code> 联动中断。</p>
+<p><strong>第二，子调用结果绝不污染主模型上下文。</strong> 脚本里调用 50 次 <code>read</code> 读出来的几兆源码，全都在 QuickJS 内存里过滤、聚合、归并；最终只有 <code>return</code> 出来的 JSON 序列化值会成为外层 <code>codemode</code> 工具的 <code>ToolResult.content</code> 返回给模型。前面第 3 章提过的 <code>AgentEvent::parent_call_id</code> 在这里正好派上用场：所有子调用在时间线上留痕时都会通过 <code>tokio::task_local!</code> 自动盖上外层 <code>codemode</code> 的 <code>parent_call_id</code>，而 <code>AgentEvent::context_flags()</code> 见到非空 <code>parent_call_id</code> 直接返回 <code>(false, false)</code>，保证子工具的庞大结果永远不会漏进后续模型请求的上下文。</p>
+<p><strong>第三，硬资源边界留在宿主，不交给模型调参。</strong> <code>crates/dim-codemode/src/config.rs</code> 给 <code>CodeModeConfig</code> 定义了八项纯宿主侧硬上限，全部不暴露成工具参数，也不写进提示词：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>默认上限</th>
+<th>保护目标</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>max_code_bytes</code></td>
+<td><code>256 KiB</code>（262,144 字节）</td>
+<td>限制单次提交的脚本代码长度</td>
+</tr>
+<tr>
+<td><code>max_runtime_ms</code></td>
+<td><code>600,000 ms</code>（10 分钟）</td>
+<td>配合 QuickJS 中断处理器强停死循环</td>
+</tr>
+<tr>
+<td><code>max_calls</code></td>
+<td><code>4096</code> 次</td>
+<td>限制单次脚本最多发起的子工具调用总数</td>
+</tr>
+<tr>
+<td><code>max_parallel_calls</code></td>
+<td><code>16</code> 并发</td>
+<td>用 Tokio <code>Semaphore</code> 控制脚本内 <code>Promise.all</code> 并发度</td>
+</tr>
+<tr>
+<td><code>max_memory_bytes</code></td>
+<td><code>1 GiB</code></td>
+<td>通过 <code>runtime.set_memory_limit</code> 限制 QuickJS 堆内存</td>
+</tr>
+<tr>
+<td><code>max_programs</code></td>
+<td><code>2</code></td>
+<td>限制同一作用域并发运行的程序数</td>
+</tr>
+<tr>
+<td><code>max_output_bytes</code></td>
+<td><code>16 MiB</code></td>
+<td>限制外层 <code>return</code> 序列化结果体积</td>
+</tr>
+<tr>
+<td><code>max_single_result_bytes</code></td>
+<td><code>4 MiB</code></td>
+<td>限制单个子工具结果传入 JS 内存的体积</td>
+</tr>
+</tbody></table></div>
+<p>当脚本超时或中途被取消时，外层错误文案还会附带一句明确提示：<code>Some child calls may have completed; check their effects before retrying.</code> 提醒模型不要因为脚本报错就盲目重跑已经产生副作用的步骤。</p>
+<h2 id="10-codemode-and-aimux--aimux-模型宿主-把协议怪癖封死在发送边界">Aimux 模型宿主：把协议怪癖封死在发送边界<a class="anchor" href="#10-codemode-and-aimux--aimux-模型宿主-把协议怪癖封死在发送边界" aria-label="链接到本节">#</a></h2>
+<p><code>crates/dim-agent-aimux</code> 把上游 crates.io 固定版本 <code>=0.6.1</code> 的 <code>aimux-core</code>、<code>aimux-provider-utils</code>、<code>aimux-providers</code> 和 <code>aimux-stream</code> 封装成进程级 <code>AimuxPlugin</code>（提供 <code>ModelHost</code>），负责对接 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Gemini GenerateContent、xAI、Bedrock 以及各类兼容端点。</p>
+<p><code>crates/dim-agent-aimux/README.md</code> 和源码里的四个工程细节，把模型接入层最容易踩的暗坑全挡在了外面：</p>
+<h3 id="10-codemode-and-aimux--1-工具结果里的图像按协议分路-不污染历史">1. 工具结果里的图像按协议分路，不污染历史<a class="anchor" href="#10-codemode-and-aimux--1-工具结果里的图像按协议分路-不污染历史" aria-label="链接到本节">#</a></h3>
+<p>当工具（比如 <code>read</code> 读取截图或 OCR 布局图）返回了图像内容块时，并非所有大模型协议都允许在 <code>tool_result</code> 消息里直接夹带图片。Aimux 宿主在发送前按 <code>ModelProtocol</code> 自动分路，同时保持 Timeline 历史和存储原样不变：</p>
+<ul>
+<li><code>anthropic</code> 与 <code>bedrock</code> 协议原生支持在 <code>tool_result.content</code> 数组里放图像块，直接内嵌发送。</li>
+<li><code>openai-chat</code>、<code>openai-compatible</code>、<code>openai-responses</code>、<code>xai</code>、<code>xai-responses</code> 和 <code>gemini</code> 的工具返回字段只接受纯字符串，转换器会在工具文本原位置留一个文本标记，等该步骤所有 tool 消息结束后，紧跟补发一条 <code>user</code> 消息，按调用顺序附带全部图像及来源说明。</li>
+</ul>
+<h3 id="10-codemode-and-aimux--2-发送前-64-mib-体积闸门与严格的同源重定向">2. 发送前 64 MiB 体积闸门与严格的同源重定向<a class="anchor" href="#10-codemode-and-aimux--2-发送前-64-mib-体积闸门与严格的同源重定向" aria-label="链接到本节">#</a></h3>
+<p>多模态输入或超大工具输出很容易拼出异常庞大的 HTTP JSON 请求体。Aimux 宿主在真正发出网络请求前，会对协议编码后的实际字节长度做一道本地硬检查，取 <code>64 MiB</code> 与当前连接声明上限的较小者；超限直接作为本地请求拒绝结束，既不发往远端，也不触发重试。</p>
+<p>更细心的是 HTTP 重定向策略：模型请求是带 JSON body 和 API Key 的 <code>POST</code>。如果用 <code>reqwest</code> 默认的重定向策略，遇到 <code>301</code>/<code>302</code>/<code>303</code> 会被自动改成不带 body 的 <code>GET</code>，遇到跨源跳转时 <code>reqwest</code> 也只会剥离 <code>Authorization</code> 和 <code>Cookie</code>，却不会剥离 <code>x-api-key</code> 或 <code>x-goog-api-key</code>，直接造成凭据外泄。因此 Aimux 的 HTTP client 只在**完全同源（scheme、host、port 一致）**的前提下跟随 <code>307</code> 和 <code>308</code>，最多 10 跳；其余跳转一律拒绝并在 <code>src/driver.rs</code> 里把脱敏后的状态码、目标 URL 和拒绝原因补写回错误信息。</p>
+<h3 id="10-codemode-and-aimux--3-anthropic-提示词缓存断点的精准放置">3. Anthropic 提示词缓存断点的精准放置<a class="anchor" href="#10-codemode-and-aimux--3-anthropic-提示词缓存断点的精准放置" aria-label="链接到本节">#</a></h3>
+<p>针对 Anthropic 协议，Aimux 转换器最多主动放两个 5 分钟生命周期的缓存断点（API 上限是 4 个）：第一个放在 System 最后一个块上，使工具声明和静态 System 文本合成一份跨轮复用的稳定前缀（前提是 System 没有自带显式断点）；第二个放在最后一条 <code>user</code> 或 <code>tool_result</code> 消息上（前提是总断点不超过 4 个）。如果调用方自己塞了超过 4 个显式断点，Aimux 绝不替它默默裁剪，请求发出后明确报错 <code>Unsupported model parameter: cacheControl breakpoint limit</code>。文档里甚至顺带坦承了统一打标的已知代价：压缩摘要这类一次性请求也会多付一次缓存写入费用（短于最小可缓存长度的不计费），换取的是代码路径完全统一，不需要给压缩请求开特例。</p>
+<h3 id="10-codemode-and-aimux--4-无重试归属与-rfc-0023-录制">4. 无重试归属与 RFC-0023 录制<a class="anchor" href="#10-codemode-and-aimux--4-无重试归属与-rfc-0023-录制" aria-label="链接到本节">#</a></h3>
+<p>Aimux 适配器本身不做自动重试，HTTP 失败只保留类型化的状态码和条件码交回给上层 <code>ModelProvider</code> 决定是否退避重来；卸载时先关准入、释放未读流、排空已受理调用，再释放独占 HTTP 连接池，旧句柄一律返回 <code>OwnerClosed</code>。需要排查线上模型报文时，只需打开 <code>model-log</code> 设置源，Aimux 的 <code>RecordingOutcomeStream</code> 就会在流结束、出错或丢弃时把完整线上报文（含缓存断点）按 RFC-0023 格式写入 <code>&lt;目录&gt;/recordings.jsonl</code>，关闭时零调用开销。</p>
+<p>到这里，Agent 内核里的存储、事件、分支、插件、压缩、权限、脚本沙箱和模型宿主已经全部就位。下一章把视角拉到最外层，看看守护进程 App Server、终端 CLI、Web 工作区、MCP 与 ACP 网关是如何把这套内核送到用户手里的。</p>
+</div></section><section class="book-section" id="11-server-cli-web-and-protocols"><header class="chapter-head"><div class="chapter-number">11</div><h1>App Server、CLI、Web 与 ACP / MCP 网关</h1></header><div class="prose"><p>一个设计得再干净的 Agent 内核，如果每个前端（终端 TUI、浏览器 Web 界面、Zed / Lody 这类外部 IDE）都各自内嵌一份运行时、各自读写同一个 SQLite 文件，很快就会撞上文件锁冲突、多端状态打架和后台任务随窗口关闭而夭折的问题。</p>
+<p>Dim 的解法是把所有执行、审批、存储和插件装配收拢到唯一的后台守护进程 <code>dim-app-server</code>，再让 CLI、Web 工作区和 ACP 网关都作为讲同一套协议的薄客户端接入。</p>
+<h2 id="11-server-cli-web-and-protocols--守护进程-app-server-受保护传输-优雅关机与单向升级">守护进程 App Server：受保护传输、优雅关机与单向升级<a class="anchor" href="#11-server-cli-web-and-protocols--守护进程-app-server-受保护传输-优雅关机与单向升级" aria-label="链接到本节">#</a></h2>
+<p>App Server 住在 <code>crates/dim-app-server</code>，同时作为子命令 <code>dimcode app-server</code> 被编译进单一二进制 <code>dimcode</code> 里。它只管装配、持久化、传输安全与对外入口，不把具体业务插件逻辑塞回主干（<code>principles.md</code> §1）。</p>
+<p><strong>传输安全边界非常分明。</strong> 产品模式和自定义模型配置模式下，执行与管理类 RPC v3 必须走受保护的本地传输：Unix 上是权限 <code>0700</code> 目录里的 <code>0600</code> 私有套接字（清理时只删除本监听器持有的 inode），Windows 上是带本地身份校验的命名管道。默认的 WebSocket 端点在非 mock 模式下只响应 <code>hello</code> 和 <code>ping</code>，防止局域网或浏览器任意页面直接调起本地执行。为了防止客户端连错守护进程，<code>hello.daemonProfile</code> 会显式声明当前守护进程属于 <code>product</code>、<code>configured</code>（附带模型配置文件原始字节的 64 位小写 SHA-256 摘要，不泄露环境变量值）还是 <code>mock</code>，客户端遇到配置或模式不匹配时直接拒绝连接，绝不擅自杀掉别人的守护进程。</p>
+<p><strong>精细的关机与活动持有协议。</strong> 当客户端发来 <code>daemon.shutdown { ifIdle: true }</code>（协议 v3 特性标记 <code>daemon.shutdown.ifIdle</code>）准备空闲退出或原子升级时，App Server 不会粗暴地只看当前有没有 TCP 连接，而是同时核对四件事：没有其他客户端连接、没有已附着的会话、没有任何分支上的在途工作，也没有任何通过 <code>processActivity.hold()</code> 拿走的进程级活动持有（例如后台脱离工作、正在跑的 Workflow、或者尚未排空的定时投递）。只要其中一项为忙，就返回 <code>daemon_busy</code> 并附带计数详情；一旦判定全部空闲，才会关闭新准入并开始优雅清理。如果请求的是默认优雅关闭（<code>force: false</code>），发起方连接会把最终回复的写通道转交给进程协调器，等整个 <code>rutis</code> 根树彻底卸载、SQLite 刷盘并显式释放 <code>flock</code> 锁之后才回发成功（避免并发派生的子进程继承文件描述符导致下一个守护进程误报数据库被占用）。</p>
+<p><strong>提交确认的不确定性诚实告知。</strong> 在 <code>session.submit</code> 的协议边界上，App Server 明确区分了“保证未落盘的拒绝错误”（<code>invalid_params</code>、<code>session_invalid_input</code>、<code>session_closed</code>、<code>session_build_failed</code>、<code>service_reloading</code>、<code>unknown_method</code>、<code>input_blocked</code>）与“提交后结果不确定的错误”（<code>submission_unknown</code>、存储/发布错误、连接断开）。客户端拿到不确定错误时绝不盲目重试，而是保留 Session id 提示用户恢复检查，避免把同一条指令提交两遍。同时，<code>UserPromptSubmit</code> 这类 Hook 失败但设为 <code>onFailure: continue</code> 时，不把提交判失败，而是通过加法字段 <code>warnings: [{ check, message }]</code> 告知客户端原样展示，绝不混入模型上下文。</p>
+<p><strong>单向原生存储升级与离线运维。</strong> 原生 SQLite 数据库在当前版本采用明确的版本号标记，启动时若检测到支持的旧格式，会在进入任何可写 PRAGMA 之前，在单一准入事务内原地顺序升级，失败则完整回滚，不支持的版本（包括曾移除的分支专用格式）直接拒绝打开并原样保留文件。导出整条会话时间线（<code>dimcode export SESSION_ID</code>）直接以只读快照打开数据库，不争抢守护进程锁，不触发升级；回收空间（<code>dimcode daemon vacuum</code>）则要求守护进程已停机，先校验不存在悬空内容引用、清理不可达的内容寻址节点，再执行 <code>VACUUM</code>。</p>
+<h2 id="11-server-cli-web-and-protocols--终端-cli-与-web-工作区-薄客户端的不同接入姿态">终端 CLI 与 Web 工作区：薄客户端的不同接入姿态<a class="anchor" href="#11-server-cli-web-and-protocols--终端-cli-与-web-工作区-薄客户端的不同接入姿态" aria-label="链接到本节">#</a></h2>
+<p>终端客户端位于 <code>crates/dim-cli</code>（内嵌终端控件源自 xAI <code>grok-build</code> 的 Ratatui 衍生实现，遵循 Apache-2.0 归属），它自己不跑模型也不决定权限，只管输入编辑、终端回滚区渲染和交互式审批。</p>
+<p>有意思的是，交互式 TUI 并不是只开一条普通 RPC 连接那么简单。在 <code>crates/dim-app-server/README.md</code> 描述的 UI 叶子（UI Leaf）协议里，交互式 <code>dimcode</code> 进程本身是一个监听在私有地址上的轻量 <code>rutis</code> 内核，通过 <code>ui.open</code> 让守护进程的 <code>UiLeaf</code> 反向拨号握手并挂载会话，再把普通的协议 v3 业务连接通过 <code>ui.attach</code> 登记上去，支持按代次原子替换（<code>ui.open { replace }</code>）且 20 秒内未附着自动回收。除了交互式 <code>tui</code>，CLI 还提供面向脚本与流水线的 <code>dimcode exec -p</code> / <code>exec --json</code>（审批或提问无法交互时主动停止当前 turn 并以退出码 3 退出，Ctrl+C 等待结算后以 130 退出），以及本地图像缩放校验（发送前统一把图片缩放到 2048 px 与 5,000,000 字节 base64 以内，单次最多 20 张，总请求体不超过 16 MiB）、超 16 KiB 粘贴自动走 <code>attachment.put</code>、跨平台剪贴板和 <code>@</code> 本地文件补全。</p>
+<p>Web 工作区则完全由守护进程按需拉起：通过 <code>web.open</code>（持有者模式）或 <code>web.toggle</code>（守护进程开关）只绑定在 loopback 回环地址，前端静态资源既可读取外部 <code>dimcode-web</code> 目录（每次打开校验 <code>dimcode-web.json</code> 里的协议版本，不匹配返回 <code>web_assets_incompatible</code>），也可通过 <code>embedded-web</code> Cargo 特性编译进二进制。浏览器拿着返回 URL 里的一次性引导令牌换取 Cookie 后，走协议 v3 建立连接，只开放 Session 执行方法和只读模型发现接口，把 <code>daemon.shutdown</code> 等宿主管理方法全部隐藏成 <code>unknown_method</code>。在 <code>v0.1.0-alpha.27</code> 中，Web 端还引入了共享的 <code>chat-ui</code> 工作区包，将 Web 时间线渲染与交互控制（包括运行中 <code>steer</code>、暂存草稿和中断发送）与 TUI 逐步对齐。</p>
+<h2 id="11-server-cli-web-and-protocols--acp-网关-零侵入的协议翻译层">ACP 网关：零侵入的协议翻译层<a class="anchor" href="#11-server-cli-web-and-protocols--acp-网关-零侵入的协议翻译层" aria-label="链接到本节">#</a></h2>
+<p>为了接入 Zed、Lody、acpx 等支持 Agent Client Protocol（ACP）的外部编辑器和工具，Dim 在 <code>crates/dim-acp</code> 实现了 <code>AcpGateway</code>，通过 <code>dimcode acp</code> 在标准输入输出上暴露 ACP v1 协议（固定 <code>agent-client-protocol</code> SDK 3.5.0）。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>架构边界</th>
+<th><code>AcpGateway</code> 的具体做法</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>进程定位</td>
+<td>运行在客户端侧的独立 <code>rutis</code> 进程插件，不是守护进程的 loader row，也不链接 App Server 内部类型</td>
+</tr>
+<tr>
+<td>共享传输</td>
+<td>与 <code>dim-cli</code> 共同依赖提取出来的 <code>crates/dim-client</code>，共用 16 MiB 帧封装、套接字安全校验与 OAuth 环回回调捕获</td>
+</tr>
+<tr>
+<td>协议投影</td>
+<td>只调用公开的 RPC v3 白名单方法，将 <code>session/new</code>、<code>load</code>、<code>resume</code>、<code>prompt</code>、<code>cancel</code>、<code>set_mode</code>、<code>set_config_option</code> 映射到原生方法；<code>approval.request</code> 映射为 <code>session/request_permission</code>（只给 <code>allow_once</code>/<code>reject_once</code>，不提供 <code>always</code>）；<code>ask_user</code> 条件映射为 <code>elicitation/create</code> 表单</td>
+</tr>
+<tr>
+<td>会话级临时 MCP</td>
+<td>ACP 客户端在 <code>session/new</code> 时传入的 <code>mcpServers</code> 通过独立的 <code>TemporaryMcp</code> Session 插件挂载，仅作用于该会话，会话结束立刻丢弃，绝不污染全局持久化 MCP 配置</td>
+</tr>
+<tr>
+<td>严禁补假语义</td>
+<td>现有原生接口无法保证的能力直接声明不支持（如 <code>logout</code>、客户端侧 <code>fs/*</code> 与 <code>terminal/*</code> 反向执行）；<code>session/load</code> 或 <code>resume</code> 要求守护进程明确声明 <code>session.attach.expectedCwd</code> 与 <code>session.history.latestTurn</code>，绝不退回到全量枚举会话或扫描全部历史</td>
+</tr>
+</tbody></table></div>
+<h2 id="11-server-cli-web-and-protocols--mcp-管理与-oauth-代次平滑切换与变量防护">MCP 管理与 OAuth：代次平滑切换与变量防护<a class="anchor" href="#11-server-cli-web-and-protocols--mcp-管理与-oauth-代次平滑切换与变量防护" aria-label="链接到本节">#</a></h2>
+<p>对于持久化的 MCP 服务器，App Server 的 <code>McpPlugin</code> 把配置管理、连接代次和 OAuth 拆得很细：</p>
+<ul>
+<li><strong>三源分层与逐条容错</strong>：支持 <code>user</code>、工作区 <code>.mcp.json</code> 的 <code>project</code>（按 ADR 003 默认禁用）以及插件贡献的 <code>plugin:&lt;id&gt;</code> 三类来源，支持从 Claude Code、Codex、OMP 预览和导入配置。解析配置文件时采用逐条容错，单条格式损坏会进入 <code>invalid</code> 列表并保持原样，不拖垮其余正常条目。</li>
+<li><strong>连接代次无缝交接</strong>：每个 Session 通过子插件托管自己的 MCP 连接代次。修改或刷新配置时，正在执行中的旧工具调用继续跑完旧代次连接，新调用切换到新代次；只有最后一份旧租约释放后才关闭旧连接，而显式禁用则会主动排空并关闭所有会话里的活跃代次。失败重连采用 1 秒起跳、上限 5 分钟的指数退避；远端返回 HTTP 404 会重建会话并重放一次，单次工具调用超时默认 10 分钟（可在条目 <code>timeout</code> 里配 1 秒到 24 小时）。</li>
+<li><strong>环境变量展开防护</strong>：远程 URL、请求头和 Bearer Token 支持 <code>${NAME}</code> 和 <code>${NAME:-default}</code> 展开，但对于工作区 <code>.mcp.json</code> 和插件来源，所有受保护的敏感变量名（模型 Provider 密钥、云凭据、代理、<code>DIM_*</code>/<code>DIMCODE_*</code> 等）在远端字段里会被强制展开为空字符串且忽略默认值，防止恶意仓库借 <code>.mcp.json</code> 把用户的 API Key 偷发到外部服务器。</li>
+<li><strong>按需懒加载的 MCP OAuth</strong>：遇到远端返回 <code>401</code> 时，<code>mcp.auth.start</code> 自动发现受保护资源元数据并完成动态客户端注册，凭据按 <code>0600</code> 原子写入 <code>mcp-oauth.json</code> 并在过期前 30 秒跨会话单飞刷新；只要本地没有任何需要 OAuth 的 MCP 条目，守护进程甚至不会初始化 OAuth HTTP 客户端。</li>
+</ul>
+<p>把整个系统的内内外外走完一遍之后，我们有必要冷静停下来，用工程师的眼光审视这套高度严整的架构究竟付出了哪些工程代价、靠什么守住边界，以及哪些问题在当前 Alpha 里仍然有意留白。</p>
+</div></section><section class="book-section" id="12-tradeoffs-and-boundaries"><header class="chapter-head"><div class="chapter-number">12</div><h1>架构权衡与工程边界</h1></header><div class="prose"><p>设计文档写得再严密，如果没有自动化门禁替人盯着，代码库跑上三个月就会开始长出捷径：某个插件偷调了另一个插件的私有函数，某个新加的 RPC 在代码里硬编码了字符串 <code>&quot;main&quot;</code>，或者改完服务接口却忘了更新给 TypeScript 用的 <code>.d.ts</code> 类型文件。另一边，任何架构选择都不是免费午餐，把状态机严格塞进时间总线和三层作用域里，必然带来可观测的工程代价。</p>
+<p>这一章专门看两件事：Dim 靠哪套机器检查把架构规矩钉在 CI 里，以及它明知存在却主动接受了哪些代价和未解边界。</p>
+<h2 id="12-tradeoffs-and-boundaries--xtask-check-与-xtask-把架构纪律变成编译级门禁"><code>xtask-check</code> 与 <code>xtask</code>：把架构纪律变成编译级门禁<a class="anchor" href="#12-tradeoffs-and-boundaries--xtask-check-与-xtask-把架构纪律变成编译级门禁" aria-label="链接到本节">#</a></h2>
+<p>Dim 把架构校验拆成了两档（<code>AGENTS.md</code> 与 <code>xtask/check/src/lib.rs</code>）：一档是零业务依赖的纯静态检查 <code>cargo run --locked -p xtask-check</code>，不需要编译庞大的 <code>dim-app-server</code> 和 <code>rutis</code>，几秒就能跑完；另一档是 <code>cargo run --locked -p xtask -- check</code>，在静态检查之上额外拉起真实的 App Server 产品装配并核对服务目录。</p>
+<p><code>xtask/check/src/lib.rs</code> 的 <code>check_all</code> 串起了五道静态红线：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>门禁模块</th>
+<th>源码位置</th>
+<th>卡死什么违规行为</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Crate 与模块边界</td>
+<td><code>boundaries.rs</code>、<code>modules.rs</code></td>
+<td>读取 <code>cargo metadata --offline</code> 与 <code>syn</code> AST，禁止 <code>types → runtime/capabilities</code>、<code>runtime → capabilities/server</code>、<code>capabilities → server</code> 以及 <code>xtask-check → dim-*/rutis</code> 反向依赖，同时核对 <code>crates.json</code> / <code>crates.mmd</code> 新鲜度</td>
+</tr>
+<tr>
+<td>插件文档一致性</td>
+<td><code>plugin_docs.rs</code></td>
+<td>校验 <code>docs/architecture/rust-agent/plugins/</code> 下每个部件页面的依赖表和自动生成块与代码一致，防止文档长期失真</td>
+</tr>
+<tr>
+<td>跨语言类型声明</td>
+<td><code>types.rs</code></td>
+<td>重新生成 <code>npm/branch-services.d.ts</code> 并比对差异，只要改了 <code>#[rutis::service]</code> 类型而没更新 TypeScript 声明立刻失败</td>
+</tr>
+<tr>
+<td>插件锁与清单</td>
+<td><code>npm.rs</code></td>
+<td>核验内置插件目录的 <code>package-lock.json</code> 与清单匹配，避免打包发版时依赖漂移</td>
+</tr>
+<tr>
+<td>注释链接与裸 <code>&quot;main&quot;</code> 检查</td>
+<td><code>comment_links.rs</code>、<code>literal_main.rs</code></td>
+<td>校验源码注释中的文档路径有效；用 <code>syn</code> AST 和 JS/TS/Vue 词法解析器禁止生产代码里出现裸字面量 <code>&quot;main&quot;</code></td>
+</tr>
+</tbody></table></div>
+<p>这五道门禁里，最耐人寻味的是高达 2200 多行的 <code>xtask/check/src/literal_main.rs</code>。为什么要在 Rust、TypeScript 和 Vue 源码里大动干戈地封杀裸字符串 <code>&quot;main&quot;</code>？答案正来自第 5 章的默认分支改动（PR #1917）：当默认分支不再永远等于起点 <code>main</code> 之后，代码里到处散落的 <code>&quot;main&quot;</code> 会变成极隐蔽的 Bug 温床。有的地方真的指起点（必须写常量 <code>ROOT_BRANCH_ID</code>），有的地方指“不查默认分支时的兜底起点”（必须写 <code>DEFAULT_BRANCH_ID</code>），而且这两个常量全仓库只允许在 <code>crates/dim-agent-types/src/events.rs</code> 和 <code>web/src/rpc/protocol.ts</code> 里各定义一次，连 SQLite 的 <code>is_readonly(&quot;main&quot;)</code> 这种与分支无关的用法都要登记在 <code>UNRELATED</code> 白名单里写明理由。</p>
+<p>此外，工作区根 <code>Cargo.toml</code> 还打开了 <code>[workspace.lints.clippy]</code> 下的 <code>allow_attributes_without_reason = &quot;warn&quot;</code>：全仓库每一次写 <code>#[allow(...)]</code> 压制告警都必须附上 <code>reason = &quot;...&quot;</code>，把“图省事关警告”的口子堵死在审查阶段。</p>
+<h2 id="12-tradeoffs-and-boundaries--真实装配图-拒绝手绘权威架构图">真实装配图：拒绝手绘权威架构图<a class="anchor" href="#12-tradeoffs-and-boundaries--真实装配图-拒绝手绘权威架构图" aria-label="链接到本节">#</a></h2>
+<p>在 <code>AGENTS.md</code> 里有一条很硬的规定：禁止手写维护现状架构图，也禁止手改 <code>docs/architecture/rust-agent/generated/</code> 下的文件。运行 <code>cargo run --locked -p xtask -- graph</code> 会直接装配真实的 App Server 产品 Profile（含一个 Session 和它的 <code>main</code> 分支），从活体依赖图里吐出四类权威快照：</p>
+<ul>
+<li><code>services.mmd</code> / <code>services.md</code> / <code>services.json</code>（真实服务装配关系）</li>
+<li><code>instances.mmd</code> / <code>instances.json</code>（实例键结构）</li>
+<li><code>crates.mmd</code> / <code>crates.json</code>（包依赖图）</li>
+<li><code>catalog.md</code>（111 个服务的组归属、提供方、<code>data</code>/<code>internal(reason)</code> 分类、方法表，以及按是否注入 <code>dispatcher</code>/<code>timeline</code> 自动标记出的 20 个 Capability）</li>
+</ul>
+<p>手绘的图表只允许用来画“目标设计”，现状架构永远以 <code>xtask</code> 从代码跑出来的图为准，改动装配却不更新图，<code>xtask check</code> 直接拦下 PR。</p>
+<h2 id="12-tradeoffs-and-boundaries--主动接受的工程代价与未解边界">主动接受的工程代价与未解边界<a class="anchor" href="#12-tradeoffs-and-boundaries--主动接受的工程代价与未解边界" aria-label="链接到本节">#</a></h2>
+<p>一个成熟的架构不会假装自己没有短板。翻完 Dim 的源码、ADR 和设计文档，至少有七处明确写进了文档的已知代价或当前边界：</p>
+<p><strong>1. 跨语言数据面迁移尚未 100% 完成。</strong> 真实目录 111 个服务中，已有 75 个迁成 <code>data</code> 数据面，但仍有 36 个停在 <code>internal(reason)</code>，其中 16 个是每回合高频热路径（<code>agentLoop</code>、<code>prompt</code>、<code>contextPreparation</code>、<code>toolExecutor</code> 等）。在它们完成操作化之前，核心执行链上的替换部件仍必须用进程内 Rust 编写。</p>
+<p><strong>2. 写入轮合批在混合负载下放大 WAL 写入量。</strong> 如第 3 章所述，上游在 Apple M4 上实测确认：当 64 条流式分支与 64 条普通依赖写入链并发时，普通批次“不等 20 ms 立刻提交”的设计把普通链延迟中位数压到了 9 ms，但顺带每轮都重写了正在活跃的流式输出行，使 WAL 吞吐从 40 MB/s 涨到 80 MB/s。</p>
+<p><strong>3. 崩溃窗口期可能丢失两类分支通知。</strong> <code>docs/design/timeline-branches.md</code> §6.2 明确记录：如果守护进程刚好在工具线 <code>turn/end</code> 提交之后、<code>BranchLine</code> 写出 <code>&lt;dim-branch-idle&gt;</code> 之前崩溃，或者在 <code>branch/ended</code> 与 <code>&lt;dim-branch-ended&gt;</code> 通知之间崩溃，因为 <code>BranchLine</code> 只对加载后的实时事件做通知决定，这两类提示通知不会补发（重启自愈只会更新名册 <code>branch:roster</code>，父线仍可通过名册和 <code>read</code> 查到完整历史）。</p>
+<p><strong>4. 分支共享同一工作区，不做按分支文件系统隔离。</strong> 同一 Session 的多条分支共用一个磁盘工作目录。想并行修改同一组文件而不互相覆盖，不能用分支，必须靠受管 Git worktree（<code>dim-app-server</code> 支持工作区 worktree 启动与关联）、独立分叉或带独立 <code>cwd</code> 的协作子代理。同时，分支的“比较与采纳（compare &amp; adopt）”语义仍留待后续设计。</p>
+<p><strong>5. 热重载与结构性配置变动的传播代价。</strong> 按 ADR 002 D3，业务配置变更绝不重载插件，但真正的结构性操作（装卸插件、替换被依赖的底层行）会沿 <code>rutis</code> 依赖图级联重载下游依赖，并直接让在途 turn 失败。Dim 明确把这列为已接受成本，不为这类低频操作增加复杂的无损热迁移层。</p>
+<p><strong>6. 安全模型明确不是多租户沙箱。</strong> 已启用的插件、Hook、MCP stdio 进程都是受信任本地代码（AGENTS 规则 11）；ADR 003 D4 接受用户启用项目条目后不校验后续配置指纹变化；ADR 010 让进程沙箱默认关闭且 Windows 尚无后端；ADR 018 拿掉 <code>PermissionPolicy</code> 的 <code>deny_unknown_fields</code> 换取旧记录兼容，代价是放弃了对策略 JSON 拼写错误的解析拦截。此外，默认 App Server 产品装配里 <code>CompactionStrategyHost</code> 与上下文压缩模型宿主仍依赖显式绑定配置。</p>
+<p><strong>7. 极简学习门槛并不低。</strong> 哪怕只写一个简单状态机插件，开发者也必须理解单调序号、<code>committed</code>/<code>published</code> 差异、<code>consume</code> 重建截点、<code>before</code> 不可逆与副作用不重放。为了不让这套设计停留在纸面概念里，下一章我们用不到四百行零依赖的 Python 代码，亲手把 Dim 最核心的五组不变量搭起来，并用 18 个单元测试逐条跑通验证。</p>
+</div></section><section class="book-section" id="13-teaching-model"><header class="chapter-head"><div class="chapter-number">13</div><h1>零依赖 Python 教学模型与 18 个单元测试</h1></header><div class="prose"><p>光读 Rust 工作区的 28 个 crate 和几十万字设计文档，脑子里很容易记住一堆名词，却对边界条件缺乏手感：到底为什么 <code>Dispatcher::consume</code> 要先暂存实时事件再跑重建；为什么默认分支切回 <code>main</code> 后计数会瞬间超额却不该关闭已有分支；为什么破坏了快照的 SHA-256 摘要以后，上下文投影照样能完整保留压缩摘要。</p>
+<p>本书在 <code>examples/mini_dim.py</code> 里用纯 Python 3.10+ 标准库写了一个不到四百行的教学模型，配套 <code>examples/test_mini_dim.py</code> 共 18 个单元测试，把 Dim 最核心的五组机制剥离网络与 SQLite 细节，缩成一眼能看穿的可运行代码。</p>
+<h2 id="13-teaching-model--模型结构与上游源码的精确映射">模型结构与上游源码的精确映射<a class="anchor" href="#13-teaching-model--模型结构与上游源码的精确映射" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th><code>examples/mini_dim.py</code> 模块</th>
+<th>对应上游 Rust 位置</th>
+<th>验证的核心不变量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Timeline</code>、<code>EventDraft</code>、<code>RESERVED_DOMAINS</code></td>
+<td><code>crates/dim-agent-types/src/events.rs</code>、<code>crates/dim-agent-runtime/src/core/timeline.rs</code></td>
+<td>13 个核心保留域拦截外部写入；<code>before</code> 链同步变换并留 <code>TraceStep</code>，任意钩子抛错回退原始草稿；<code>append_batch</code> 登记失败整批中止；<code>committed()</code> 与 <code>published()</code> 双水位隔离</td>
+</tr>
+<tr>
+<td><code>Dispatcher</code></td>
+<td><code>crates/dim-agent-runtime/src/core/dispatcher.rs</code></td>
+<td>按发布序号严格派发；<code>consume(name, keys, rebuild, handler)</code> 先开启暂存闸门再执行重建，随后只派发序号严格大于 <code>cutoff</code> 的实时事件</td>
+</tr>
+<tr>
+<td><code>TimelineTree</code>、<code>BranchNode</code></td>
+<td><code>crates/dim-agent-capabilities/src/timeline_tree.rs</code></td>
+<td>仅 <code>ROOT_BRANCH_ID</code>（<code>main</code>）与当前默认分支有工具开线权；<code>counted_tool_lines</code> 排除默认分支及其祖先链；预留即占槽、失败释放槽并写 <code>branch/create-failed</code>；禁止结束保护链并级联关闭子孙；仅父子亲缘可发消息与按游标读历史；重启读 <code>main</code> 最新 <code>branch/default</code> 或 <code>session/forked</code> 恢复</td>
+</tr>
+<tr>
+<td><code>ApprovalCapability</code></td>
+<td><code>crates/dim-agent-capabilities/src/permission.rs</code>（<code>Approval</code>）</td>
+<td>双端并发应答时首条有效 <code>approval/respond</code> 胜出；<code>stop/interrupt</code> 写 <code>approval/cancelled</code> 并阻断迟到同意；重启重建只恢复已决表，绝不重放已执行过的工具副作用</td>
+</tr>
+<tr>
+<td><code>RecoverySnapshot</code>、<code>project_context</code></td>
+<td><code>crates/dim-agent-capabilities/src/context_preparation.rs</code>、<code>history.rs</code></td>
+<td>校验解释器版本、锚点与 SHA-256 摘要后增量续读；摘要篡改或缺失时自动回退全量重放，同时完整保留 <code>context/compaction</code> 摘要</td>
+</tr>
+</tbody></table></div>
+<h2 id="13-teaching-model--核心代码片段拆解">核心代码片段拆解<a class="anchor" href="#13-teaching-model--核心代码片段拆解" aria-label="链接到本节">#</a></h2>
+<p>先看 <code>Dispatcher.consume</code> 怎么堵死“重建与实时事件重叠”的竞态窗口：</p>
+<pre><code class="language-python">def consume(
+    self,
+    name: str,
+    keys: tuple[str, ...],
+    rebuild: Callable[[Timeline], int],
+    handler: Callable[[AgentEvent], None],
+) -&gt; int:
+    held: list[AgentEvent] = []
+    holding = True
+
+    def gate(ev: AgentEvent) -&gt; None:
+        if holding:
+            held.append(ev)
+        else:
+            handler(ev)
+
+    self.subscribe(name, keys, gate)
+    cutoff = rebuild(self.timeline)
+    holding = False
+    for ev in held:
+        if ev.sequence &gt; cutoff:
+            handler(ev)
+    return cutoff
+</code></pre>
+<p>这段 20 行代码就是 <code>crates/dim-agent-runtime/src/core/dispatcher.rs</code> 里 <code>Held</code> 结构的忠实微缩：哪怕在 <code>rebuild</code> 正在读历史的过程中，第 3 号新事件被提交并发布，它也会稳稳落进 <code>held</code>；等 <code>rebuild</code> 返回 <code>cutoff = 2</code> 并撤掉闸门，只有序号大于 2 的第 3 号事件被放行给实时 <code>handler</code>，1 号和 2 号绝不会二次投递。</p>
+<p>再看 <code>TimelineTree</code> 里最容易写错的“受保护路径配额”算法，它直接对应 <code>crates/dim-agent-capabilities/src/timeline_tree.rs</code> 的 <code>counted_tool_lines</code> 和 <code>protects</code>：</p>
+<pre><code class="language-python">def protected_path(self) -&gt; set[str]:
+    protected: set[str] = set()
+    cur: str | None = self._default_branch
+    while cur is not None:
+        protected.add(cur)
+        node = self.nodes.get(cur)
+        cur = node.parent if node else None
+    return protected
+
+def counted_tool_lines(self) -&gt; int:
+    protected = self.protected_path()
+    return sum(
+        1
+        for bid, node in self.nodes.items()
+        if node.source == &quot;tool&quot; and not node.ended and bid not in protected
+    )
+</code></pre>
+<p>每次切换默认分支，不需要在节点上维护容易漂移的加减计数器，而是直接对全树活跃工具线减掉当前保护路径做集合差。这样无论子树有多深，从 <code>main → A → B</code> 切回 <code>main</code> 时，A、B 以及 B 新开的子线 C 都会瞬间重新计额，既不会漏算，也不会强关任何已有分支。</p>
+<p>最后看 <code>ApprovalCapability._rebuild</code> 怎么体现“副作用不重放”：</p>
+<pre><code class="language-python">def _rebuild(self, timeline: Timeline) -&gt; int:
+    cutoff = timeline.published()
+    for ev in timeline.query(
+        through=cutoff, keys=(&quot;approval/*&quot;, &quot;stop/interrupt&quot;)
+    ):
+        self._fold(ev, execute_side_effects=False)
+    return cutoff
+</code></pre>
+<p>同一套折叠函数 <code>_fold</code> 通过一个布尔开关区分重建和实时两条路径：重建时把历史上的 <code>approval/request</code>、<code>approval/respond</code>、<code>approval/cancelled</code> 折叠成完全等价的内存状态，却绝不触发 <code>on_allow</code> 回调，也不向 <code>executed_side_effects</code> 追加记录。</p>
+<h2 id="13-teaching-model--18-个单元测试的覆盖矩阵">18 个单元测试的覆盖矩阵<a class="anchor" href="#13-teaching-model--18-个单元测试的覆盖矩阵" aria-label="链接到本节">#</a></h2>
+<p>在仓库根目录执行 <code>python3 -m unittest discover -s examples -v</code>，全部 18 个用例在数毫秒内跑完：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>用例编号</th>
+<th>测试名称</th>
+<th>验证的关键边界</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>01</td>
+<td><code>test_01_sequence_is_monotonic_and_batch_end_marks_boundary</code></td>
+<td>批次序号单调递增，仅末事件 <code>batch_end=True</code></td>
+</tr>
+<tr>
+<td>02</td>
+<td><code>test_02_reserved_domains_reject_extension_appends</code></td>
+<td>扩展写入 13 保留域被拒，自定义域放行</td>
+</tr>
+<tr>
+<td>03</td>
+<td><code>test_03_before_hook_transforms_draft_and_records_trace</code></td>
+<td><code>before</code> 同步变形草稿并记录 <code>TraceStep</code></td>
+</tr>
+<tr>
+<td>04</td>
+<td><code>test_04_before_hook_failure_commits_original_draft</code></td>
+<td><code>before</code> 抛错整链回退并提交原草稿</td>
+</tr>
+<tr>
+<td>05</td>
+<td><code>test_05_register_callback_failure_aborts_entire_batch</code></td>
+<td>提交锁内登记回调失败时整批中止、水位不动</td>
+</tr>
+<tr>
+<td>06</td>
+<td><code>test_06_committed_and_published_watermarks_stay_distinct</code></td>
+<td>未发布事件仅内部可见，发布后才触发 Dispatcher</td>
+</tr>
+<tr>
+<td>07</td>
+<td><code>test_07_dispatcher_consume_holds_live_facts_and_delivers_above_cutoff</code></td>
+<td>重建期间到达的实时事件暂存并在截点后不重不漏交付</td>
+</tr>
+<tr>
+<td>08</td>
+<td><code>test_08_only_root_and_default_branch_can_open_tool_lines</code></td>
+<td>非默认工具线开线被拒，晋升默认后与 <code>main</code> 双双可开</td>
+</tr>
+<tr>
+<td>09</td>
+<td><code>test_09_protected_path_excluded_from_cap_and_switch_back_counts_all</code></td>
+<td>保护链免计额；切回 <code>main</code> 超额不关旧线，仅拒新开</td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>test_10_failed_build_releases_cap_slot_and_records_create_failed</code></td>
+<td>构建失败释放预留配额并写 <code>branch/create-failed</code></td>
+</tr>
+<tr>
+<td>11</td>
+<td><code>test_11_user_and_plugin_lines_never_spend_tool_cap_and_plugin_cannot_be_default</code></td>
+<td>用户线与插件线不占工具配额；插件线不可选为默认分支</td>
+</tr>
+<tr>
+<td>12</td>
+<td><code>test_12_ending_root_default_or_ancestor_is_refused_and_cascade_ends_children</code></td>
+<td>保护链拒绝结束；切离后结束父线先级联结束子线</td>
+</tr>
+<tr>
+<td>13</td>
+<td><code>test_13_kinship_messaging_and_read_cursor_enforcement</code></td>
+<td>兄弟互发互读返回 <code>branch_not_kin</code>；子读父自动抬高至切点并续读游标</td>
+</tr>
+<tr>
+<td>14</td>
+<td><code>test_14_default_branch_restores_from_root_and_resets_after_session_forked</code></td>
+<td>从 <code>main</code> 恢复默认分支，遇到 <code>session/forked</code> 重置回 <code>main</code></td>
+</tr>
+<tr>
+<td>15</td>
+<td><code>test_15_approval_first_decision_wins_under_concurrent_clients</code></td>
+<td>双客户端并发拒绝与同意，先落盘序号者胜出</td>
+</tr>
+<tr>
+<td>16</td>
+<td><code>test_16_stop_interrupt_cancels_pending_approval_and_prevents_late_allow</code></td>
+<td><code>stop/interrupt</code> 写 <code>approval/cancelled</code> 并拦截迟到同意</td>
+</tr>
+<tr>
+<td>17</td>
+<td><code>test_17_restart_rebuild_reconstructs_state_without_replaying_side_effects</code></td>
+<td>同存储重启构建第二代 <code>ApprovalCapability</code>，状态等价且零重放副作用</td>
+</tr>
+<tr>
+<td>18</td>
+<td><code>test_18_compaction_snapshot_accelerates_projection_and_falls_back_on_corruption</code></td>
+<td>SHA-256 正常快照走增量续读，篡改摘要自动回退全量重放并保留摘要</td>
+</tr>
+</tbody></table></div>
+<p>需要强调一次定位边界：<code>examples/mini_dim.py</code> 是单进程同步教学模型，省去了 SQLite 异步写入轮、真实 <code>rutis</code> 跨进程通道、文件系统权限探针和真实模型网络流。它的价值在于用极低阅读成本，让读者亲手改一行条件就能观察到对应不变量立刻报警，再回头翻 Rust 源码时就能一眼认出每把锁和每个状态字段为什么长在那个位置。</p>
+</div></section><section class="book-section" id="appendix-sources"><header class="chapter-head"><div class="chapter-number">A</div><h1>附录 A：源码索引、术语与核验命令</h1></header><div class="prose"><p>本附录汇总本书所依据的上游快照元数据、关键源码与文档索引、核心术语对照，以及可在本地复现的核验命令。</p>
+<h2 id="appendix-sources--上游快照信息">上游快照信息<a class="anchor" href="#appendix-sources--上游快照信息" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>数值或标识</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>仓库地址</td>
+<td><code>https://github.com/arcships/dim</code></td>
+</tr>
+<tr>
+<td>固定提交</td>
+<td><code>88a3df3669405730cbee6bfd113a7f75cf520677</code></td>
+</tr>
+<tr>
+<td>工作区版本</td>
+<td><code>0.1.0-alpha.27</code></td>
+</tr>
+<tr>
+<td>快照采集日期</td>
+<td><code>2026-11-22</code></td>
+</tr>
+<tr>
+<td>Rust 版本与 Edition</td>
+<td><code>1.100</code> / <code>2024</code></td>
+</tr>
+<tr>
+<td>核心依赖基线</td>
+<td><code>rutis = &quot;0.23.0&quot;</code>、<code>aimux-* = &quot;=0.6.1&quot;</code>、<code>rquickjs = &quot;0.14&quot;</code>、<code>tokio = &quot;1.53.3&quot;</code>、<code>axum = &quot;0.8&quot;</code>、<code>jiff = &quot;0.2.46&quot;</code></td>
+</tr>
+<tr>
+<td>工作区实测规模</td>
+<td>28 个 Cargo 成员（23 业务 crate + 2 xtask + 3 测试 crate）；111 个目录服务（75 <code>data</code> / 36 <code>internal</code>）；20 个分支 Capability；3 个内置运行时插件包；26 份 ADR</td>
+</tr>
+</tbody></table></div>
+<h2 id="appendix-sources--关键源码与上游文档索引">关键源码与上游文档索引<a class="anchor" href="#appendix-sources--关键源码与上游文档索引" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>主题</th>
+<th>上游路径</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>工作区与依赖基线</td>
+<td><code>Cargo.toml</code>、<code>AGENTS.md</code>、<code>README.md</code></td>
+</tr>
+<tr>
+<td>时间总线与事件驱动契约</td>
+<td><code>docs/architecture/rust-agent/time-bus.md</code>、<code>docs/architecture/rust-agent/event-driven-flows.md</code>、<code>docs/architecture/rust-agent/principles.md</code>、<code>docs/architecture/rust-agent/timeline-storage.md</code></td>
+</tr>
+<tr>
+<td>事件类型与 13 保留域</td>
+<td><code>crates/dim-agent-types/src/events.rs</code>、<code>crates/dim-agent-types/tests/fixtures/</code></td>
+</tr>
+<tr>
+<td>运行时内核与分发器</td>
+<td><code>crates/dim-agent-runtime/src/core/timeline.rs</code>、<code>crates/dim-agent-runtime/src/core/dispatcher.rs</code>、<code>crates/dim-agent-runtime/src/assembly.rs</code>、<code>crates/dim-agent-runtime/src/parts.rs</code></td>
+</tr>
+<tr>
+<td>分支时间线与默认分支</td>
+<td><code>docs/design/timeline-branches.md</code>、<code>docs/architecture/rust-agent/plugins/TimelineTree.md</code>、<code>docs/architecture/rust-agent/plugins/BranchTool.md</code>、<code>crates/dim-agent-capabilities/src/timeline_tree.rs</code></td>
+</tr>
+<tr>
+<td>rutis 装配与跨语言数据面</td>
+<td><code>docs/design/rutis-usage.md</code>、<code>docs/design/plugin-contract.md</code>、<code>docs/design/service-faces.md</code>、<code>docs/architecture/rust-agent/generated/catalog.md</code>、<code>docs/adr/002-plugin-scope.md</code>、<code>docs/adr/015-scopes-are-plugins.md</code>、<code>docs/adr/025-rutis-0-23.md</code></td>
+</tr>
+<tr>
+<td>内置运行时插件与自演化</td>
+<td><code>runtime/default-plugins.json</code>、<code>runtime/runtimes.json</code>、<code>runtime/package.json</code>、<code>runtime/plugins/plugin-authoring/skills/plugin-authoring/SKILL.md</code>、<code>runtime/plugins/workflow/</code>、<code>runtime/plugins/light-ocr/</code></td>
+</tr>
+<tr>
+<td>上下文准备与压缩检查点</td>
+<td><code>docs/architecture/rust-agent/plugins/ContextPreparation.md</code>、<code>crates/dim-agent-capabilities/src/context_preparation.rs</code>、<code>crates/dim-agent-capabilities/src/history.rs</code></td>
+</tr>
+<tr>
+<td>权限、审批与执行隔离</td>
+<td><code>docs/architecture/rust-agent/plugins/Permission.md</code>、<code>docs/adr/003-approval-scope.md</code>、<code>docs/adr/009-permission-decides.md</code>、<code>docs/adr/010-sandbox-opt-in.md</code>、<code>docs/adr/012-session-grants.md</code>、<code>docs/adr/017-independent-permission-controls.md</code>、<code>docs/adr/018-permission-is-the-preset.md</code></td>
+</tr>
+<tr>
+<td>Code Mode 与 Aimux</td>
+<td><code>crates/dim-codemode/src/config.rs</code>、<code>crates/dim-codemode/src/interpreter.rs</code>、<code>crates/dim-codemode/src/session.rs</code>、<code>crates/dim-agent-aimux/README.md</code>、<code>crates/dim-agent-aimux/src/driver.rs</code></td>
+</tr>
+<tr>
+<td>App Server、CLI、Web 与 ACP</td>
+<td><code>crates/dim-app-server/README.md</code>、<code>crates/dim-cli/README.md</code>、<code>crates/dim-acp/src/gateway.rs</code>、<code>docs/design/acp-gateway-implementation.md</code></td>
+</tr>
+<tr>
+<td>静态门禁与装配图生成</td>
+<td><code>xtask/src/main.rs</code>、<code>xtask/check/src/lib.rs</code>、<code>xtask/check/src/boundaries.rs</code>、<code>xtask/check/src/literal_main.rs</code></td>
+</tr>
+</tbody></table></div>
+<h2 id="appendix-sources--核心术语速查">核心术语速查<a class="anchor" href="#appendix-sources--核心术语速查" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>术语</th>
+<th>在 Dim 中的精确含义</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Timeline（时间总线）</td>
+<td>单条分支的有序持久化事件流，分配单调 <code>sequence</code>，区隔 <code>committed()</code> 与 <code>published()</code> 双水位</td>
+</tr>
+<tr>
+<td>Capability（能力）</td>
+<td>注入 <code>dispatcher</code> 或 <code>timeline</code> 的分支级状态机部件，受时间总线规则约束；不注入这两者的只是普通部件</td>
+</tr>
+<tr>
+<td><code>before</code> 钩子</td>
+<td>仅限进程内 Rust 在分支提交锁内同步运行的草稿变形链，不改历史、不阻写入、出错回退原草稿</td>
+</tr>
+<tr>
+<td>Data Face（数据面）</td>
+<td>在目录共享且在 <code>host_key(name)</code> 挂有 <code>HostDispatch</code> 的跨语言公开服务，参数、返回值与错误全为 serde 数据</td>
+</tr>
+<tr>
+<td>起点（root）与默认分支（default branch）</td>
+<td>起点恒为 id <code>main</code> 且永不结束；默认分支是当前会话对话路由位置，由写在 <code>main</code> 上的 <code>branch/default</code> 决定</td>
+</tr>
+<tr>
+<td>脱离工作（detached work）</td>
+<td>越过发起它的 turn 继续运行的异步工作（如 <code>BackgroundExec</code>、协作任务），归发起能力自持并用活动持有保护空闲关机</td>
+</tr>
+<tr>
+<td><code>RecoverySnapshot</code></td>
+<td>存于 <code>timeline_snapshots</code> 的可丢弃派生加速缓存（带 SHA-256 摘要），损坏或缺失时自动回退完整事实重放</td>
+</tr>
+</tbody></table></div>
+<h2 id="appendix-sources--常用核验命令">常用核验命令<a class="anchor" href="#appendix-sources--常用核验命令" aria-label="链接到本节">#</a></h2>
+<p>上游仓库核验（在 <code>arcships/dim</code> 仓库根目录执行）：</p>
+<pre><code class="language-sh">cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo run --locked -p xtask-check
+cargo run --locked -p xtask -- check
+</code></pre>
+<p>本书教学模型与出版产物核验（在本书仓库根目录执行）：</p>
+<pre><code class="language-sh">python3 -m unittest discover -s examples -v
+python3 scripts/make_diagrams.py
+node wiki/build.mjs
+python3 scripts/make_epub.py
+python3 scripts/check_links.py
+</code></pre>
+</div></section></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="#00-preface"><span>00</span>前言与全景导读</a><a href="#01-why-not-a-chat-loop"><span>01</span>为什么不用普通对话循环</a><a href="#02-workspace-and-scopes"><span>02</span>28 个 Crate 与三层作用域</a><a href="#03-time-bus"><span>03</span>时间总线与只认序号的事实流</a><a href="#04-event-driven-contracts"><span>04</span>事件驱动契约：Dispatcher、before 与重启重建</a><a href="#05-timeline-branches"><span>05</span>分支时间线：默认分支、父子通信与配额路由</a><a href="#06-rutis-and-data-faces"><span>06</span>rutis 插件引擎与跨语言数据面</a><a href="#07-self-evolving-plugins"><span>07</span>在会话里给自己写插件与热重载自演化</a><a href="#08-context-compaction-and-replay"><span>08</span>上下文投影、压缩与历史渲染边界</a><a href="#09-detached-work-and-permissions"><span>09</span>脱离工作、工具审批与权限边界</a><a href="#10-codemode-and-aimux"><span>10</span>Code Mode 与 Aimux 模型宿主</a><a href="#11-server-cli-web-and-protocols"><span>11</span>App Server、CLI、Web 与 ACP / MCP 网关</a><a href="#12-tradeoffs-and-boundaries"><span>12</span>架构权衡与工程边界</a><a href="#13-teaching-model"><span>13</span>零依赖 Python 教学模型与 18 个单元测试</a><a href="#appendix-sources"><span>A</span>附录 A：源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · arcships/dim v0.1.0-alpha.27 · 快照 88a3df366940 · 2026-11-22</footer>
+<script>(() => {
+  const root = document.documentElement;
+  const key = 'octop-architecture-reader';
+  let saved = {};
+  try { const value = JSON.parse(localStorage.getItem(key) || '{}'); if (value && typeof value === 'object') saved = value; } catch {}
+  let state = saved;
+  const clamp = (n) => Math.max(17, Math.min(27, n));
+  const save = (patch) => {
+    state = {...state, ...patch};
+    try { localStorage.setItem(key, JSON.stringify(state)); } catch {}
+  };
+
+  let size = clamp(saved.size || 20);
+  root.style.setProperty('--reader-size', size + 'px');
+
+  document.querySelector('[data-font-down]')?.addEventListener('click', () => {
+    size = clamp(size - 1); root.style.setProperty('--reader-size', size + 'px'); save({size});
+  });
+  document.querySelector('[data-font-up]')?.addEventListener('click', () => {
+    size = clamp(size + 1); root.style.setProperty('--reader-size', size + 'px'); save({size});
+  });
+
+  const themeButton = document.querySelector('button[data-theme]');
+  const applyTheme = (theme) => {
+    root.dataset.theme = theme;
+    if (themeButton) themeButton.textContent = theme === 'dark' ? '浅色' : '深色';
+  };
+  applyTheme(saved.theme || 'auto');
+  themeButton?.addEventListener('click', () => {
+    const current = root.dataset.theme;
+    const next = current === 'dark' ? 'light' : 'dark';
+    applyTheme(next); save({theme: next});
+  });
+
+  const pageKey = location.pathname;
+  if (document.body.dataset.chapter === 'true') {
+    const restore = saved.page === pageKey ? Number(saved.y || 0) : 0;
+    if (restore > 120 && !location.hash) requestAnimationFrame(() => scrollTo(0, restore));
+    let timer;
+    addEventListener('scroll', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => save({page: pageKey, y: Math.round(scrollY), title: document.title}), 180);
+      const h = document.documentElement.scrollHeight - innerHeight;
+      root.style.setProperty('--progress', h > 0 ? `${Math.min(100, scrollY / h * 100)}%` : '100%');
+    }, {passive: true});
+  }
+
+  document.querySelectorAll('pre').forEach((pre) => {
+    const button = document.createElement('button');
+    button.className = 'copy'; button.type = 'button'; button.textContent = '复制';
+    button.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(pre.querySelector('code')?.innerText || pre.innerText);
+      button.textContent = '已复制'; setTimeout(() => button.textContent = '复制', 1200);
+    });
+    pre.append(button);
+  });
+
+  const menu = document.querySelector('[data-menu-panel]');
+  document.querySelector('[data-menu-open]')?.addEventListener('click', () => menu?.showModal());
+  document.querySelector('[data-menu-close]')?.addEventListener('click', () => menu?.close());
+  menu?.addEventListener('click', (event) => { if (event.target === menu) menu.close(); });
+})();
+
+/* Progressive reading controls; no network and no dependency on writable storage. */
+(() => {
+  const root = document.documentElement;
+  const themeKey = 'ebook-reader:appearance';
+  const get = key => { try { return localStorage.getItem(key); } catch { return null; } };
+  const put = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
+  let theme = get(themeKey) || root.dataset.theme || 'auto';
+  if (!['auto', 'light', 'dark'].includes(theme)) theme = 'auto';
+  const old = document.querySelector('button[data-theme]');
+  const button = old ? old.cloneNode(true) : document.createElement('button');
+  button.type = 'button';
+  button.dataset.readerTheme = '';
+  button.classList.add('control');
+  if (old) old.replaceWith(button);
+  else {
+    const tools = document.querySelector('.reader-tools,.topbar .tools,.topbar,.bar-inner nav,.tools');
+    if (tools) tools.append(button);
+  }
+  function applyTheme() {
+    root.dataset.theme = theme;
+    button.textContent = {auto:'自动',light:'浅色',dark:'深色'}[theme];
+    button.setAttribute('aria-label', '外观：' + button.textContent + '，点击切换');
+    button.title = '依次切换自动、浅色、深色';
+  }
+  applyTheme();
+  button.addEventListener('click', () => {
+    theme = {auto:'light',light:'dark',dark:'auto'}[theme];
+    applyTheme(); put(themeKey, theme);
+  });
+
+  const bookNav = document.querySelector('.layout>nav.toc');
+  if (bookNav) {
+    const wrapper = document.createElement('details');
+    wrapper.className = 'reader-book-toc';
+    const wide = matchMedia('(min-width:1001px)');
+    wrapper.open = wide.matches;
+    wide.addEventListener('change', event => { wrapper.open = event.matches; });
+    const summary = document.createElement('summary'); summary.textContent = '全书目录';
+    bookNav.before(wrapper); wrapper.append(summary, bookNav);
+  }
+  const rail = document.querySelector('.chapter-rail');
+  if (rail && !document.querySelector('.reader-mobile-toc')) {
+    const list = rail.querySelector('ol');
+    const header = document.querySelector('.chapter-head');
+    if (list && header) {
+      const toc = document.createElement('details');
+      toc.className = 'reader-mobile-toc';
+      const label = document.createElement('summary');
+      label.textContent = '本章目录';
+      toc.append(label, list.cloneNode(true));
+      header.after(toc);
+    }
+  }
+  document.querySelectorAll('table').forEach(table => {
+    if (table.closest('.table-wrap')) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'table-wrap';
+    table.before(wrap); wrap.append(table);
+  });
+  document.querySelectorAll('.table-wrap').forEach(wrap => {
+    wrap.tabIndex = 0;
+    wrap.setAttribute('role', 'region');
+    if (!wrap.hasAttribute('aria-label')) wrap.setAttribute('aria-label', '数据表，可横向滚动');
+  });
+  document.querySelectorAll('pre').forEach(pre => {
+    pre.tabIndex = 0;
+    pre.setAttribute('aria-label', '代码示例，可横向滚动');
+  });
+  document.querySelectorAll('.prose pre,.content pre').forEach(pre => {
+    if (pre.querySelector('button')) return;
+    const copy = document.createElement('button');
+    copy.className = 'copy'; copy.type = 'button'; copy.textContent = '复制';
+    pre.append(copy);
+  });
+  document.querySelectorAll('button.copy').forEach(oldButton => {
+    // Replace the original listener so clipboard rejection always has a recovery.
+    const copy = oldButton.cloneNode(true);
+    oldButton.replaceWith(copy);
+    copy.setAttribute('aria-label', '复制这段代码');
+    copy.setAttribute('aria-live', 'polite');
+    copy.addEventListener('click', async () => {
+      const code = copy.closest('pre')?.querySelector('code');
+      if (!code) return;
+      try {
+        await navigator.clipboard.writeText(code.textContent);
+        copy.textContent = '已复制';
+      } catch {
+        const range = document.createRange(); range.selectNodeContents(code);
+        const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+        copy.textContent = '已选中';
+        copy.title = '浏览器限制复制，请按 Ctrl+C 或长按复制';
+      }
+      setTimeout(() => { copy.textContent = '复制'; }, 1600);
+    });
+  });
+  // Print folded examples too, then restore the reader's disclosure state.
+  let printDetails = [];
+  addEventListener('beforeprint', () => {
+    printDetails = [...new Set([...printDetails, ...document.querySelectorAll('main details:not([open])')])];
+    printDetails.forEach(details => { details.open = true; });
+  });
+  addEventListener('afterprint', () => {
+    printDetails.forEach(details => { details.open = false; });
+    printDetails = [];
+  });
+  const links = [...document.querySelectorAll('.chapter-rail a[href^="#"],.reader-mobile-toc a[href^="#"],nav.toc>a[href^="#"]')];
+  const headings = [...new Set(links.map(link => document.getElementById(decodeURIComponent(link.hash.slice(1)))).filter(Boolean))];
+  if (headings.length && 'IntersectionObserver' in window) {
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) if (entry.isIntersecting) {
+        links.forEach(link => {
+          if (decodeURIComponent(link.hash.slice(1)) === entry.target.id) link.setAttribute('aria-current','location');
+          else link.removeAttribute('aria-current');
+        });
+      }
+    }, {rootMargin:'-10% 0px -65% 0px'});
+    headings.forEach(heading => observer.observe(heading));
+  }
+})();
+</script>
+</body></html>

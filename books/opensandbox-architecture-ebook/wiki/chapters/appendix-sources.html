@@ -1,0 +1,238 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>附录 B：来源、版本与事实边界 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="appendix-sources"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#上游快照固定信息">上游快照固定信息</a></li><li><a href="#核验范围与未做事项">核验范围与未做事项</a></li><li><a href="#正文性能与限额数字出处">正文性能与限额数字出处</a></li><li><a href="#仓库中观察到的命名与契约现状">仓库中观察到的命名与契约现状</a></li><li><a href="#osep-提案索引-28-份">OSEP 提案索引（28 份）</a></li></ol></details><article class="content"><h1 id="附录-b-来源-版本与事实边界">附录 B：来源、版本与事实边界</h1><h2 id="上游快照固定信息">上游快照固定信息</h2><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>核对值</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>仓库</td>
+<td><code>https://github.com/opensandbox-group/OpenSandbox</code></td>
+</tr>
+<tr>
+<td>发布标签</td>
+<td><code>release-1.3.0-rc.2</code></td>
+</tr>
+<tr>
+<td>提交 SHA</td>
+<td><code>45043e7f0df258b6b76ef6753dd9b1819d59a332</code></td>
+</tr>
+<tr>
+<td>提交时间</td>
+<td><code>2026-11-19 17:32:30 +0800</code></td>
+</tr>
+<tr>
+<td>提交标题</td>
+<td><code>Merge pull request #2944 from opensandbox-group/release/1.3.0-rc.2</code></td>
+</tr>
+<tr>
+<td>核对与采集日期</td>
+<td><code>2026-11-22</code></td>
+</tr>
+<tr>
+<td>前版基线</td>
+<td><code>c2f55b20e945d89efe3d35220942a997a3551751</code>（2026-10-30）</td>
+</tr>
+<tr>
+<td>上游许可</td>
+<td>代码 Apache-2.0；文档 CC BY 4.0（<code>CHARTER.md</code> 第 7.b.iv 条）</td>
+</tr>
+</tbody></table>
+<p>本书 <code>sources/inventory.json</code> 固定记录了 104 个核对过的上游源码、契约、Chart、指南与提案路径及其 SHA-256 哈希和行数。仓库继续演进后若出现细节漂移，以该提交为准。</p>
+<h2 id="核验范围与未做事项">核验范围与未做事项</h2><p>本书基于静态源码精读、OpenAPI 契约比对、官方文档与发布说明核对，以及独立编写的标准库教学模型 <code>examples/mini_osb.py</code>（31 项离线单元测试）完成。</p>
+<p>需要明确边界的事项只有五条：</p>
+<ul>
+<li>未部署真实 OpenSandbox 集群，未执行端到端集成测试或容器/KVM 运行时验证；</li>
+<li>未复现性能压测，文中所有延迟与吞吐数字均来自上游公开文档并标明口径；</li>
+<li>不构成安全审计或法律合规审查，对隔离、nftables、Vault 与签名的阐述基于上游源码与文档声明；</li>
+<li>独立仓库 <code>opensandbox-group/fast-sandbox</code> 的内部实现通过本仓库适配层、Chart 模板、架构文档和正式发布说明交叉核对，未单独克隆该上游仓库逐行审计；</li>
+<li>教学实现 <code>examples/mini_osb.py</code> 仅在内存中复刻本书讨论的结构不变量，不能替代真实沙箱平台。</li>
+</ul>
+<h2 id="正文性能与限额数字出处">正文性能与限额数字出处</h2><table>
+<thead>
+<tr>
+<th>数字</th>
+<th>出处</th>
+<th>适用条件与边界</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>SDK 创建 p50 64.0 ms / p90 93.8 ms / p99 108.3 ms</td>
+<td><code>docs/architecture/fast-sandbox/performance.md</code></td>
+<td>ACK 两节点，2026-10-08，Firecracker 1.16.1，模板已缓存，串行 100 次</td>
+</tr>
+<tr>
+<td>SDK 创建并发 10：p50 102.7 ms / p99 125.4 ms</td>
+<td>同上</td>
+<td>100/100 成功</td>
+</tr>
+<tr>
+<td>SDK 创建并发 20：p50 136.7 ms，51/100 成功</td>
+<td>同上</td>
+<td>仅统计成功尝试；48 次 429 与 1 次超时被排除</td>
+</tr>
+<tr>
+<td>纯运行时创建 p50 33.5 到 50.0 ms</td>
+<td>同上</td>
+<td>不含网关与 SDK 就绪探测</td>
+</tr>
+<tr>
+<td>SDK 同节点恢复中位 62.66 s（runtime 恢复 35.49 ms）</td>
+<td>同上</td>
+<td>3 个样本，差距根因尚未定位</td>
+</tr>
+<tr>
+<td>BatchSandbox 池化交付 100 个沙箱耗时 0.92 s</td>
+<td><code>docs/architecture/control-plane/operator.md</code></td>
+<td>与非池化 <code>agent-sandbox</code>（76.4 / 23.2 / 33.9 s）的预热与现建对照</td>
+</tr>
+<tr>
+<td>隔离会话创建约 100 ms</td>
+<td><code>docs/guides/isolation-sessions.md</code></td>
+<td>bubblewrap 启动加短暂退出探测</td>
+</tr>
+<tr>
+<td><code>execd</code> 单行输出切分上限 16 MiB</td>
+<td><code>components/execd/pkg/runtime/output_limits.go</code></td>
+<td>按 UTF-8 边界分段，防大行 OOM</td>
+</tr>
+<tr>
+<td><code>execd</code> OTLP 挂载 stat 超时 2 s</td>
+<td><code>components/execd/pkg/telemetry/init.go</code></td>
+<td>防卡死网络挂载阻塞指标采集</td>
+</tr>
+<tr>
+<td>Jupyter 回复收尾默认超时 2 s</td>
+<td><code>components/execd/pkg/flag/parser.go</code></td>
+<td><code>--jupyter-reply-finalize-timeout</code></td>
+</tr>
+<tr>
+<td>Vault Exchange 出向头上限 64 个、单值 8 KiB</td>
+<td><code>components/egress/</code> 与 <code>release-1.3.0-rc.2</code> 说明</td>
+<td>越界以 407 fail-closed 拒绝</td>
+</tr>
+<tr>
+<td><code>data-plane-ready</code> Hook 等待确认上限 50 ms</td>
+<td><code>components/egress/fastsandbox_actions.go</code></td>
+<td>实验性 credential-bound 模式</td>
+</tr>
+<tr>
+<td>ingress WebSocket 握手预算 45 s、单消息上限 64 MiB</td>
+<td><code>docs/architecture/network/ingress.md</code></td>
+<td>RFC 6455 over HTTP/1.1</td>
+</tr>
+<tr>
+<td>egress Docker 停止预算 9 s</td>
+<td><code>docs/architecture/network/egress.md</code></td>
+<td>删除时等待在途投递完成</td>
+</tr>
+<tr>
+<td>Kubernetes 支持版本范围 <code>v1.22</code> 至 <code>v1.34</code></td>
+<td><code>manifests/charts/*/Chart.yaml</code></td>
+<td><code>kubeVersion: &quot;&gt;=1.22.0-0&quot;</code></td>
+</tr>
+</tbody></table>
+<h2 id="仓库中观察到的命名与契约现状">仓库中观察到的命名与契约现状</h2><ol>
+<li><strong>发布坐标沿用历史 <code>alibaba</code> 命名</strong>：仓库虽位于 <code>opensandbox-group/OpenSandbox</code>，但 Go module 路径仍为 <code>github.com/alibaba/OpenSandbox/...</code>，npm 包名为 <code>@alibaba-group/opensandbox</code>，JVM 坐标为 <code>com.alibaba.opensandbox</code>。</li>
+<li><strong><code>/pty</code> 未覆盖于 <code>execd-api.yaml</code></strong>：实现完整但不在 OpenAPI 文件内。</li>
+<li><strong>隔离会话 <code>diff</code>/<code>commit</code> 在契约里返回 <code>503</code></strong>：<code>/v1/isolated/capabilities</code> 如实回报不支持。</li>
+<li><strong><code>specs/</code> 文件后缀混用</strong>：<code>sandbox-lifecycle.yml</code> 与 <code>diagnostic-api.yml</code> 用 <code>.yml</code>，<code>execd-api.yaml</code> 与 <code>egress-api.yaml</code> 用 <code>.yaml</code>。</li>
+<li><strong>文档指南更名与废弃清理</strong>：原 <code>docs/guides/network-isolation.md</code> 已被 <code>docs/guides/network-security.md</code> 取代；原 <code>server/opensandbox_server/api/devops.py</code> 已删除并全面收口至 <code>api/diagnostics.py</code>。</li>
+</ol>
+<h2 id="osep-提案索引-28-份">OSEP 提案索引（28 份）</h2><p>本快照 <code>oseps/</code> 目录共收录 28 份提案，正文重点引用了其中 17 份：</p>
+<table>
+<thead>
+<tr>
+<th>编号</th>
+<th>主题</th>
+<th>本书对应篇章</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>0004</td>
+<td>安全容器运行时</td>
+<td>第 15 篇</td>
+</tr>
+<tr>
+<td>0005</td>
+<td>客户端沙箱池</td>
+<td>第 13 篇</td>
+</tr>
+<tr>
+<td>0007</td>
+<td>Fast Sandbox 运行时支持</td>
+<td>第 8 篇</td>
+</tr>
+<tr>
+<td>0008</td>
+<td>基于 rootfs 快照的暂停/恢复</td>
+<td>第 7、13 篇</td>
+</tr>
+<tr>
+<td>0009</td>
+<td>访问即续期</td>
+<td>第 10、13 篇</td>
+</tr>
+<tr>
+<td>0011</td>
+<td>安全 endpoint 访问</td>
+<td>第 10、14 篇</td>
+</tr>
+<tr>
+<td>0012</td>
+<td>Credential Vault</td>
+<td>第 12 篇</td>
+</tr>
+<tr>
+<td>0013</td>
+<td>隔离执行 API</td>
+<td>第 9、15 篇</td>
+</tr>
+<tr>
+<td>0014</td>
+<td>多租户</td>
+<td>第 14 篇</td>
+</tr>
+<tr>
+<td>0018</td>
+<td><code>execd</code> 作为沙箱 init（<code>EXECD_INIT=1</code>）</td>
+<td>第 9、15 篇</td>
+</tr>
+<tr>
+<td>0019</td>
+<td>节点级沙箱采集（Node Agent）</td>
+<td>第 16 篇</td>
+</tr>
+<tr>
+<td>0022</td>
+<td>多沙箱共享 egress 控制面</td>
+<td>第 8、11、12 篇</td>
+</tr>
+<tr>
+<td>0023</td>
+<td>凭据绑定的 TLS 拦截（实验性）</td>
+<td>第 11 篇</td>
+</tr>
+<tr>
+<td>0024</td>
+<td>Fast Sandbox 空闲暂停与访问唤醒</td>
+<td>第 10、13 篇</td>
+</tr>
+<tr>
+<td>0025</td>
+<td>Credential Vault Provider SPI（Exchange）</td>
+<td>第 12 篇</td>
+</tr>
+<tr>
+<td>0027</td>
+<td>可选 E2B 兼容层（<code>components/e2b-shim</code>）</td>
+<td>第 2、18 篇</td>
+</tr>
+<tr>
+<td>0028</td>
+<td>RootfsOnly 创建期 CPU/内存覆写</td>
+<td>第 8、13 篇</td>
+</tr>
+</tbody></table>
+<p>其余 11 份涵盖 FQDN 出向控制（0001）、<code>agent-sandbox</code> 支持（0002）、卷与卷绑定（0003）、开发者控制台（0006）、OpenTelemetry 观测（0010）、Pod 快照（0015）、统一 umbrella 发布治理（0016）、SDK 传输韧性（0017）、生命周期钩子（0020）、可扩展客户端池预热（0021）以及 Fast Sandbox 资源超卖核算（0026）。</p>
+</article><nav class="pager" aria-label="篇章导航"><a href="appendix-map.html"><small>上一篇</small>附录 A：源码阅读地图</a><a href="appendix-code.html"><small>下一篇</small>附录 C：配套教学实现</a></nav></main><script src="../assets/wiki.js"></script></body></html>

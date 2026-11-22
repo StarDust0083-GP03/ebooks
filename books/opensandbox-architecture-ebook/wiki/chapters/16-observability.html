@@ -1,0 +1,86 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>可观测性与诊断：让短命沙箱留下可核验的证据 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="16-observability"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#第一-二层-状态字段-诊断上下文与请求-id">第一、二层：状态字段、诊断上下文与请求 ID</a></li><li><a href="#第三层-收口后的-diagnostics-api-移除旧-devops-路由">第三层：收口后的 Diagnostics API（移除旧 `devops` 路由）</a></li><li><a href="#第四层-otlp-指标与低基数纪律">第四层：OTLP 指标与低基数纪律</a></li><li><a href="#第五层-node-agent-让日志活过沙箱寿命">第五层：Node Agent 让日志活过沙箱寿命</a></li><li><a href="#源码入口">源码入口</a></li></ol></details><article class="content"><h1 id="可观测性与诊断-让短命沙箱留下可核验的证据">可观测性与诊断：让短命沙箱留下可核验的证据</h1><p>传统后端服务排查故障，登录机器捞过去半小时的日志就行。沙箱平台的观测难在对象极短命：一个编码任务跑了 90 秒，建容器、装依赖、崩掉、被回收，进程和文件系统转眼烟消云散。如果此时用户只甩来一句「Agent 执行挂了」，手头往往连 Pod 名字都找不回来。</p>
+<p>OpenSandbox 用五层互不重叠的证据链来接住这个问题，并且在 <code>release-1.3.0</code> 里把废弃的旧排障入口清理干净，同时补齐了 <code>execd</code> 磁盘遥测和 Node Agent 的虚拟机控制台采集。</p>
+<h2 id="第一-二层-状态字段-诊断上下文与请求-id">第一、二层：状态字段、诊断上下文与请求 ID</h2><p>最廉价的证据就在日常 API 响应里：沙箱对象的 <code>state</code>、<code>reason</code>、<code>message</code> 和 <code>lastTransitionAt</code> 能立刻区分是镜像拉取失败、池容量耗尽，还是主进程正常退出（<code>SANDBOX_COMPLETED</code>）。服务端挂在最外层的 <code>RequestIdMiddleware</code> 会透传或自动生成 <code>X-Request-ID</code>，串起控制面、网关、控制器和代理的同一条调用链。</p>
+<p>需要查底层宿主对象时，<code>GET /v1/sandboxes/{id}/diagnostics/context</code> 返回运行时后端名和对应标识符：Docker 返回容器 ID，Kubernetes 返回命名空间、工作负载名与已分配 Pod 名（可在 Pod 分配前查询），Fast Sandbox 返回 <code>fast-sandbox</code> 加空 map（适配层不假装持有集群外运行时标识）。</p>
+<h2 id="第三层-收口后的-diagnostics-api-移除旧-devops-路由">第三层：收口后的 Diagnostics API（移除旧 <code>devops</code> 路由）</h2><p>早期版本同时存在契约化的 Diagnostics API 和一套面向手工排障的纯文本 <code>api/devops.py</code> 路由（对应 CLI 的 <code>osb devops</code>）。两套口径并存极易漂移，<strong><code>release-1.3.0-rc.1</code> 彻底删除了 <code>api/devops.py</code>、<code>diagnostics/inspect</code>、<code>diagnostics/summary</code>、无 <code>scope</code> 的纯文本回退参数（<code>tail</code>/<code>since</code>/<code>container</code>/<code>limit</code>）以及 <code>osb devops</code> 命令群</strong>。</p>
+<p>现在的诊断通道全部收口在 <code>server/opensandbox_server/api/diagnostics.py</code>（112 行）和 <code>specs/diagnostic-api.yml</code> 之下：</p>
+<div class="table-wrap"><pre tabindex="0"><code class="hljs">GET /v1/sandboxes/{id}/diagnostics/context
+GET /v1/sandboxes/{id}/diagnostics/logs?scope=...    （scope 必填，省略返 422）
+GET /v1/sandboxes/{id}/diagnostics/events?scope=...  （scope 必填，省略返 422）</code></pre></div><p>各后端支持的 <code>scope</code> 边界明确：Docker 与 Kubernetes 容器后端对日志支持 <code>container</code>/<code>all</code>、对事件支持 <code>runtime</code>/<code>all</code>；Fast Sandbox 只支持事件（<code>runtime</code>/<code>all</code>），日志返回 <code>501 DIAGNOSTICS_NOT_IMPLEMENTED</code>。</p>
+<p>响应统一返回 JSON 描述符，包含 <code>delivery</code>（<code>inline</code> 直接带 <code>content</code>，<code>url</code> 带 <code>contentUrl</code> 与过期时间）、<code>truncated</code> 布尔标记和可选 <code>warnings</code>。调用方必须牢记两条纪律：SDK 不会替你自动拉取 <code>contentUrl</code>；把日志拿去做根因分析前，先看 <code>truncated</code> 与 <code>warnings</code>，别把截断输出误读成完整日志。CLI 用户现统一迁移至 <code>osb diagnostics logs &lt;id&gt; --scope container -o raw</code>、<code>osb diagnostics events &lt;id&gt; --scope runtime -o raw</code> 和 <code>osb diagnostics context &lt;id&gt;</code>。</p>
+<h2 id="第四层-otlp-指标与低基数纪律">第四层：OTLP 指标与低基数纪律</h2><p>Go 组件共用一套 OTLP 环境变量配置，Python 控制面走 <code>[otel]</code> 配置段。各组件覆盖的问题边界互补：</p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>关键可观测信号</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>生命周期服务器</td>
+<td>创建延迟、HTTP 状态码分布、请求量；CRD 未装时快照 informer 仅记单条带名告警（<code>1.3.0-rc.2</code> 消除每 30 秒刷屏 traceback）</td>
+</tr>
+<tr>
+<td>Kubernetes 控制器</td>
+<td>池分配路径指标、缓冲水位与 controller-runtime 队列指标</td>
+</tr>
+<tr>
+<td><code>execd</code></td>
+<td>CPU、内存、执行耗时、OOM 观测；<strong><code>1.3.0-rc.2</code> 新增 OTLP 磁盘用量仪表（<code>execd.system.disk.usage_bytes</code> / <code>total_bytes</code>，单挂载 stat 限时 2 秒防网络盘卡死）与累计 IO 计数器（<code>execd.system.disk.io.bytes</code> / <code>io.operations</code>，优先 cgroup 回退 <code>/proc/diskstats</code>）</strong>；<code>/metrics/watch</code> 修正为精确 1 秒推送</td>
+</tr>
+<tr>
+<td><code>egress</code></td>
+<td>策略拒绝数、DNS 查询与解析失败数、nftables 更新错误、实验性 credential-bound 迁移计数与延迟直方图；<code>1.3.0-rc.2</code> 上游 TLS 失败日志带连接 ID 与固定原因码（如 <code>self_signed</code>）且不泄漏主机名或凭据</td>
+</tr>
+<tr>
+<td><code>ingress</code></td>
+<td>请求路由延迟、上游 TCP 连通性分类（影子 <code>network-readiness</code>）</td>
+</tr>
+<tr>
+<td><code>node-agent</code></td>
+<td>采集记录数、字节数、有意丢弃、重试次数与有界队列深度</td>
+</tr>
+</tbody></table>
+<p>整套指标体系死守两条硬纪律：一是<strong>把策略正常拒绝和系统故障拆成独立计数器</strong>（例如 egress 拒绝与 DNS 解析器故障绝不混计），否则值班告警会颠倒因果；二是<strong>严控 label 基数</strong>，绝不把用户查询域名、目的 IP、沙箱 ID 或 Pod UID 放进指标标签，细节留给日志。</p>
+<h2 id="第五层-node-agent-让日志活过沙箱寿命">第五层：Node Agent 让日志活过沙箱寿命</h2><p>沙箱一旦销毁，前面四层里依赖活体对象的接口都会变成 <code>404</code>。可选 DaemonSet 组件 <code>components/nodeagent/</code> 负责把节点上短命沙箱的输出提前落进持久对象存储，并附带可验证的完整性结案报告。</p>
+<p>除了 kubelet 容器日志与 eBPF 系统调用源，<code>1.2.1</code> 还为 Node Agent 新增了可选的 <strong><code>vm-console</code> 采集源</strong>：读取节点本地 VM 元数据与崩溃安全偏移量，持续收集 Fast Sandbox guest 内核与 init 控制台日志，不依赖集群级 Sandbox watch。同时 Fast Sandbox 第一方 Kubernetes 组件自 <code>1.2.1</code> 起默认向 <code>/var/log/fast-sandbox</code> 写带轮转的日志文件（单文件 100 MiB、保留 10 份、7 天过期、gzip 压缩），按需开启 stderr 镜像。</p>
+<p>Node Agent 的四个核心工程决定极具参考价值：</p>
+<ul>
+<li><strong>编译期源与 sink 注册表</strong>：运行时绝不动态加载外部插件，未知名称直接令 Agent 进入不就绪状态，堵死采集进程变成集群 RCE 入口的风险。</li>
+<li><strong>有界队列与显式背压/丢弃</strong>：默认 <code>block</code> 模式在后端变慢时反压源端不丢数据；<code>drop</code> 模式锁死内存上限，但把受影响区间诚实记入流完整性标记。全局与每沙箱双层预算防止单个话痨沙箱饿死整机。</li>
+<li><strong>失败即降级就绪，拒绝崩溃重启循环</strong>：配置非法、恢复状态损坏或目标桶不合规（如开启版本控制、WORM 或存在重叠生命周期规则）时，进程保持存活但 <code>readyz</code> 失败并报明原因（<code>1.3.0-rc.1</code> 修复了 IPv6 主集群下 readyz 探针未给 IPv6 地址加方括号导致的误报），绝不静默清零偏移重采。</li>
+<li><strong>两阶段事务与三态 <code>finalized</code> 完整性标记</strong>：每条流按 <code>&lt;cluster&gt;/&lt;namespace&gt;/&lt;sandbox_id&gt;/&lt;pod_uid&gt;/</code> 组织，附带不可变的 <code>sandbox.finalized.&lt;revision&gt;.json</code>，给出每个分片的大小与校验和，并标明三种诚实状态：<code>complete</code>（无已知缺口，至少一次投递可能含重复）、<code>complete-with-drops</code>（已记录有意丢弃区间）或 <code>incomplete</code>（如进程重启期间无法证明未遗漏短命日志轮转）。采集凭据刻意<strong>不授予 delete 权限</strong>，清理留给独立离线工具。</li>
+</ul>
+<h2 id="源码入口">源码入口</h2><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>server/opensandbox_server/api/diagnostics.py</code></td>
+<td>必填 <code>scope</code> 的日志、事件与上下文路由（取代旧 <code>devops.py</code>）</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/diagnostics.py</code></td>
+<td>诊断上下文结构与 <code>DiagnosticResult</code> 描述符</td>
+</tr>
+<tr>
+<td><code>components/execd/pkg/telemetry/init.go</code></td>
+<td>OTLP CPU/内存/磁盘用量与 IO 指标导出</td>
+</tr>
+<tr>
+<td><code>components/nodeagent/pkg/marker/</code></td>
+<td>三态 <code>finalized</code> 完整性标记与校验和生成</td>
+</tr>
+<tr>
+<td><code>docs/architecture/data-plane/node-agent.md</code></td>
+<td>有界队列、fail-closed 就绪、<code>vm-console</code> 与对象布局</td>
+</tr>
+<tr>
+<td><code>docs/guides/telemetry.md</code></td>
+<td>全组件 OTLP 配置与指标清单</td>
+</tr>
+</tbody></table>
+</article><nav class="pager" aria-label="篇章导航"><a href="15-isolation.html"><small>上一篇</small>隔离与加固：从 runc、进程降权到 microVM</a><a href="17-operations.html"><small>下一篇</small>运维与失败：升级顺序、单活红线与真实边界</a></nav></main><script src="../assets/wiki.js"></script></body></html>

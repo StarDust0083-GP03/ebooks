@@ -1,0 +1,1633 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>从工具循环到 Code Mode · Pi 中文架构电子书</title>
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<style type="text/tailwindcss">
+  @theme {
+    --color-parchment: #f5f4ed;
+    --color-ivory: #faf9f5;
+    --color-sand: #e8e6dc;
+    --color-brand: #1B365D;
+    --color-brand-light: #2D5A8A;
+    --color-brand-tint: #EEF2F7;
+    --color-brand-tint-strong: #E4ECF5;
+    --color-near-black: #141413;
+    --color-dark-warm: #3d3d3a;
+    --color-olive: #504e49;
+    --color-stone: #6b6a64;
+    --color-border: #e8e6dc;
+    --color-border-soft: #e5e3d8;
+    --color-success: #4a7c59;
+    --color-danger: #8b3a3a;
+    --color-warning: #C78E3F;
+    --color-dark-surface: #30302e;
+    --color-deep-dark: #141413;
+    --font-serif: "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", Charter, Georgia, serif;
+    --font-sans: "TsangerJinKai02", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", Charter, Georgia, serif;
+    --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", Consolas, Monaco, "TsangerJinKai02", "Source Han Serif SC", monospace;
+  }
+
+  summary { list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before {
+    content: "\25B6";
+    font-size: 10px;
+    margin-right: 10px;
+    color: var(--color-stone);
+    transition: transform 0.12s ease;
+    display: inline-block;
+  }
+  details[open] summary::before { transform: rotate(90deg); }
+  details[open] > div { border-left: 2px solid var(--color-brand); }
+
+  .code .kw  { color: #1B365D; }
+  .code .str { color: #4a7c59; }
+  .code .cm  { color: #6b6a64; }
+  .code .fn  { color: #C9B98A; }
+  .code .num { color: #2D5A8A; }
+
+/* Kami Parchment — Semantic component classes (@apply)
+   Injected into <style type="text/tailwindcss"> by init.py. */
+
+/* ══════════ SURFACES ══════════ */
+.card { @apply bg-ivory border border-border rounded-xl p-5; }
+.card-lg { @apply p-6; }
+
+.callout { @apply bg-parchment border border-border-soft rounded-lg p-4; }
+.callout-brand { @apply border-l-[3px] border-l-brand bg-ivory rounded-r-lg py-3.5 px-4.5; }
+.callout-light { @apply bg-ivory border border-border rounded-lg px-4 py-3; }
+
+/* ══════════ TYPOGRAPHY ══════════ */
+.h2-bar { @apply font-serif font-medium text-[24px] border-l-[2.5px] border-brand pl-2 rounded-l-[1.5px]; }
+.eyebrow { @apply font-mono text-[11px] tracking-[0.08em] uppercase text-brand; }
+.eyebrow-muted { @apply font-mono text-[11px] tracking-[0.08em] uppercase text-stone; }
+.lead { @apply text-[16px] leading-[1.5] text-dark-warm mb-4 max-w-[85%]; }
+.hl { @apply text-brand font-medium; }
+.sub { @apply text-sm text-stone font-normal ml-2; }
+
+/* ══════════ TAGS & BADGES ══════════ */
+.tag { @apply bg-brand-tint-strong text-brand text-[11px] font-medium px-2.5 py-0.5 rounded tracking-[0.04em]; }
+.tag-breaking { @apply bg-[#f0e0d8] text-[#8b4513] text-[11px] font-medium px-2.5 py-0.5 rounded tracking-[0.04em]; }
+.badge { @apply inline-flex justify-center items-center px-2 py-0.5 text-xs font-medium rounded-full bg-brand-tint text-brand; }
+.badge-success { @apply inline-flex justify-center items-center px-2 py-0.5 text-xs font-medium rounded-full bg-[rgba(74,124,89,0.16)] text-success; }
+.badge-danger { @apply inline-flex justify-center items-center px-2 py-0.5 text-xs font-medium rounded-full bg-[rgba(139,58,58,0.12)] text-danger; }
+.badge-warning { @apply inline-flex justify-center items-center px-2 py-0.5 text-xs font-medium rounded-full bg-[rgba(199,142,63,0.16)] text-warning; }
+
+/* ══════════ SECTION NUMBERS ══════════ */
+.section-num { @apply font-mono text-[12px] bg-brand-tint-strong text-brand px-2.5 py-0.5 rounded-lg; }
+
+/* ══════════ METRICS ══════════ */
+.metrics { @apply flex gap-6 pb-4 mb-6 border-b border-dotted border-border items-baseline; }
+.metric { @apply flex-1 flex items-center gap-2; }
+.metric-value { @apply font-serif text-2xl font-medium text-brand leading-none; font-variant-numeric: tabular-nums; letter-spacing: -0.5px; }
+.metric-label { @apply text-xl text-olive leading-tight; }
+.metric-val { @apply font-serif text-2xl font-medium text-brand; font-variant-numeric: tabular-nums; }
+
+/* ══════════ TIMELINE ══════════ */
+.timeline { @apply flex gap-5 mt-2; }
+.tl-step { @apply flex-1; }
+.tl-year { @apply font-serif text-[14px] font-medium text-brand mb-0.5; }
+.tl-head { @apply text-sm font-medium text-near-black mb-0.5; }
+.tl-body { @apply text-sm text-olive leading-snug; }
+
+/* ══════════ LISTS ══════════ */
+ul.dash { @apply list-none m-0 p-0; }
+ul.dash li { @apply relative pl-4 mb-1 leading-snug; }
+ul.dash li::before { content: "\2013"; @apply absolute left-0 text-brand; }
+
+/* ══════════ TABLES ══════════ */
+.kami-table { @apply w-full text-sm border-collapse; }
+.kami-table th { @apply text-left font-medium text-dark-warm px-3 py-2 border-b border-border bg-transparent; }
+.kami-table td { @apply px-3 py-2 border-b border-dotted border-border-soft align-top; }
+.kami-table.compact th { @apply px-2 py-1 text-xs; }
+.kami-table.compact td { @apply px-2 py-1 text-xs leading-snug; }
+.kami-table.striped tbody tr:nth-child(even) td { @apply bg-ivory; }
+.kami-table .total td { @apply font-medium border-t border-brand border-b-0 text-near-black; }
+
+/* ══════════ QUOTE ══════════ */
+.quote { @apply border-l-2 border-brand pl-4 py-1 text-olive leading-relaxed; }
+.quote .cite { @apply block text-sm text-stone mt-1; }
+
+/* ══════════ GRID LAYOUTS ══════════ */
+.two-col { @apply grid grid-cols-2 gap-6; }
+
+/* ══════════ BUTTONS ══════════ */
+.btn-primary { @apply bg-brand text-ivory border border-brand rounded-full font-mono text-sm px-4 py-2 cursor-pointer hover:bg-brand-light; }
+.btn-ghost { @apply bg-transparent text-dark-warm border border-border rounded-full font-mono text-sm px-3.5 py-2 cursor-pointer hover:bg-ivory; }
+
+/* ══════════ CODE ══════════ */
+.inline-code { @apply font-mono text-sm bg-parchment px-1.5 py-0.5 rounded; }
+.code-block { @apply bg-deep-dark rounded-xl py-1 overflow-x-auto; }
+
+/* ══════════ PROMPT BOX ══════════ */
+.prompt-box { @apply bg-parchment border border-border rounded-xl px-5 py-4 text-sm text-dark-warm; }
+.prompt-box .prompt-label { @apply font-mono text-[11px] tracking-[0.06em] uppercase text-stone block mb-1.5; }
+
+/* ══════════ CHIPS ══════════ */
+.chip { @apply font-mono text-xs bg-parchment border border-border text-dark-warm px-2.5 py-1 rounded-lg whitespace-nowrap; }
+.chip .chip-val { @apply text-near-black font-medium; }
+
+/* ══════════ DIAGRAMS ══════════ */
+.mermaid { @apply my-6 flex justify-center; }
+.mermaid svg { @apply max-w-full h-auto rounded-xl; }
+figure.diagram { @apply my-8; }
+figure.diagram figcaption { @apply text-sm text-olive text-center mt-3; }
+
+/* ══════════ FOOTER ══════════ */
+.doc-footer { @apply mt-12 pt-4 border-t border-dotted border-border text-[12px] text-stone flex justify-between; }
+
+/* ══════════ VERSION HEADER (Changelog) ══════════ */
+.version-header { @apply text-center mb-8 pb-6 border-b border-border; }
+.version-header .version-logo { @apply font-serif text-[16px] font-medium text-brand tracking-wide mb-2; }
+.version-header .version-title { @apply font-serif text-[32px] font-medium text-near-black leading-tight mb-1.5; }
+.version-header .version-tagline { @apply text-[14px] text-olive leading-relaxed; }
+.version-header .version-date { @apply text-sm text-stone mt-2; font-variant-numeric: tabular-nums; }
+</style>
+<style>
+:root{--paper:#f5f4ed;--paper-2:#eeece3;--panel:#faf9f5;--ink:#20201d;--muted:#6b6a64;--line:#dedbd0;--brand:#1B365D}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}
+body{margin:0;background:var(--paper);color:var(--ink);font:17px/1.95 "Noto Serif CJK SC",Charter,Georgia,serif;font-variant-numeric:tabular-nums}
+a{color:var(--brand);text-underline-offset:4px;overflow-wrap:anywhere}a:hover{text-decoration-thickness:2px}
+.layout{max-width:1320px;margin:auto;display:grid;grid-template-columns:260px minmax(0,1fr);gap:50px;padding:38px 36px 100px}
+nav.toc{position:sticky;top:28px;align-self:start;max-height:92vh;overflow:auto;font:14px/1.8 "Noto Sans CJK SC",sans-serif}
+nav.toc>a{display:block;padding:5px 0;text-decoration:none}nav.toc .nav-title{font-size:18px;margin-bottom:14px}
+main{min-width:0;max-width:900px}.edition{font:14px/1.8 "Noto Sans CJK SC",sans-serif;color:var(--muted);letter-spacing:.02em;margin-bottom:30px}
+h1,h2,h3,h4,strong,b{font-weight:500}h1{font-size:31px;line-height:1.5;letter-spacing:-.02em;margin:90px 0 28px;scroll-margin-top:30px}
+h1#cover{font-size:52px;line-height:1.35;margin:30px 0 22px;max-width:730px}h2{font-size:24px;line-height:1.55;border-left:3px solid var(--brand);padding-left:13px;margin:28px 0 25px}
+h3{font-size:21px;line-height:1.65;margin:36px 0 12px}p{margin:16px 0}li{margin:7px 0}ul{list-style-type:disc}ol{list-style-type:decimal}ul,ol{padding-left:1.6em}
+code,pre{font-family:"Noto Sans Mono",Consolas,monospace}code{font-size:.87em;background:#eae7dd;padding:2px 5px;border-radius:3px;overflow-wrap:anywhere}
+pre{background:#eeece3;border:1px dotted var(--line);padding:20px 22px;line-height:1.75;overflow:auto;font-size:13px;margin:24px 0;border-radius:4px}
+pre code{padding:0;background:none;font-size:inherit;white-space:pre;overflow-wrap:normal}
+table{border-collapse:collapse;width:100%;font-size:14px;line-height:1.9;margin:26px 0;table-layout:auto}th{text-align:left;font-weight:500;background:#eeece3}
+th,td{padding:12px 11px;border-bottom:1px dotted #c6c1b2;vertical-align:top;overflow-wrap:anywhere}td:first-child{min-width:95px}
+figure{margin:32px 0;padding:18px 0;border-top:1px dotted var(--line);border-bottom:1px dotted var(--line);break-inside:avoid}
+figure svg,figure img{display:block;max-width:100%;height:auto;width:100%}figcaption{font:14px/1.8 "Noto Sans CJK SC",sans-serif;color:var(--muted);margin-top:14px}
+blockquote{margin:24px 0;border-left:3px solid var(--brand);padding:1px 20px;color:var(--muted)}em,i,cite{font-style:normal}
+.tools{display:flex;gap:10px;flex-wrap:wrap;margin:24px 0 40px}.tools a,button{display:inline-block;border:1px solid #bcb7a7;border-radius:4px;background:var(--panel);padding:8px 14px;color:var(--brand);font:14px/1.7 "Noto Sans CJK SC",sans-serif;text-decoration:none;cursor:pointer}
+:focus-visible{outline:3px solid var(--brand);outline-offset:4px}.source{margin:24px 0;padding-bottom:20px;border-bottom:1px dotted var(--line);font-size:15px}.source p{margin:6px 0}.source .path{font:12px/1.8 monospace;color:var(--muted);overflow-wrap:anywhere}
+.playground{padding:24px;border:1px dotted #bcb7a7;margin:34px 0;background:var(--panel)}.playground h3{margin-top:0}.playground label{display:block;font-size:15px;margin:14px 0}.playground input{display:block;width:100%;accent-color:var(--brand);margin-top:8px}.readout{font-size:21px;color:var(--brand)}.small{font-size:14px;color:var(--muted)}
+.print-toc{display:none}footer{margin-top:60px;padding-top:24px;border-top:1px dotted var(--line);font-size:14px;color:var(--muted)}
+@media(max-width:1000px){.layout{display:block;padding:24px 24px 70px}nav.toc{position:static;max-height:none;padding-bottom:25px;border-bottom:1px dotted var(--line);margin-bottom:36px;columns:2}nav.toc .nav-title{column-span:all}main{margin:auto}h1#cover{font-size:42px}}
+@media(max-width:700px){figure{overflow-x:auto;padding-bottom:6px}figure svg{min-width:680px}figure figcaption{min-width:0}}
+@media(max-width:600px){body{font-size:16px}.layout{padding:20px 16px 60px}nav.toc{columns:1}h1#cover{font-size:35px}h1{font-size:26px}h2{font-size:21px}table{font-size:12px}th,td{padding:9px 6px}td:first-child{min-width:0}pre{font-size:11px;padding:13px}figure{margin:25px 0}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+@page{size:A4;margin:18mm 16mm 20mm;@bottom-right{content:counter(page);font:9pt sans-serif;color:#6b6a64}}
+@media print{.print-toc{display:block;break-before:page}.print-toc a{display:block;font-size:11pt;margin:8px 0}.print-toc h2{margin-top:15mm}html{scroll-behavior:auto}body{background:#fff;font-size:10.5pt;line-height:1.85}.layout{display:block;padding:0;max-width:none}main{max-width:none}nav.toc,.tools,.playground input,.playground label,button,.screen-only{display:none!important}h1{break-before:page;font-size:24pt;margin:15mm 0 8mm}h1#cover{break-before:auto;font-size:37pt;margin-top:25mm}h2{font-size:18pt}h3{font-size:14pt;break-after:avoid}p,li{orphans:3;widows:3}table{font-size:8.5pt}thead{display:table-header-group}tr{break-inside:avoid}pre{white-space:pre-wrap;font-size:8pt;overflow:visible;break-inside:avoid}pre code{white-space:pre-wrap;overflow-wrap:anywhere}figure{padding:10px 0;break-inside:avoid}figcaption{font-size:9pt}.source{break-inside:avoid}a{color:inherit;text-decoration:none}.edition{font-size:10pt}footer{break-before:page}}
+
+:root{--eb-light-accent:#1b365d;--eb-dark-accent:#a6bfdf}
+/* Shared reading refinements. Embedded in each book so offline copies stay portable. */
+@media screen {
+  :root {
+    --eb-accent:var(--forest,var(--accent,var(--brand,#1b365d)));
+    --eb-line:var(--line,var(--rule,#d8d5c9));
+    --eb-panel:var(--paper-2,var(--paper-deep,var(--panel,#eeece2)));
+  }
+  html {scroll-padding-top:88px;scrollbar-color:var(--eb-line) var(--paper);scrollbar-width:thin}
+  :root[data-theme="light"] {color-scheme:light;--paper:#faf8f2;--paper-2:#f0ece2;--paper-deep:#f0ece2;--panel:#f0ece2;--ink:#262b27;--muted:#5d665e;--line:#d4d8ce;--rule:#d4d8ce;--code:#f0ece2;--code-ink:#283b33;--forest:var(--eb-light-accent,#29564c);--accent:var(--eb-light-accent,#29564c);--brand:var(--eb-light-accent,#29564c)}
+  :root[data-theme="dark"] {color-scheme:dark;--paper:#171d19;--paper-2:#222b24;--paper-deep:#222b24;--panel:#222b24;--ink:#e3e7de;--muted:#b0bbad;--line:#455044;--rule:#455044;--code:#202a24;--code-ink:#e3e7de;--forest:var(--eb-dark-accent,#9bc8b3);--accent:var(--eb-dark-accent,#9bc8b3);--brand:var(--eb-dark-accent,#9bc8b3)}
+  @media(prefers-color-scheme:dark) {:root:not([data-theme="light"]):not([data-theme="dark"]){color-scheme:dark;--paper:#171d19;--paper-2:#222b24;--paper-deep:#222b24;--panel:#222b24;--ink:#e3e7de;--muted:#b0bbad;--line:#455044;--rule:#455044;--code:#202a24;--code-ink:#e3e7de;--forest:var(--eb-dark-accent,#9bc8b3);--accent:var(--eb-dark-accent,#9bc8b3);--brand:var(--eb-dark-accent,#9bc8b3)}}
+  body {font-variant-numeric:tabular-nums;overflow-wrap:break-word}
+  .layout code,.layout pre {background:var(--eb-panel);color:var(--ink)}
+  .layout th {background:var(--eb-panel)}
+  .layout blockquote {border-left-width:1px}
+  .reading .lesson-note,.reading .book-diagram {background:var(--eb-panel)}
+  ::selection {background:color-mix(in srgb,var(--eb-accent) 22%,var(--paper));color:var(--ink)}
+  input {caret-color:var(--eb-accent)}
+  h1,h2,h3,h4 {text-wrap:balance;letter-spacing:0}
+  p,li {text-wrap:pretty}
+  .kicker,.eyebrow {display:none}
+  .topbar {background:var(--paper);backdrop-filter:none;min-height:64px;height:auto;gap:12px}
+  .brand {letter-spacing:0;min-width:0}
+  .brand-mark {transform:none;border:0;font-size:14px;font-weight:600;white-space:nowrap;min-width:44px;width:auto}
+  .hero {padding-top:64px;padding-bottom:48px;gap:56px}
+  .hero h1 {font-size:clamp(36px,4.5vw,58px);line-height:1.25;letter-spacing:0}
+  .hero .dek {font-size:21px;line-height:1.8;margin-top:22px;max-width:34em}
+  .hero-aside {font-size:14px;line-height:1.8;border-left:1px solid var(--eb-line)}
+  .home-grid {padding-top:42px}
+  .home-intro {font-size:15px;line-height:1.8}
+  .chapter-row {gap:18px;padding:21px 4px;transition:background-color 120ms ease-out}
+  .chapter-row h3 {font-size:22px;line-height:1.5;letter-spacing:0}
+  .chapter-row p {font-size:14px;line-height:1.7;margin-top:6px}
+  .chapter-row:focus-visible {outline-offset:-2px}
+  .reader-layout {grid-template-columns:220px minmax(0,780px);gap:64px;padding-top:44px}
+  .chapter-rail {font-size:14px;line-height:1.65;top:96px;max-height:calc(100dvh - 120px)}
+  .rail-label {letter-spacing:.03em}
+  .rail-title {font-size:17px;line-height:1.65}
+  .chapter-rail li a {padding:11px 4px}
+  .chapter-rail a[aria-current="location"],nav.toc>a[aria-current="location"] {color:var(--eb-accent);font-weight:600;text-decoration:underline;text-underline-offset:5px}
+  .chapter-head {padding-bottom:28px;margin-bottom:32px}
+  .chapter-head h1 {font-size:clamp(32px,3.6vw,46px);line-height:1.4;letter-spacing:0}
+  .chapter-meta {font-size:14px;line-height:1.8}
+  .chapter-number {letter-spacing:.02em}
+  .prose,.content,.reading {line-height:1.9;letter-spacing:0}
+  .prose>p:first-of-type {font-size:inherit;line-height:inherit}
+  .prose p,.content p,.reading p {margin-bottom:1.25em}
+  .prose h2,.content h2,.reading h2 {font-size:1.45em;line-height:1.5;letter-spacing:0;margin-top:2.1em;margin-bottom:.7em;border-left:0;padding-left:0}
+  .prose h3,.content h3,.reading h3 {font-size:1.15em;line-height:1.6}
+  .prose blockquote,.reading blockquote {font-style:normal;border-left-width:1px}
+  .anchor {opacity:.55;padding:4px}
+  .table-wrap {max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-width:thin;margin:1.7em 0}
+  .table-wrap table {min-width:560px;font-size:15px;line-height:1.75;table-layout:auto}
+  .table-wrap:focus-visible,pre:focus-visible {outline:2px solid var(--eb-accent);outline-offset:4px}
+  pre {max-width:100%;tab-size:4;overscroll-behavior-inline:contain;scrollbar-width:thin;box-shadow:none}
+  .prose pre,.content pre {padding:54px 22px 22px}
+  .prose pre code,.content pre code {font-size:14px;line-height:1.8}
+  .copy {min-height:44px;min-width:52px;top:5px;right:8px;font-size:12px;border-color:color-mix(in srgb,var(--code-ink,var(--ink)) 35%,transparent);background:var(--code);color:var(--code-ink,var(--ink))}
+  .book {width:min(100% - 48px,780px);padding-top:46px}
+  .home-title {font-size:clamp(34px,4.5vw,52px);line-height:1.3;letter-spacing:0}
+  .content h1 {font-size:clamp(30px,3.5vw,42px);line-height:1.45}
+  .deck {line-height:1.85}
+  .resume {box-shadow:none;border-block:1px solid var(--eb-line);padding:20px 0;background:transparent}
+  .toolbar {display:none}
+  .control,.tool-button {min-height:44px;min-width:44px;font-size:14px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none}
+  [data-reader-theme] {appearance:none;background:transparent;border:1px solid var(--eb-line);color:var(--muted);border-radius:3px;padding:8px 10px;cursor:pointer;font:14px/1.6 var(--sans,"Noto Sans CJK SC",sans-serif)}
+  button,a,input,summary {touch-action:manipulation}
+  a:focus-visible,button:focus-visible,summary:focus-visible,input:focus-visible {outline:2px solid var(--eb-accent);outline-offset:3px}
+  .search-input {font-size:20px;min-height:52px;border-radius:2px}
+  .search-page h1 {font-size:clamp(32px,4vw,48px);line-height:1.4;letter-spacing:0}
+  .search-hit h2 {line-height:1.6}
+  .reader-book-toc {position:sticky;top:28px;align-self:start;max-height:calc(100dvh - 60px);overflow:auto}
+  .reader-book-toc>summary {display:none}
+  .reader-book-toc nav.toc {position:static;max-height:none}
+  .reader-mobile-toc {display:none}
+  .reader-mobile-toc summary {min-height:48px;cursor:pointer;display:flex;align-items:center;font:500 15px/1.7 "Noto Sans CJK SC",sans-serif}
+  .reader-mobile-toc ol {margin:0 0 18px;padding-left:22px;font:15px/1.8 "Noto Sans CJK SC",sans-serif}
+  .reader-mobile-toc a {display:block;padding:8px 0;text-decoration:none}
+  .cover {padding-top:58px;padding-bottom:46px}
+  .cover h1 {font-size:clamp(36px,4.5vw,58px);line-height:1.3;letter-spacing:0}
+  .cover .intro {line-height:1.85}
+  .layout {grid-template-columns:225px minmax(0,780px);gap:52px;max-width:1180px}
+  .layout>main {max-width:780px;font-size:20px;line-height:1.9}
+  .layout h1#cover {font-size:44px;line-height:1.4;letter-spacing:0}
+  .layout h1 {line-height:1.5;letter-spacing:0}
+  .layout h2 {border-left:0;padding-left:0;margin-top:2em}
+  nav.toc>a {padding:10px 4px}
+  .tools a,.tools button {min-height:44px;display:inline-flex;align-items:center;justify-content:center}
+  .volume {display:block;max-width:880px}
+  @media(max-width:1000px) {
+    .reader-layout {display:block;max-width:828px;padding-inline:24px}
+    .chapter-rail {display:none}
+    .reader-book-toc {position:static;max-height:none;margin-bottom:30px;border-bottom:1px solid var(--eb-line)}
+    .reader-book-toc>summary {display:flex;align-items:center;min-height:48px;cursor:pointer;font:500 16px/1.7 sans-serif}
+    .reader-mobile-toc {display:block;border-block:1px solid var(--eb-line);margin:0 0 32px}
+    .layout {display:block;padding:28px 24px 80px}
+    nav.toc {columns:2;position:static;max-height:none}
+  }
+  @media(max-width:700px) {
+    .topbar {padding:8px 14px;gap:6px;flex-wrap:wrap}
+    .brand {font-size:14px;line-height:1.6;max-width:100%;overflow-wrap:anywhere}
+    .brand span:last-child {display:none}
+    .topbar .tools {margin-left:auto;gap:0}
+    .topbar .spacer {min-width:0}
+    .hero {display:block;padding:38px 20px 34px}
+    .hero h1 {font-size:36px;line-height:1.4}
+    .hero .dek {font-size:19px;line-height:1.9}
+    .hero-aside {margin-top:28px;border-left:0;border-top:1px solid var(--eb-line);padding:20px 0 0}
+    .home-grid {display:block;padding:30px 20px 70px}
+    .home-intro {position:static;margin-bottom:28px}
+    .chapter-row h3 {font-size:20px}
+    .reader-layout {padding:30px 20px 80px}
+    .chapter-head h1 {font-size:32px}
+    .prose,.content,.reading {line-height:1.9}
+    .prose pre {margin-inline:0;padding-inline:16px}
+    .book {width:calc(100% - 40px);padding-top:32px}
+    .home-title,.content h1 {font-size:32px;line-height:1.4}
+    .topbar .brand {max-width:calc(100% - 150px);white-space:normal}
+    .reader-tools {flex-wrap:wrap}
+    .bar-inner {gap:8px;flex-wrap:wrap}
+    .layout>main {font-size:19px}
+    .layout h1#cover {font-size:34px}
+    nav.toc {columns:1}
+    .search-page {padding-top:36px}
+    .chapter-nav {margin-top:44px}
+  }
+  @media(prefers-reduced-motion:reduce) {html{scroll-behavior:auto}.chapter-row,.control{transition:none}}
+}
+@media print {.reader-mobile-toc,.reader-book-toc,[data-reader-theme],.copy{display:none!important}}
+</style></head><body><div class="layout"><nav class="toc" aria-label="章节目录"><div class="nav-title">Pi 架构演进</div><a href="#cover">从工具循环到 Code Mode</a><a href="#chapter-1">第 1 章：先把版本区间划清楚</a><a href="#chapter-2">第 2 章：v0.9.4 当年是怎么跑起来的</a><a href="#chapter-3">第 3 章：v1.6.0 的包地图与三条边界</a><a href="#chapter-4">第 4 章：一次请求的完整生命周期</a><a href="#chapter-5">第 5 章：Code Mode 到底改变了什么</a><a href="#chapter-6">第 6 章：拆开沙箱，顺着源码追一次调用</a><a href="#chapter-7">第 7 章：工具太多时，如何按需发现而不塞满提示</a><a href="#chapter-8">第 8 章：返回值、失败处理、并发与状态边界</a><a href="#chapter-9">第 9 章：扩展、渲染缓存、模型与集成界面</a><a href="#chapter-10">第 10 章：从 v0.99.2 到 v1.6.0，到底演进了什么</a><a href="#chapter-11">第 11 章：独立沙箱、云端隔离与 Durable 重放</a><a href="#chapter-12">第 12 章：迁移路线、动手实验与核对工具</a><a href="#sources">来源索引与核查范围</a></nav>
+<main><header class="edition">中文源码导读 · 2026-11-22 · 本版核查版本 v1.6.0<br />12 章 · 13 张架构图 · 20 项 Python 单元测试 + 6 个 Node 脚本</header>
+<div class="tools"><a href="pi-architecture.zh-CN.pdf">下载 PDF</a><a href="pi-architecture.zh-CN.epub">下载 EPUB</a><a href="book.zh-CN.md">Markdown 原稿</a><a href="https://github.com/earendil-works/pi/tree/v1.6.0">v1.6.0 官方源码</a><button id="print-book" type="button">打印 / 存为 PDF</button></div>
+<h1 id="cover">从工具循环到 Code Mode</h1>
+<h2>Pi 架构演进：v0.9.4、v0.99.2 与 v1.6.0</h2>
+<p>这是一份顺着固定标签源码写成的中文架构导读。本版核查日期为 2026 年 11 月 22 日，比较端点更新至 <strong>v1.6.0</strong>（提交 <code>faac585884ae2c013a6b1400f3e9e77f10b34bac</code>，上游发布于 2026 年 11 月 20 日），保留 v1.4.0 与 v1.3.0 作为历史参照，不把发布标签之后 <code>main</code> 上的改动混进分析。</p>
+<p>先摊开主干结论：Pi 的内核始终维持着模型输出响应、工具执行操作、结果回传下一轮这个基础循环。真正撑开版本代差的，是循环外围一整套运行基础设施：单文件树形会话、统一扩展机制、零 <code>eval</code> 闭包校验库 <code>pi-schema</code>、增量流式工具参数解析与 TUI 只读渲染缓存、内置 MCP 按需暴露，以及让模型用 JavaScript 编排工具调用的 <strong>Code Mode</strong>。仓库里同时存在独立的实验性 Durable 运行时，可以跨进程重启恢复中断任务，但普通 CLI 没有把内核换成它。</p>
+<p>这里先把证据边界一次说清，后面各章不再反复叠甲：本书基于固定版本的源码、文档与发布记录做静态拆解，并配套 Node 模拟脚本和零依赖 Python 教学模型验证核心不变量。我们没有跑完上游全量测试套件，没有部署 Cloudflare Worker 或远程 SSH 守护进程，也没有调用付费模型做生产账单压测或沙箱安全审计。凡是源码里写死的逻辑都会指到具体文件，凡是上游公开测量数据都会明确标出来源。</p>
+<p>如果你急着摸清 Code Mode 和最新运行机制，可以直接按第 1、3、5、6、8、9、11 章的顺序看；想完整理顺近一年的架构演进，顺序通读最省力。只需熟悉基本 JavaScript、Promise，以及模型请求工具调用的基本概念，就能读懂全书。</p>
+<section class="print-toc" aria-label="打印版目录"><h2>目录</h2><a href="#chapter-1">第 1 章：先把版本区间划清楚</a><a href="#chapter-2">第 2 章：v0.9.4 当年是怎么跑起来的</a><a href="#chapter-3">第 3 章：v1.6.0 的包地图与三条边界</a><a href="#chapter-4">第 4 章：一次请求的完整生命周期</a><a href="#chapter-5">第 5 章：Code Mode 到底改变了什么</a><a href="#chapter-6">第 6 章：拆开沙箱，顺着源码追一次调用</a><a href="#chapter-7">第 7 章：工具太多时，如何按需发现而不塞满提示</a><a href="#chapter-8">第 8 章：返回值、失败处理、并发与状态边界</a><a href="#chapter-9">第 9 章：扩展、渲染缓存、模型与集成界面</a><a href="#chapter-10">第 10 章：从 v0.99.2 到 v1.6.0，到底演进了什么</a><a href="#chapter-11">第 11 章：独立沙箱、云端隔离与 Durable 重放</a><a href="#chapter-12">第 12 章：迁移路线、动手实验与核对工具</a><a href="#sources">来源索引与核查范围</a></section><h1 id="chapter-1">第 1 章：先把版本区间划清楚</h1>
+<p>翻 Pi 的历史提交和发布记录时，最容易踩进一个版本号陷阱：把 <code>v0.9.x</code> 和 <code>v0.99.x</code> 当成挨在一起的小改动。按语义化版本比较，次版本号 99 排在 9 后面，两者中间隔着十个月的架构演进。如果把起点认错，就会把早已落地的树形会话、扩展体系和 Code Mode 误记成最近几个大版本才冒出来的新东西。</p>
+<table>
+<thead>
+<tr>
+<th>参照点</th>
+<th>日期与出处</th>
+<th>留下的架构变化</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>v0.9.4</td>
+<td>2025-11-26，固定标签</td>
+<td>最后一个 0.9.x 标签：旧 transport 抽象、位于 <code>ai</code> 包的工具循环、线性 JSONL 会话</td>
+</tr>
+<tr>
+<td>v0.31.0</td>
+<td>2026-01-02，变更日志</td>
+<td>单文件树形会话与原地分叉</td>
+</tr>
+<tr>
+<td>v0.35.0</td>
+<td>2026-01-05，变更日志</td>
+<td>hooks 与自定义工具收口为统一 extensions</td>
+</tr>
+<tr>
+<td>v0.99.0</td>
+<td>2026-09-29，变更日志</td>
+<td>内置 Code Mode、工具搜索、MCP 与嵌套工具契约</td>
+</tr>
+<tr>
+<td>v0.99.2</td>
+<td>2026-09-30，变更日志</td>
+<td>MCP 后台按需连接与按需发现，降低启动阻塞</td>
+</tr>
+<tr>
+<td>v1.0.0</td>
+<td>2026-10-01，变更日志</td>
+<td>精简 Code Mode 提示、图像生成、默认全屏 TUI、移除旧实验 harness 导出</td>
+</tr>
+<tr>
+<td>v1.3.0</td>
+<td>2026-10-15，正式发布</td>
+<td>取消与真实 worker 生命周期解耦、恢复会话保留活动工具集</td>
+</tr>
+<tr>
+<td>v1.4.0</td>
+<td>2026-10-21，正式发布</td>
+<td>上一版端点：worker FIFO 排队、摘要采用模型输出上限、图片分类输入</td>
+</tr>
+<tr>
+<td>v1.5.0</td>
+<td>2026-11-02，正式发布</td>
+<td>新增 <code>@earendil-works/pi-schema</code>、增量流式参数解析、扩展更新日志与自定义自更新命令</td>
+</tr>
+<tr>
+<td>v1.5.1</td>
+<td>2026-11-09，正式发布</td>
+<td><code>pi auth</code> 命令行登录、空闲缓存预热、Anthropic 消息线程、流式 <code>read</code> 与 ripgrep 上下文</td>
+</tr>
+<tr>
+<td>v1.5.2</td>
+<td>2026-11-10，正式发布</td>
+<td>原工作目录丢失时支持交互式 Fork 为当前目录新会话</td>
+</tr>
+<tr>
+<td>v1.6.0</td>
+<td>2026-11-20，正式发布</td>
+<td>本版端点：TUI <code>Container</code> 只读缓存与 <code>render()</code> 破坏性变更、GPT-6.2 默认模型、Qwen Token Plan 与去重诊断</td>
+</tr>
+</tbody></table>
+<p>官方仓库名现在是 <code>earendil-works/pi</code>，早年的 <code>badlogic/pi-mono</code> 地址依然会重定向过来。包名前缀从 <code>@mariozechner/*</code> 迁到了 <code>@earendil-works/*</code>。迁移老代码时必须把包名换干净，不过仓库改名和架构分层调整是两回事。<a href="#s1">S1</a>、<a href="#s2">S2</a></p>
+<p><code>sources/</code> 目录里保留了 v0.9.4、v0.99.2、v1.3.0 和 v1.4.0 四个历史固定检出，本版新增的 v1.6.0 快照记录在 <code>sources/UPSTREAM.md</code> 和 <code>sources/versions.json</code>，不再把体积超过 9 MB 的源码压缩包塞进电子书仓库。</p>
+<h3>本书盯着哪些架构维度</h3>
+<p>翻几十万字变更日志很容易迷失在琐碎的终端快捷键和单模型修补里。下面十二章只围绕六个承重维度展开：模块职责归属、内部包依赖边界、一次请求的数据流向、状态放在哪里以及谁负责投影、扩展与编排的接入契约、还有出错和中断时的真实失败行为。</p>
+<p>为了避免把教学推导和源码事实混在一起，正文按三类口径落笔：固定标签下源码与文档写死的行为会标出出处编号；简化后的架构图与伪代码用来理清调用链；估算字符量的算术例子只说明信息过滤方向，不代表线上 token 或耗时基准。</p>
+<h3>别被几千个变更文件的 diff 数字带偏</h3>
+<p>拿固定快照直接做全仓文件比对，数字确实吓人：</p>
+<ul>
+<li>v0.9.4 到 v1.6.0 一共涉及 4,972 个变更文件（新增 4,697，删除 200，修改 75）。</li>
+<li>v0.99.2 到 v1.6.0 涉及 4,555 个变更文件（新增 3,192，删除 552，修改 811）。</li>
+<li>仅 v1.4.0 到 v1.6.0 两个月间，就有 3,783 个文件变动（新增 2,922，删除 134，修改 727）。</li>
+</ul>
+<p>如果只看总量，很容易误判普通 CLI 已经被整体重写了一遍。把 v1.4.0 到 v1.6.0 的 3,783 个文件按目录拆开，真相立刻清楚：新增的 <code>apps/</code>（含 <code>p2</code>、<code>p2-mac</code>、<code>p3</code> 独立应用）占了 1,333 个，<code>packages/chord</code> 占 1,088 个，<code>packages/durable</code> 占 279 个，新拆出的 <code>packages/schema</code> 占 260 个，真正落在 <code>packages/coding-agent</code> 里的只有 347 个，落在 <code>packages/ai</code> 里的是 253 个。再往前看，v1.2.0 还集中删掉过一批从未进入正式发布包的实验性服务端与客户端目录。大仓库里经常并存多条产品线和实验运行时，判断普通 CLI 到底变了什么，必须以 <code>packages/coding-agent/package.json</code> 和实际主运行链为准。<a href="#s2">S2</a>、<a href="#s8">S8</a>、<a href="#s18">S18</a></p>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 544" role="img" aria-labelledby="architecture-comparison-title architecture-comparison-desc" style="font-family:'Noto Sans CJK SC',system-ui,-apple-system,sans-serif"><title id="architecture-comparison-title">v0.9.4 与 v1.6.0 普通 CLI 的分层对照</title><desc id="architecture-comparison-desc">v0.9.4 的循环位于 ai 包；v1.6.0 由 AgentSession 管理会话，agent 包拥有循环，ai 专注协议接入与流式解析，pi-schema 承担统一校验。</desc><defs><marker id="architecture-comparison-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--brand, #1B365D)"/></marker></defs><rect width="960" height="544" rx="6" fill="var(--paper, #faf9f5)"/><path d="M232 164 V232" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#architecture-comparison-arrow)"/><path d="M232 318 V386" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#architecture-comparison-arrow)"/><path d="M728 164 V232" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#architecture-comparison-arrow)"/><path d="M728 318 V386" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#architecture-comparison-arrow)"/><rect x="64" y="78" width="336" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="232.0" y="112" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">编码应用</text><text x="232.0" y="149" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">旧版 main / TUI</text><rect x="64" y="232" width="336" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="232.0" y="266" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">Agent + Transport</text><text x="232.0" y="303" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">状态与传输抽象</text><rect x="64" y="386" width="336" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="232.0" y="420" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">ai：循环与模型接入</text><text x="232.0" y="457" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">工具循环位于 ai 包内</text><rect x="560" y="78" width="336" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="728.0" y="112" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">AgentSession / 资源 / 扩展</text><text x="728.0" y="149" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">树形会话、诊断去重与上下文投影</text><rect x="560" y="232" width="336" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="728.0" y="266" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">agent：Agent 与工具循环</text><text x="728.0" y="303" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">默认并行与通用嵌套契约</text><rect x="560" y="386" width="336" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="728.0" y="420" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">ai + pi-schema</text><text x="728.0" y="457" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">多提供商、增量解析、闭包校验</text><text x="64" y="42" font-size="16" fill="var(--muted, #5e5d57)">v0.9.4 架构分层</text><text x="560" y="42" font-size="16" fill="var(--muted, #5e5d57)">v1.6.0 普通 CLI 分层</text><text x="64" y="518" font-size="16" fill="var(--muted, #5e5d57)">Code Mode 挂在工具编排层；Durable、env、chord 属于独立运行链。</text></svg><figcaption>v0.9.4 与 v1.6.0 普通 CLI 的分层对照：循环迁入 agent 包，应用层演化出 AgentSession、扩展与 pi-schema 校验</figcaption></figure>
+<p>这张图把 v0.9.4 和 v1.6.0 普通 CLI 的主要职责并排对照。左侧循环挂在 <code>ai</code> 包里，由旧 transport 桥接；右侧循环收归 <code>agent</code> 包，<code>AgentSession</code> 管住会话和扩展生命周期，<code>ai</code> 专注多提供商协议和增量流式解析，<code>pi-schema</code> 承接统一参数校验。这些迁移是在十多个月里逐步完成的，并非某一次发布突然推倒重来。</p>
+<h1 id="chapter-2">第 2 章：v0.9.4 当年是怎么跑起来的</h1>
+<p>许多人回看早期命令行编码工具，会下意识以为它就是一个壳脚本包着几行 API 请求。打开 v0.9.4 的源码树，会发现它从第一版起就已经把模型接入、有状态 Agent、编码应用和终端渲染拆成了独立分层。</p>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 436" role="img" aria-labelledby="old-stack-title old-stack-desc" style="font-family:'Noto Sans CJK SC',system-ui,-apple-system,sans-serif"><title id="old-stack-title">v0.9.4 的职责分层</title><desc id="old-stack-desc">编码应用装配有状态 Agent 与 transport，ai 包内的循环调用模型和工具，SessionManager 保存线性日志。</desc><defs><marker id="old-stack-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--brand, #1B365D)"/></marker></defs><rect width="960" height="436" rx="6" fill="var(--paper, #faf9f5)"/><path d="M480 114 V154" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#old-stack-arrow)"/><path d="M480 240 V280" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#old-stack-arrow)"/><path d="M360 323 H280" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#old-stack-arrow)"/><path d="M600 323 H680" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#old-stack-arrow)"/><path d="M600 71 H680" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#old-stack-arrow)"/><rect x="360" y="28" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="62" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">编码应用</text><text x="480.0" y="99" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">coding-agent/main.ts</text><rect x="360" y="154" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="188" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">有状态 Agent</text><text x="480.0" y="225" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">agent/src/agent.ts</text><rect x="360" y="280" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="314" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">Transport → 工具循环</text><text x="480.0" y="351" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">loop 位于 ai 包</text><rect x="40" y="280" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="160.0" y="314" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">工具执行</text><text x="160.0" y="351" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">校验后顺序执行</text><rect x="680" y="280" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="800.0" y="314" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">模型提供商</text><text x="800.0" y="351" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">统一流式接口</text><rect x="680" y="28" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="800.0" y="62" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">SessionManager</text><text x="800.0" y="99" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">线性 JSONL / 复制分支</text><text x="40" y="410" font-size="16" fill="var(--muted, #5e5d57)">旧版已有参数校验、事件流和分支复制；尚无内置 Code Mode 扩展体系。</text></svg><figcaption>v0.9.4 的职责分层：编码应用经 Agent 与 transport 调用位于 ai 包的工具循环</figcaption></figure>
+<p>在 v0.9.4 里，核心工具循环写在 <code>packages/ai/src/agent/agent-loop.ts</code>，有状态 <code>Agent</code> 类位于 <code>packages/agent/src/agent.ts</code>。<code>Agent</code> 接收一个 <code>AgentTransport</code> 实例，执行时通过 <code>transport.run(...)</code> 拉取流式事件；<code>coding-agent</code> 负责把用户输入、会话文件和终端渲染装配到一起。<a href="#s3">S3</a>、<a href="#s4">S4</a></p>
+<h3>顺着一条简单请求走完旧循环</h3>
+<p>假如用户输入“读 package.json，告诉我包名”，v0.9.4 的处理链条非常直接：</p>
+<p><code>Agent</code> 把用户输入包装成应用消息，经消息转换器转成模型协议要求的格式后交给 transport。循环消费模型返回的流式块；一旦识别出 <code>read</code> 工具调用，就按名字查找工具定义、做参数校验、执行 <code>execute()</code>，再把产出封装成 <code>toolResult</code> 塞回消息列表，触发下一轮模型请求，直到模型不再发起工具调用。</p>
+<p>下面这段简化伪代码勾勒出当时循环的骨架：</p>
+<pre><code class="language-js">while (hasToolCalls || queuedMessages.length &gt; 0) {
+  injectQueuedMessages();
+  const assistant = await streamModel(context);
+  for (const call of assistant.toolCalls) {
+    const args = validate(call);
+    const result = await findTool(call.name).execute(call.id, args, signal);
+    context.messages.push(toToolResult(call, result));
+  }
+}
+</code></pre>
+<p>拆看这段骨架，有两个容易记混的历史事实。第一，工具参数校验在 v0.9.4 就已经接入主循环，后来引入 Code Mode 或 <code>pi-schema</code> 只是升级校验引擎和报错体验，工具调用从来没有裸奔过。第二，旧循环用带 <code>await</code> 的 <code>for...of</code> 按顺序逐个执行工具调用，直到后面的版本才改成同回合默认并行执行。<a href="#s4">S4</a>、<a href="#s6">S6</a></p>
+<h3>状态怎么摆，分支怎么存</h3>
+<p>当时 <code>Agent</code> 自己管着消息列表、当前模型、流式中间态、待处理调用 ID 和待注入队列。消息转换器把附件等应用侧结构翻译成 provider 认识的内容块；事件流则对外发射 <code>message_start</code>、<code>message_update</code>、<code>message_end</code> 以及工具和回合边界，让 UI 只需要订阅事件就能重画界面。</p>
+<p>持久化由旧版 <code>SessionManager</code> 负责，底层同样是 JSONL 文件，按行记录会话头、消息、模型切换和思考等级变化。区别在于当时每条记录还没有如今的 <code>id</code> 与 <code>parentId</code> 树形指针。调用 <code>createBranchedSession()</code> 时，程序会新建一个 JSONL 文件，把分支点之前的历史整段复制过去。早年已经支持从历史节点分叉继续对话，只是靠复制新文件实现，跟今天在单文件内部原地切换树形分支的形态不同。<a href="#s5">S5</a></p>
+<h3>当时缺少哪些组件</h3>
+<p>v0.9.4 里还看不到内置 Code Mode、MCP 客户端和工具按需发现，扩展点也散落在独立的 hooks 与自定义工具机制里。同期仓库里带着 <code>mom</code>、<code>web-ui</code>、<code>pods</code>、<code>proxy</code> 等配套目录，说明作者很早就想让核心库服务多种前端界面，只是那些早期目录后来大多经历了拆改或淘汰。</p>
+<p>顺手做个归位练习：Anthropic 流式事件归一化归模型接入层，终端局部重画归 TUI，判断是否继续请求下一轮归 Agent 循环。哪怕文件从 <code>packages/ai</code> 搬到了 <code>packages/agent</code>，这套分层边界至今依然成立。</p>
+<h1 id="chapter-3">第 3 章：v1.6.0 的包地图与三条边界</h1>
+<p>直接打开 v1.6.0 的 <code>packages/</code> 目录，里面摆着十二个包，旁边还有 <code>apps/</code> 目录。最容易犯的错，是看到目录挨在一起就把它们画进同一条 CLI 请求链路里。</p>
+<p>先看主干：普通 CLI 依然跑在有状态 <code>Agent</code> 上，核心循环已经独立并入 <code>packages/agent/src/agent-loop.ts</code>。<code>coding-agent</code> 提供 <code>AgentSession</code>、树形会话持久化、上下文投影、资源加载、扩展生命周期、模型运行时以及 TUI/JSON/RPC/SDK 四种接口。Code Mode 与 MCP 作为内置扩展挂在工具执行管线下面，没有替换 Agent 循环，也没有取代模型接入层。<a href="#s6">S6</a>、<a href="#s7">S7</a></p>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 524" role="img" aria-labelledby="current-stack-title current-stack-desc" style="font-family:'Noto Sans CJK SC',system-ui,-apple-system,sans-serif"><title id="current-stack-title">v1.6.0 普通 CLI 的运行时地图</title><desc id="current-stack-desc">交互入口进入 AgentSession，后者协同树形会话、Agent 循环和扩展工具，Code Mode 与 MCP 挂在工具编排层。</desc><defs><marker id="current-stack-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--brand, #1B365D)"/></marker></defs><rect width="960" height="524" rx="6" fill="var(--paper, #faf9f5)"/><path d="M480 110 V148" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#current-stack-arrow)"/><path d="M350 191 H286" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#current-stack-arrow)"/><path d="M610 191 H674" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#current-stack-arrow)"/><path d="M420 234 V248 Q420 256 412 256 H243 Q235 256 235 264 V276" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#current-stack-arrow)"/><path d="M540 234 V248 Q540 256 548 256 H717 Q725 256 725 264 V276" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#current-stack-arrow)"/><path d="M235 362 V404" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#current-stack-arrow)"/><path d="M725 362 V404" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#current-stack-arrow)"/><rect x="350" y="24" width="260" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="58" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">TUI / JSON / RPC</text><text x="480.0" y="95" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">或应用内 SDK</text><rect x="350" y="148" width="260" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="182" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">AgentSession</text><text x="480.0" y="219" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">上下文、队列、扩展生命周期</text><rect x="36" y="148" width="250" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="161.0" y="182" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">SessionManager</text><text x="161.0" y="219" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">活动分支、压缩、投影</text><rect x="674" y="148" width="250" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="799.0" y="182" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">资源与模型运行时</text><text x="799.0" y="219" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">设置、skills、providers</text><rect x="110" y="276" width="250" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="235.0" y="310" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">Agent 循环</text><text x="235.0" y="347" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">packages/agent</text><rect x="600" y="276" width="250" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="725.0" y="310" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">工具执行管线</text><text x="725.0" y="347" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">pi-schema 校验与扩展钩子</text><rect x="110" y="404" width="250" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="235.0" y="438" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">模型提供商</text><text x="235.0" y="475" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">packages/ai（含流式解析）</text><rect x="600" y="404" width="250" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="725.0" y="438" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">Code Mode / MCP</text><text x="725.0" y="475" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">内置扩展及独立沙箱库</text></svg><figcaption>v1.6.0 普通 CLI 的运行时地图：入口经 AgentSession 协调会话、循环、校验管线与扩展</figcaption></figure>
+<p>把 <code>packages/</code> 下十二个包的实际职责和与 CLI 的关系逐个对齐，就能彻底分清主干和旁支：</p>
+<table>
+<thead>
+<tr>
+<th>目录</th>
+<th>主要职责</th>
+<th>与普通 CLI 的关系</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ai</code></td>
+<td>多提供商协议、流式归一化、增量工具参数解析、缓存预热</td>
+<td>直接依赖，模型基础层</td>
+</tr>
+<tr>
+<td><code>agent</code></td>
+<td>有状态 Agent、模型与工具循环、队列、事件流</td>
+<td>直接依赖，核心循环</td>
+</tr>
+<tr>
+<td><code>coding-agent</code></td>
+<td>CLI、AgentSession、资源、扩展、树形会话、SDK、RPC</td>
+<td>产品与 harness 主体</td>
+</tr>
+<tr>
+<td><code>tui</code></td>
+<td>差分终端渲染、组件只读缓存、鼠标与覆盖层调度</td>
+<td>直接依赖，终端展示层</td>
+</tr>
+<tr>
+<td><code>codemode</code></td>
+<td>独立 QuickJS/WASM 沙箱、worker 桥与确定性协议</td>
+<td>直接依赖，供内置 Code Mode 扩展调用</td>
+</tr>
+<tr>
+<td><code>mcp</code></td>
+<td>独立 MCP 协议客户端（stdio 与 Streamable HTTP）</td>
+<td>直接依赖，供内置 MCP 扩展调用</td>
+</tr>
+<tr>
+<td><code>schema</code></td>
+<td>v1.5.0 新增零 <code>eval</code> JSON Schema 闭包校验与宽松转换库</td>
+<td>间接依赖，经 <code>ai</code> 与 <code>agent</code> 接入</td>
+</tr>
+<tr>
+<td><code>telemetry</code></td>
+<td>厂商无关的观测契约与类型</td>
+<td>间接依赖，由 <code>ai</code> 与 <code>durable</code> 使用</td>
+</tr>
+<tr>
+<td><code>durable</code></td>
+<td>实验性持久会话、任务调度、journal 重放运行时</td>
+<td>独立运行时，CLI 不依赖</td>
+</tr>
+<tr>
+<td><code>env</code></td>
+<td>Durable 配套的远程 ExecutionEnv 与 Rust daemon</td>
+<td>可选远程执行基础设施，CLI 不依赖</td>
+</tr>
+<tr>
+<td><code>chord</code></td>
+<td>类型化 runtime、文档状态与 RPC 基础设施</td>
+<td>Durable 与 <code>env</code> 使用，CLI 不依赖</td>
+</tr>
+<tr>
+<td><code>evals</code></td>
+<td>仓库内部评估工具集</td>
+<td>开发评估工具，不在用户请求链路上</td>
+</tr>
+</tbody></table>
+<p>上面这张表逐项核对过 v1.6.0 各包的 <code>package.json</code>。根 README 里的包介绍往往滞后于目录增删，查真实依赖边界时，始终应该以 <code>packages/coding-agent/package.json</code> 为准。<a href="#s8">S8</a>、<a href="#s35">S35</a></p>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 636" role="img" aria-labelledby="cli-package-dependencies-title cli-package-dependencies-desc" style="font-family:'Noto Sans CJK SC',system-ui,-apple-system,sans-serif"><title id="cli-package-dependencies-title">v1.6.0 普通 CLI 的内部包依赖</title><desc id="cli-package-dependencies-desc">coding-agent 直接依赖 agent-core、ai、tui、codemode、mcp；ai 与 agent-core 共享 pi-schema，ai 依赖 telemetry。</desc><defs><marker id="cli-package-dependencies-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--brand, #1B365D)"/></marker></defs><rect width="960" height="636" rx="6" fill="var(--paper, #faf9f5)"/><path d="M256 254 H298 Q306 254 306 246 V77 Q306 69 314 69 H370" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#cli-package-dependencies-arrow)"/><path d="M256 274 H314 Q322 274 322 266 V193 Q322 185 330 185 H370" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#cli-package-dependencies-arrow)"/><path d="M256 296 H370" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#cli-package-dependencies-arrow)"/><path d="M256 318 H322 Q330 318 330 326 V409 Q330 417 338 417 H370" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#cli-package-dependencies-arrow)"/><path d="M256 336 H306 Q314 336 314 344 V525 Q314 533 322 533 H370" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#cli-package-dependencies-arrow)"/><path d="M480 144 V110" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#cli-package-dependencies-arrow)"/><path d="M590 69 H700" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#cli-package-dependencies-arrow)"/><path d="M590 88 H640 Q648 88 648 96 V164 Q648 172 656 172 H700" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#cli-package-dependencies-arrow)"/><path d="M590 192 H700" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#cli-package-dependencies-arrow)"/><rect x="36" y="236" width="220" height="116" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="146.0" y="270" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">coding-agent</text><text x="146.0" y="337" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">普通 CLI / SDK</text><rect x="370" y="28" width="220" height="82" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="62" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">ai</text><text x="480.0" y="95" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">模型协议与流式解析</text><rect x="370" y="144" width="220" height="82" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="178" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">agent-core</text><text x="480.0" y="211" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">Agent 与工具循环</text><rect x="370" y="260" width="220" height="82" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="294" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">tui</text><text x="480.0" y="327" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">只读缓存终端渲染</text><rect x="370" y="376" width="220" height="82" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="410" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">codemode</text><text x="480.0" y="443" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">独立 QuickJS 沙箱</text><rect x="370" y="492" width="220" height="82" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="526" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">mcp</text><text x="480.0" y="559" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">独立 MCP 客户端</text><rect x="700" y="28" width="216" height="82" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="808.0" y="62" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">telemetry</text><text x="808.0" y="95" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">观测契约</text><rect x="700" y="144" width="216" height="82" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="808.0" y="178" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">pi-schema</text><text x="808.0" y="211" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">零 eval 闭包校验</text><text x="36" y="610" font-size="16" fill="var(--muted, #5e5d57)">实线表示 package.json 声明的直接内部依赖；coding-agent 不依赖 durable、env 或 chord。</text></svg><figcaption>v1.6.0 普通 CLI 的直接与传递内部依赖：coding-agent 只直接依赖五个内部包，pi-schema 与 telemetry 位于底层</figcaption></figure>
+<p>这张依赖图专门用来确认发布、排障和嵌入集成时哪些内部包必须保持版本同步。从图中一眼能看出两件关键事实：第一，v1.5.0 新引入的 <code>pi-schema</code> 进入了 <code>ai</code> 和 <code>agent-core</code> 底层，统一接管模型配置和工具参数校验；第二，<code>durable</code>、<code>env</code>、<code>chord</code> 完全在另一张依赖网里，普通 CLI 安装包不带它们。</p>
+<h3>贯穿后文的三条工程边界</h3>
+<p>记住几十个类名远不如钉牢三条边界，后面关于会话、沙箱、MCP 和 TUI 的设计取舍几乎都从这里长出来。</p>
+<p><strong>推理边界</strong>划在模型与常规代码之间。模型擅长决定目标、拆解策略和拼装调用，但遇到遍历几十个文件、做条件分支、抽提字段汇总这类确定性逻辑，交给 Code Mode 里的 JavaScript 去跑，可以省去把大量中间结果反复塞回模型的开销。</p>
+<p><strong>上下文边界</strong>由 harness 守住。磁盘上保存的原始 JSONL 历史、TUI 屏幕上画出的折叠卡片、脚本内部触发的嵌套工具调用记录，和下一轮发给 provider 的模型上下文，各自承担不同用途，绝不能当成同一份数组去改。</p>
+<p><strong>能力边界</strong>落在工具和操作系统这一侧。QuickJS 脚本里拿不到 Node 文件系统或网络 API，只能调用宿主注入的函数；可一旦宿主把 <code>bash</code> 暴露给脚本，命令就会继承 Pi 进程的真实系统权限。JS 沙箱挡住的是脚本直接碰宿主进程内存，真正的系统隔离还要靠容器、账户和凭据策略。</p>
+<h1 id="chapter-4">第 4 章：一次请求的完整生命周期</h1>
+<p>在长会话里排查为什么模型突然忘了三轮前的结论，或者为什么切回旧分支后磁盘文件还在，根源往往出在同一件事上：把磁盘历史、界面展示和发给模型的上下文混成了一团。</p>
+<p>把一条真实输入放进 v1.6.0 的主链里跟踪一遍，每一步的归属就清晰了：</p>
+<ol>
+<li>终端 TUI、SDK 或 RPC 收到用户输入。提示模板按需展开，扩展的输入钩子可以先拦截命令或改写内容。</li>
+<li><code>AgentSession</code> 接管本次运行准备：解析模型与思考等级、装配工具列表、检查自动压缩阈值、维护消息队列与扩展生命周期。</li>
+<li><code>SessionManager</code> 从当前叶子节点沿着 <code>parentId</code> 往上回溯，抽出活动分支，重建发给模型的投影上下文。</li>
+<li>harness 把系统提示、活动分支消息、工具声明和模型参数打包发往 provider。如果命中 Anthropic 消息线程（<code>compat.supportsMessageThreads</code>，v1.6.0 起对任何 <code>api.anthropic.com</code> 端点默认开启），请求可以只发新增消息，由服务端续接上一轮回复；一旦发生压缩或工具集变化，则自动回退到完整上下文请求。<a href="#s29">S29</a></li>
+<li>provider 推送流式事件。v1.5.0 起大型工具调用的 JSON 参数在这里经 <code>StreamingJsonParser</code> 增量解析，Agent 再把事件归一化为消息、工具与回合信号。</li>
+<li>若模型发出工具调用，进入 <code>pi-schema</code> 参数转换与校验、触发扩展 <code>tool_call</code> / <code>tool_result</code> 钩子、执行工具并落盘结果。</li>
+<li>只要还有未消费的工具结果、自动重试或排队消息，循环继续推进；全部清空后才进入最终收尾。</li>
+</ol>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 630" role="img" aria-labelledby="request-sequence-title request-sequence-desc" style="font-family:'Noto Sans CJK SC',system-ui,-apple-system,sans-serif"><title id="request-sequence-title">一次 Code Mode 请求时序</title><desc id="request-sequence-desc">模型请求脚本，脚本经宿主工具管线调用真实工具，结果先回给脚本筛选，再向模型返回摘要。</desc><defs><marker id="request-sequence-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--brand, #1B365D)"/></marker></defs><rect width="960" height="630" rx="6" fill="var(--paper, #faf9f5)"/><rect x="22" y="24" width="176" height="54" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="110" y="58" text-anchor="middle" font-size="18" font-weight="500" fill="var(--ink, #20201d)">模型</text><path d="M110 78 V604" stroke="var(--line, #c4bfb0)" stroke-dasharray="5 5" stroke-width="1.5" fill="none"/><rect x="267" y="24" width="176" height="54" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="355" y="58" text-anchor="middle" font-size="18" font-weight="500" fill="var(--ink, #20201d)">AgentSession</text><path d="M355 78 V604" stroke="var(--line, #c4bfb0)" stroke-dasharray="5 5" stroke-width="1.5" fill="none"/><rect x="517" y="24" width="176" height="54" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="605" y="58" text-anchor="middle" font-size="18" font-weight="500" fill="var(--ink, #20201d)">QuickJS 脚本</text><path d="M605 78 V604" stroke="var(--line, #c4bfb0)" stroke-dasharray="5 5" stroke-width="1.5" fill="none"/><rect x="762" y="24" width="176" height="54" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="850" y="58" text-anchor="middle" font-size="18" font-weight="500" fill="var(--ink, #20201d)">工具管线</text><path d="M850 78 V604" stroke="var(--line, #c4bfb0)" stroke-dasharray="5 5" stroke-width="1.5" fill="none"/><path d="M110 138 H355" stroke="var(--brand, #1B365D)" stroke-width="2" fill="none" marker-end="url(#request-sequence-arrow)"/><text x="232.5" y="127" text-anchor="middle" font-size="16" fill="var(--ink, #20201d)">请求 codemode</text><path d="M355 202 H605" stroke="var(--brand, #1B365D)" stroke-width="2" fill="none" marker-end="url(#request-sequence-arrow)"/><text x="480.0" y="191" text-anchor="middle" font-size="16" fill="var(--ink, #20201d)">启动 worker / VM</text><path d="M605 266 H850" stroke="var(--brand, #1B365D)" stroke-width="2" fill="none" marker-end="url(#request-sequence-arrow)"/><text x="727.5" y="255" text-anchor="middle" font-size="16" fill="var(--ink, #20201d)">tools.read()</text><path d="M850 330 H605" stroke="var(--brand, #1B365D)" stroke-width="2" stroke-dasharray="6 5" fill="none" marker-end="url(#request-sequence-arrow)"/><text x="727.5" y="319" text-anchor="middle" font-size="16" fill="var(--ink, #20201d)">原始工具结果</text><path d="M605 394 H355" stroke="var(--brand, #1B365D)" stroke-width="2" stroke-dasharray="6 5" fill="none" marker-end="url(#request-sequence-arrow)"/><text x="480.0" y="383" text-anchor="middle" font-size="16" fill="var(--ink, #20201d)">text(选定字段)</text><path d="M355 458 H110" stroke="var(--brand, #1B365D)" stroke-width="2" stroke-dasharray="6 5" fill="none" marker-end="url(#request-sequence-arrow)"/><text x="232.5" y="447" text-anchor="middle" font-size="16" fill="var(--ink, #20201d)">外层工具结果</text><path d="M110 538 H355" stroke="var(--brand, #1B365D)" stroke-width="2" fill="none" marker-end="url(#request-sequence-arrow)"/><text x="232.5" y="527" text-anchor="middle" font-size="16" fill="var(--ink, #20201d)">下一轮响应</text></svg><figcaption>一次 Code Mode 请求的跨层时序：嵌套工具结果先回到脚本，再由脚本筛选后交给模型</figcaption></figure>
+<p>时序图省去了逐块流式事件和重试分支，只留出最关键的一道墙：<strong>脚本发起的嵌套工具调用，原始结果先回到 QuickJS，不会直接灌进下一轮模型上下文。</strong><a href="#s7">S7</a>、<a href="#s9">S9</a>、<a href="#s10">S10</a></p>
+<h3>同回合并行调用和 Code Mode 解决的问题不同</h3>
+<p>当前 <code>packages/agent</code> 的工具管线已经支持同回合并行：收到一个包含多次工具调用的 assistant 回复后，harness 先按顺序跑完调用前钩子检查，再并发执行获准的工具；完成事件按实际完成先后通知 UI，而写回会话历史的 <code>toolResult</code> 消息严格维持 assistant 原回复里的调用顺序。需要独占共享状态的工具也可以声明顺序执行。<a href="#s6">S6</a></p>
+<p>也就是说，模型在同一轮里连续发出三次 <code>read</code>，不开 Code Mode 一样能并行。Code Mode 额外补上的能力，是在脚本里直接写依赖关系、条件分叉、异常处理和结构化过滤，把不需要模型阅读的原始载荷留在执行侧。</p>
+<h3>三份历史各干各的活</h3>
+<table>
+<thead>
+<tr>
+<th>视图</th>
+<th>记录或呈现的内容</th>
+<th>主要用途</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>原始会话树</td>
+<td>消息、分支链接、压缩摘要、上下文编辑、配置变更、自定义状态</td>
+<td>审计追溯、恢复、分叉、导出</td>
+</tr>
+<tr>
+<td>UI 与执行事件</td>
+<td>流式增量、折叠状态、嵌套工具进度、耗时与提示</td>
+<td>实时交互观察</td>
+</tr>
+<tr>
+<td>模型上下文投影</td>
+<td>活动分支经压缩边界、上下文编辑、消息转换后的最终请求载荷</td>
+<td>驱动下一轮模型推理</td>
+</tr>
+</tbody></table>
+<p>当前 JSONL 文件里的每条记录都靠 <code>id</code> 和 <code>parentId</code> 串成一棵树。<code>/tree</code> 切回老节点继续对话时，被放弃的分支留在原文件里不会丢。压缩只是往分支上追加一条摘要和保留边界，不会改写旧行；<code>context_edit</code> 可以在投影阶段隐藏或替换某条历史消息，磁盘原始记录照旧保留。<a href="#s11">S11</a></p>
+<p>顺带提一个 v1.5.2 补上的日常恢复痛点：项目文件夹改名或删掉以后再打开旧会话，交互模式以前只能硬着头皮在当前目录临时续跑，每次重启都要反复弹窗询问。v1.5.2 起，遇到原目录不存在时，<code>/resume</code>、<code>/import</code>、启动参数和扩展的 <code>ctx.switchSession()</code> 会同时给出 <code>Continue</code>、<code>Fork</code> 和 <code>Cancel</code> 三个选项。选 <code>Fork</code> 会把会话带新 ID 复制一份到当前目录，以后再恢复就不会反复追问。<a href="#s39">S39</a></p>
+<h3>自动压缩、摘要预算与截断恢复</h3>
+<p>自动压缩的触发条件很直白：</p>
+<pre><code class="language-text">contextTokens &gt; contextWindow - reserveTokens
+</code></pre>
+<p>Code Mode 负责在原始数据进入上下文之前先瘦身，压缩负责在对话拉长之后把早期历史压成摘要。两者上下游配合，互不替代。拿测试日志举例，工具自带的截断只认头尾行数，不知道你想看哪三条失败断言；脚本可以直接解析测试输出、只留失败堆栈。反过来，如果脚本一股脑把几万行原始日志全 <code>text()</code> 出去，上下文同样会迅速撑满。<a href="#s12">S12</a></p>
+<p>v1.4.0 修正过一个很隐蔽的预算耦合：<code>compaction.reserveTokens</code> 只负责决定何时触发压缩，不再用来折算摘要请求的输出上限。早期主摘要曾用 <code>floor(0.8 * reserveTokens)</code> 和模型上限取较小值，结果推理型模型光思考就用光了大半额度，正文摘要写到一半直接截断。如今摘要与分支总结都改用模型本身的输出上限，并在接近窗口上限时协同调整输入与输出空间。导出的 <code>generateSummary()</code> 和 <code>generateSummaryWithUsage()</code> 为兼容旧签名保留了 <code>reserveTokens</code> 形参位置，但内部已经忽略它；<code>/compact &lt;instructions&gt;</code> 附带的自定义指令也会透传给被切开的回合前缀摘要。<a href="#s12">S12</a>、<a href="#s28">S28</a></p>
+<p>另一条容易弄坏整场会话的边界在输出截断恢复上。如果模型输出撞到 token 上限留下一个残缺工具调用，投影层在丢弃残缺调用的同时，必须一并清掉与之对应的孤立 <code>toolResult</code>；否则后续发往 provider 的每一轮请求都会因为工具请求与结果不成对而报 400。v1.4.0 修通了这条协议一致性保护；v1.6.0 又补上了另一处场景：按 Esc 中断一批工具调用时，尚未开始执行的调用现在会收到明确的 <code>Operation aborted</code> 结果，不再悬空。<a href="#s2">S2</a></p>
+<h3>v1.5.1 的两处底盘改动：流式读写与空闲缓存预热</h3>
+<p>当项目里出现几十兆的日志或压缩包，早期 <code>read</code> 和 <code>grep</code> 很容易把进程内存打爆。v1.5.1 把这两把高频工具的 I/O 方式做了重构：<code>read</code> 改用流式读取，哪怕文件很大，指定 <code>offset</code> 和 <code>limit</code> 时也只把展示范围内的行留在内存里，自定义 <code>ReadOperations</code> 可通过新的可选 <code>createReadStream</code> 接入同一能力；<code>grep</code> 的上下文行改由 ripgrep 直接吐出，不再自己把每个命中文件整份读进内存，原来的 <code>GrepOperations.readFile</code> 回调由此废弃不再调用。<a href="#s2">S2</a></p>
+<p>同一版本把 <code>cacheWarming</code> 的默认策略从 <code>&quot;streaming&quot;</code> 调成了 <code>&quot;idle&quot;</code>。代码写在 <code>packages/ai/src/cache-warming.ts</code> 里，算盘打得很克制：单靠直觉定时发请求保活很容易倒贴钱，所以 Pi 在每次准备刷新缓存前，都会拿模型单价和当前提示规模算一笔账。<a href="#s37">S37</a></p>
+<pre><code class="language-text">expectedSavings = continuationProbability * missCost - warmCost
+</code></pre>
+<p>处于活跃流式阶段时延续概率按 <code>1</code> 算，最长保活 60 分钟（<code>CACHE_WARMING_MAX_AGE_MS</code>）；会话空闲后延续概率按上游经验常数 <code>0.15</code> 算，最长保活 30 分钟（<code>CACHE_WARMING_MAX_IDLE_AGE_MS</code>）。只有当预期节省不低于 <code>0.05</code> 美元（<code>CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS</code>）时，才会在缓存 TTL 到达 90%（且至少提前 10 秒）时发一次 <code>maxTokens: 1</code>、<code>maxRetries: 0</code>、<code>disableContinuation: true</code> 的静默刷新，并且不干扰 Anthropic 的消息线程状态。</p>
+<h3>区分 agent_end 与 agent_settled</h3>
+<p>写 SDK 或 RPC 集成时，最常见的状态机 bug 是监听到 <code>agent_end</code> 就把界面标成空闲或直接退出进程。<code>agent_end</code> 只说明底层 Agent 跑完了一轮，后面还可能紧接着自动压缩、错误重试或者排队中的 follow-up 消息。真正代表 Pi 停下来不再自动推进的事件是 <strong><code>agent_settled</code></strong>。另外，v1.6.0 给 <code>AgentSessionRuntime</code> 补上了 <code>takeUnreportedDiagnostics()</code>，方便宿主在启动以及 <code>/new</code>、<code>/resume</code>、<code>/fork</code> 切换会话后按条去重取出配置或扩展加载告警，不再静默吞掉问题，也不再把同一条告警在 TUI 里刷屏。<a href="#s9">S9</a>、<a href="#s40">S40</a></p>
+<p>顺手确认一条底线：用 <code>/tree</code> 切回十分钟前的节点，磁盘上已经修改过的文件不会自动倒回。会话树记录的是对话与状态演进，无法替代 Git 或文件系统快照。</p>
+<h1 id="chapter-5">第 5 章：Code Mode 到底改变了什么</h1>
+<p>很多时候，让 Agent 卡壳的障碍并不在模型智商，而在工具返回了太多噪音。读取十几个配置文件、跑完一套测试再挑出三条报错，如果每次都把几万字符原封不动送回模型，既慢又容易稀释注意力。</p>
+<p>Code Mode 的做法很直接：<strong>让模型写一小段调用工具的 JavaScript，把循环、判断、容错和字段筛选放在脚本里跑完，只把主动调用 <code>text()</code> 或 <code>image()</code> 吐出来的精选结果交还给模型。</strong><a href="#s10">S10</a></p>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 444" role="img" aria-labelledby="information-flow-title information-flow-desc" style="font-family:'Noto Sans CJK SC',system-ui,-apple-system,sans-serif"><title id="information-flow-title">把信息筛选移到执行侧</title><desc id="information-flow-desc">普通工具结果直接进入模型上下文；Code Mode 在执行侧完成组合与筛选，只交回选中输出。</desc><defs><marker id="information-flow-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--brand, #1B365D)"/></marker></defs><rect width="960" height="444" rx="6" fill="var(--paper, #faf9f5)"/><path d="M212 112 H270" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#information-flow-arrow)"/><path d="M452 112 H510" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#information-flow-arrow)"/><path d="M692 112 H750" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#information-flow-arrow)"/><path d="M180 332 H210" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#information-flow-arrow)"/><path d="M370 332 H400" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#information-flow-arrow)"/><path d="M560 332 H590" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#information-flow-arrow)"/><path d="M750 332 H780" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#information-flow-arrow)"/><rect x="30" y="74" width="182" height="76" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="121.0" y="118.0" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">模型选择工具</text><rect x="270" y="74" width="182" height="76" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="361.0" y="118.0" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">真实工具</text><rect x="510" y="74" width="182" height="76" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="601.0" y="118.0" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">原始结果</text><rect x="750" y="74" width="182" height="76" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="841.0" y="118.0" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">模型筛选</text><rect x="20" y="294" width="160" height="76" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="100.0" y="338.0" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">模型写脚本</text><rect x="210" y="294" width="160" height="76" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="290.0" y="338.0" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">脚本发调用</text><rect x="400" y="294" width="160" height="76" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="338.0" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">真实工具</text><rect x="590" y="294" width="160" height="76" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="670.0" y="338.0" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">脚本筛选</text><rect x="780" y="294" width="160" height="76" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="860.0" y="338.0" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">模型读摘要</text><text x="30" y="40" font-size="16" fill="var(--muted, #5e5d57)">普通调用：原始结果直接跨回模型，由模型自行筛选</text><text x="30" y="256" font-size="16" fill="var(--muted, #5e5d57)">Code Mode：原始数据留在执行侧，只有主动输出进入模型</text><text x="30" y="418" font-size="16" fill="var(--muted, #5e5d57)">两条路径都支持并行调用；差异集中在控制流与数据过滤发生的位置。</text></svg><figcaption>普通工具调用与 Code Mode 的信息流对比：Code Mode 将原始数据留在执行侧筛选</figcaption></figure>
+<p>从模型视角看，它只发起了一次外层 <code>codemode</code> 工具调用；脚本在执行侧可以按需触发十几次真实工具调用。底层的 <code>read</code>、<code>bash</code>、MCP 工具照常执行，没有被任何替身架空。</p>
+<h3>用一个具体任务看差异：抽查三个 package.json</h3>
+<p>需求很简单：读取仓库根目录、<code>packages/api</code> 和 <code>packages/web</code> 三个 <code>package.json</code>，只报告各自的包名以及 <code>scripts</code> 里有没有 <code>test</code>。</p>
+<p>用普通工具，模型可以连发三次 <code>read</code>，把三个完整 JSON 全部吞进上下文再摘字段；也可以拼一条 shell 命令用 <code>jq</code> 或 <code>node -e</code> 抽取。Code Mode 提供了另一条更结构化的路：</p>
+<pre><code class="language-js">const paths = [
+  &quot;package.json&quot;,
+  &quot;packages/api/package.json&quot;,
+  &quot;packages/web/package.json&quot;,
+];
+
+const rows = await Promise.all(paths.map(async (path) =&gt; {
+  const raw = await tools.read({ path });
+  const pkg = JSON.parse(raw);
+  return { path, name: pkg.name, hasTest: Boolean(pkg.scripts?.test) };
+}));
+text(rows);
+</code></pre>
+<p>这段脚本假设三个文件都没有触发工具截断且为合法 JSON。注意 <code>tools.read</code> 读文本时直接返回字符串，别错写成 <code>raw.output</code>。要是目标文件大到被 <code>read</code> 截断，半截 JSON 会让 <code>JSON.parse</code> 报错；遇到超大文件时，要么换专门的结构化查询工具，要么用受控 shell 抽出所需片段再交给脚本。</p>
+<h3>把容错和控制流写进同一段代码</h3>
+<p>上面用 <code>Promise.all()</code> 有个隐患：只要其中一个路径不存在，整个表达式立刻 reject，连另外两个成功读出来的结果也会丢掉。并行读取多个相互独立的来源时，改用 <code>Promise.allSettled()</code> 稳得多：</p>
+<pre><code class="language-js">const paths = [&quot;package.json&quot;, &quot;missing/package.json&quot;];
+const results = await Promise.allSettled(
+  paths.map(async (path) =&gt; JSON.parse(await tools.read({ path })))
+);
+text(results.map((r, i) =&gt; r.status === &quot;fulfilled&quot;
+  ? { path: paths[i], name: r.value.name }
+  : { path: paths[i], error: String(r.reason) }
+));
+</code></pre>
+<p>拿到每项的 <code>fulfilled</code> 或 <code>rejected</code> 状态后，脚本自己决定如何汇总回报。放进同一个并发数组的调用彼此之间不能有先后依赖；如果第二步要读取第一步刚写出的文件，就老老实实按顺序 <code>await</code>。</p>
+<h3>算一笔直观的字符账</h3>
+<p>做个示意算术（纯数据量推导，非线上性能测试）：假设有 N 次独立调用，单次原始结果 R 字符，经脚本挑完后每项只留 S 字符。</p>
+<pre><code class="language-text">原样跨回模型：约 N * R 字符
+脚本筛选输出：约 N * S 字符 + 脚本与外层结果包装
+</code></pre>
+<p>代入 N = 12、R = 20,000、S = 300，数据载荷从约 240,000 字符降到约 3,600 字符。字符数不等同于 token 数，也不直接等于账单费用，实际开销还取决于分词器、工具定义长度和缓存命中率。但这笔账清楚标出了收益来源：省下来的恰恰是那些本就不需要模型逐字阅读的中间噪音。</p>
+<h3>什么时候反而别套 Code Mode</h3>
+<p>只读一个五十行的小文件，直接 <code>read</code> 干脆利落；跑一趟全量单元测试，直接 <code>bash</code> 更直观；做耗时很长的密集计算，把任务塞进 QuickJS 解释器反而拖慢节奏。Code Mode 是一层按需启用的可编程数据过滤层，别为了用它把一行能说完的调用强行包成脚本。</p>
+<aside class="playground" aria-labelledby="demo-title">
+<h3 id="demo-title">动手调一调：多少信息需要跨回模型？</h3>
+<p>拖动调用次数和单次原始结果字符数，直观对比筛选前后的载荷体积。这里只算字符量，不折算 token、账单费用或线上延迟。</p>
+<label for="call-count">独立调用数量：<output id="count-label">12</output><input id="call-count" type="range" min="1" max="60" value="12" /></label>
+<label for="raw-size">每项原始结果字符：<output id="raw-label">20,000</output><input id="raw-size" type="range" min="1000" max="50000" step="1000" value="20000" /></label>
+<p class="readout" id="demo-result" aria-live="polite">240,000 字符 → 3,600 字符</p>
+<p class="small">假设脚本筛选后每项只输出 300 字符，忽略脚本本身与外层结果包装。底层工具可能已先做过截断，此处仅为示意算术。</p>
+</aside><h1 id="chapter-6">第 6 章：拆开沙箱，顺着源码追一次调用</h1>
+<p>脚本跑在沙箱里听起来很让人安心，可一旦线上出了权限越界或内存打爆，光靠这几个字根本没法排障。必须看清楚脚本到底运行在哪一层，工具校验和扩展钩子又卡在哪个节点。</p>
+<p>普通 CLI 的 Code Mode 拆成两层：<code>packages/codemode</code> 是零 Pi 内部依赖的独立 QuickJS/WASM 沙箱库；<code>packages/coding-agent/src/extensions/codemode</code> 负责把它接到 Pi 的工具管线、会话存储、TUI 卡片和模型运行时上。<a href="#s13">S13</a></p>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" role="img" aria-labelledby="sandbox-boundary-title sandbox-boundary-desc" style="font-family:'Noto Sans CJK SC',system-ui,-apple-system,sans-serif"><title id="sandbox-boundary-title">脚本如何跨过宿主桥</title><desc id="sandbox-boundary-desc">脚本在 worker 的 QuickJS/WASM 中运行，工具调用经消息桥回到主线程，再走参数校验与扩展钩子。</desc><defs><marker id="sandbox-boundary-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--brand, #1B365D)"/></marker></defs><rect width="960" height="470" rx="6" fill="var(--paper, #faf9f5)"/><rect x="36" y="40" width="300" height="376" rx="8" fill="var(--paper-2, #f4f1e8)" fill-opacity="0.45" stroke="var(--line, #c4bfb0)" stroke-dasharray="6 5" stroke-width="1.5"/><text x="52" y="66" font-size="16" font-weight="500" fill="var(--muted, #5e5d57)">Pi 主线程</text><rect x="368" y="40" width="566" height="376" rx="8" fill="var(--paper-2, #f4f1e8)" fill-opacity="0.45" stroke="var(--line, #c4bfb0)" stroke-dasharray="6 5" stroke-width="1.5"/><text x="384" y="66" font-size="16" font-weight="500" fill="var(--muted, #5e5d57)">worker 与独立 VM</text><path d="M672 145 H608" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#sandbox-boundary-arrow)"/><path d="M392 145 H308" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#sandbox-boundary-arrow)"/><path d="M186 188 V296" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#sandbox-boundary-arrow)"/><path d="M794 188 V296" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#sandbox-boundary-arrow)"/><rect x="64" y="102" width="244" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="186.0" y="136" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">工具适配器</text><text x="186.0" y="173" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">ctx.executeTool</text><rect x="64" y="296" width="244" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="186.0" y="330" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">校验与扩展钩子</text><text x="186.0" y="367" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">pi-schema 与真实工具</text><rect x="392" y="102" width="216" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="500.0" y="136" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">worker 消息桥</text><text x="500.0" y="173" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">JSON 请求与结果</text><rect x="672" y="102" width="244" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="794.0" y="136" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">QuickJS / WASM</text><text x="794.0" y="173" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">脚本、prelude、受限全局</text><rect x="672" y="296" width="244" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="794.0" y="330" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">脚本输出</text><text x="794.0" y="367" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">text / image / return</text><text x="40" y="444" font-size="16" fill="var(--muted, #5e5d57)">VM 没有文件系统与网络权限，但注入的 bash 依然继承宿主进程权限。</text></svg><figcaption>主线程、worker、WebAssembly 与 QuickJS 的调用边界：嵌套工具调用经消息桥返回主线程走完整管线</figcaption></figure>
+<h3>从源码一路追通 tools.read()</h3>
+<p>在 <code>packages/coding-agent/src/extensions/codemode</code> 和 <code>packages/codemode</code> 里顺着代码走一遍，一次 <code>tools.read(...)</code> 经过九个站点：</p>
+<ol>
+<li><code>tool.ts</code> 定义 <code>codemode</code> 工具的参数结构、模型可见提示和 <code>reachesTools</code> 静态分析。</li>
+<li><code>execute.ts</code> 读取当前会话里允许被脚本调用的工具列表 <code>ctx.tools</code>，逐个包成沙箱能力适配器。</li>
+<li>通过 worker 准入池拿到名额后，创建 <code>CodemodeSandbox</code>，配置 QuickJS WASM、worker 入口、256 MiB 堆上限和剩余 deadline。</li>
+<li><code>sandbox.execute()</code> 拉起 worker thread，在独立 WASM 实例里初始化新的 QuickJS VM。</li>
+<li>VM 启动时加载 prelude，把 <code>tools</code>、<code>text</code>、<code>image</code>、<code>console</code>、<code>store</code> / <code>load</code> 等受限接口挂到全局，底层通信桥藏进闭包，外部脚本摸不到。</li>
+<li>脚本执行 <code>await tools.read(...)</code>，请求序列化为 JSON，经 worker 消息桥发回 Pi 主线程。</li>
+<li>主线程调用 <strong><code>ctx.executeTool()</code></strong>，完整经过 <code>pi-schema</code> 参数转换校验和所有扩展注册的 <code>tool_call</code> / <code>tool_result</code> 钩子。</li>
+<li>工具执行完，结果按契约转换成脚本值传回 VM；脚本筛选并输出。</li>
+<li><code>execute.ts</code> 触发沙箱关闭、在脚本成功时提交 <code>codemode-store</code> 状态、按预算截断过长输出、落盘临时图片，返回外层工具结果。</li>
+</ol>
+<p>打开 <code>packages/coding-agent/src/extensions/codemode/execute.ts</code>，决定安全策略能否统一落地的就是这一行核心调用：</p>
+<pre><code class="language-ts">const outcome = await ctx.executeTool(tool.name, args, { signal: callSignal });
+</code></pre>
+<p>正因为脚本里的工具调用必须绕回 <code>ctx.executeTool()</code>，扩展在工具边界上写的命令白名单、目录保护或审计日志才能照常拦住嵌套调用。不过有一点必须提前搞清楚：Pi 默认<strong>没有内置逐次弹窗确认的权限审批系统</strong>，这里保证的是自定义扩展钩子不会被脚本绕过，而非开箱自带强制审批。<a href="#s14">S14</a>、<a href="#s15">S15</a>、<a href="#s25">S25</a></p>
+<h3>v1.5.0 换装 pi-schema：统一 JSON Schema 校验</h3>
+<p>在 v1.5.0 之前，TypeBox 工具和普通 JSON Schema 工具（尤其是 MCP 服务器导出的工具）在参数宽容度和报错文案上存在温差。v1.5.0 新增了独立包 <strong><code>@earendil-works/pi-schema</code></strong>（<code>packages/schema</code>），把 JSON Schema Draft 2020-12 与 Draft 7 编译成纯 JavaScript 闭包，全程不使用 <code>eval</code> 或 <code>new Function</code>，因此能在严格 CSP 与 Cloudflare Workers 环境下运行。<a href="#s35">S35</a></p>
+<p><code>packages/ai/src/utils/validation.ts</code> 现在统一走 <code>pi-schema</code> 做参数转换与校验。不管是内置工具、TypeBox 扩展工具还是 MCP 原始 JSON Schema 工具，校验前都会经过同一套宽松转换：把数字字符串 <code>&quot;42&quot;</code> 转成 <code>42</code>，把 <code>&quot;true&quot;</code> 转成 <code>true</code>，把单个标量包成单元素数组，并丢弃可选属性上的 <code>null</code>。校验失败回传给模型的报错也统一成精简的点号路径格式，比如 <code>- path: missing</code> 或 <code>- limit: expected number, got string</code>。<a href="#s15">S15</a></p>
+<p>这套切换带来一个明确的迁移注意点：超出 JSON Schema 表达范围的 TypeBox 私有特性，例如 <code>Type.Refine()</code>、<code>Type.Codec()</code> 以及通过 <code>Format.Set()</code> 注册的自定义格式，不再自动作用于工具参数校验，需要移进工具的 <code>execute()</code> 里自行检查。v1.5.1 随后补齐了 <code>Type.BigInt()</code> 与 <code>Type.Undefined()</code> 的转换兼容，而 <code>Type.Void()</code> 依旧拒绝任何 JSON 参数。<a href="#s2">S2</a></p>
+<h3>为什么舍弃 Node 的 eval 而绕道 QuickJS/WASM</h3>
+<p>脚本在 QuickJS/WASM 里完全看不到 <code>process</code>、<code>require</code>、<code>fs</code>、<code>fetch</code> 和 <code>setTimeout</code>。就算模型在脚本里写 <code>eval</code> 或 <code>new Function</code>，也只能在同一个受限 VM 里生成代码，凭空变不出宿主进程的任何句柄。再加上独立的 worker thread，一段同步死循环最多卡死当前 worker，不会把 Pi 主线程的终端响应和取消快捷键拖死。</p>
+<p>把每一层的限额对号入座，排查报错时就不会找错地方：</p>
+<table>
+<thead>
+<tr>
+<th>层次</th>
+<th>负责的限制或约束</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>脚本首行指令</td>
+<td>可选 <code>// @options:</code> 必须写在第一行，放错位置或含非法字段会直接报错</td>
+</tr>
+<tr>
+<td>QuickJS VM</td>
+<td>CLI 默认单脚本 256 MiB 堆内存上限，超限即分配失败</td>
+</tr>
+<tr>
+<td>宿主与 worker</td>
+<td>总 deadline、取消信号、worker 存活数量上限与 FIFO 排队等待</td>
+</tr>
+<tr>
+<td>输出收集器</td>
+<td>16 Mi 字符总量及 100,000 条输出项硬上限</td>
+</tr>
+<tr>
+<td>模型结果格式化</td>
+<td>外层默认约 10,000 输出 token 预算，超长保留头尾并把全文存到临时文件</td>
+</tr>
+<tr>
+<td>底层真实工具</td>
+<td>自身参数校验、外部进程生命周期、输出截断与命令超时</td>
+</tr>
+<tr>
+<td>操作系统或容器</td>
+<td>文件系统、进程、网络与凭据的真正隔离边界</td>
+</tr>
+</tbody></table>
+<p>这些数字各自守着不同环节，切忌混用。256 MiB 是 CLI 集成定的值，Cloudflare 远程沙箱的默认 VM 内存则是 32 MiB；外层 10,000 token 输出预算管的是发回模型的体积，跟 VM 里能建多大的对象无关。<a href="#s10">S10</a>、<a href="#s13">S13</a></p>
+<h3>别把 JS 沙箱当成系统权限沙箱</h3>
+<pre><code class="language-js">await tools.bash({ command: &quot;rm -rf ./important-dir&quot; });
+</code></pre>
+<p>只要 <code>bash</code> 被注入进了 <code>tools</code>，上面这行代码完全合法，真正执行删除的是宿主进程里的 shell。QuickJS 碰不到本地文件系统，不代表经它转发出去的 <code>bash</code> 调用也碰不到。需要强隔离的环境，必须把 Pi 或工具执行端放进挂载受限、网络可控、凭据隔离的容器或虚拟机里。顺便留意，v1.5.0 已经删掉了仓库里早年的原生 OS <code>sandbox/</code> 扩展例子，官方现在推荐参考 <code>gondolin/</code> 示例或 <code>docs/containerization.md</code> 做容器化隔离。<a href="#s2">S2</a>、<a href="#s25">S25</a></p>
+<p>想顺着源码亲手走一遍的读者，推荐按这条顺序打开文件：<code>tool.ts</code> → <code>execute.ts</code> → <code>codemode/src/runtime/host.ts</code> → <code>worker.ts</code> → <code>vm.ts</code> → <code>prelude-source.ts</code>。先跟通一次普通调用，再去看声明渲染和模型辅助接口会轻松很多。</p>
+<h1 id="chapter-7">第 7 章：工具太多时，如何按需发现而不塞满提示</h1>
+<p>接入三五个 MCP 服务以后，注册表里很容易冒出一两百个工具。如果照传统做法把全部工具名、说明和参数 schema 一次性塞进每次模型请求，提示词体积会立刻膨胀，模型选工具的准确率下降，工具列表只要微调还会连带击穿 prompt 缓存。</p>
+<p>Pi 把工具注册、向模型声明和允许脚本调用拆成了三个独立开关。一个工具可以已经注册、可以供脚本调用，却完全不写进模型的工具声明列表；也可以等模型主动搜索后再按需声明。<strong>工具在提示词里不可见，不等于它不可用，也不等于权限被收回。</strong><a href="#s16">S16</a>、<a href="#s17">S17</a></p>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 492" role="img" aria-labelledby="discovery-title discovery-desc" style="font-family:'Noto Sans CJK SC',system-ui,-apple-system,sans-serif"><title id="discovery-title">工具发现的三条路径</title><desc id="discovery-desc">已注册工具可直接声明给模型、经脚本发现调用，或通过 tool_search 按需声明；hidden 工具不可达。</desc><defs><marker id="discovery-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--brand, #1B365D)"/></marker></defs><rect width="960" height="492" rx="6" fill="var(--paper, #faf9f5)"/><path d="M420 114 V138 Q420 146 412 146 H164 Q156 146 156 154 V188" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#discovery-arrow)"/><path d="M480 114 V188" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#discovery-arrow)"/><path d="M540 114 V138 Q540 146 548 146 H796 Q804 146 804 154 V188" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#discovery-arrow)"/><path d="M156 274 V344" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#discovery-arrow)"/><path d="M480 274 V344" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#discovery-arrow)"/><path d="M804 274 V344" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#discovery-arrow)"/><rect x="340" y="28" width="280" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="62" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">工具注册与 exposure</text><text x="480.0" y="99" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">按策略控制可见性与调用面</text><rect x="36" y="188" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="156.0" y="222" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">direct</text><text x="156.0" y="259" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">默认向模型声明</text><rect x="348" y="188" width="264" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="222" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">codemode</text><text x="480.0" y="259" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">脚本发现后调用</text><rect x="684" y="188" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="804.0" y="222" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">deferred</text><text x="804.0" y="259" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">按需加载声明</text><rect x="36" y="344" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="156.0" y="378" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">普通工具调用</text><text x="156.0" y="415" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">直接进入模型工具表</text><rect x="348" y="344" width="264" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="378" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">searchTools / describe</text><text x="480.0" y="415" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">结果先返回脚本</text><rect x="684" y="344" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="804.0" y="378" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">tool_search</text><text x="804.0" y="415" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">加载后直接调用</text><text x="40" y="468" font-size="16" fill="var(--muted, #5e5d57)">MCP 的 codemode 与 deferred 均可被脚本调用；hidden 在两条间接路径中同样不可达。</text></svg><figcaption>直接声明、脚本发现与按需加载三条工具路径：exposure 控制模型可见面与脚本调用面</figcaption></figure>
+<h3>MCP 的四种 exposure 策略</h3>
+<table>
+<thead>
+<tr>
+<th>MCP exposure</th>
+<th>默认向模型声明？</th>
+<th>脚本可调用？</th>
+<th>典型适用场景</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>direct</code></td>
+<td>是，受当前活动工具集约束</td>
+<td>是</td>
+<td>极少数高频核心工具</td>
+</tr>
+<tr>
+<td><code>codemode</code></td>
+<td>否，默认也不展开进 Code Mode 说明</td>
+<td>是</td>
+<td>大多数 MCP 服务，先发现再组合调用</td>
+</tr>
+<tr>
+<td><code>deferred</code></td>
+<td>否，由 <code>tool_search</code> 加载后声明</td>
+<td>是</td>
+<td>希望发现后按普通工具直接调用</td>
+</tr>
+<tr>
+<td><code>hidden</code></td>
+<td>否</td>
+<td>否</td>
+<td>保留配置条目但使其完全不可达</td>
+</tr>
+</tbody></table>
+<p>MCP 工具默认走 <code>codemode</code>。普通扩展工具还多一种 <code>model-only</code> 策略，适合像 <code>codemode</code> 自身或交互问答这类只给模型直接调用、禁止其他工具嵌套调用的编排器。别把 MCP 的 exposure 配置和底层扩展工具属性硬揉成一张表：MCP 扩展还叠加了命名空间前缀、延迟连接和全局过滤，最终可达性要看禁用清单、工具筛选与活动集合的交集。<a href="#s15">S15</a>、<a href="#s16">S16</a></p>
+<h3>脚本里的四个发现入口</h3>
+<pre><code class="language-js">const hits = await searchTools(&quot;search documentation&quot;, { limit: 3 });
+text(hits);
+</code></pre>
+<p>脚本侧提供四个分工明确的查询入口：<code>ALL_TOOLS</code> 给出当前可调用目录的名称与简述；<code>searchTools(query, options)</code> 做相关性排序召回候选；<code>describeTool(name)</code> 返回单个工具的完整说明与 TypeScript 声明；<code>describeNamespace(name)</code> 读取某个命名空间的服务指令和工具列表。</p>
+<p>三个查询 helper 都是异步函数，调用时必须带 <code>await</code>。拿到候选后要先调用 <code>describeTool()</code> 核对参数字段，别凭名字盲猜参数直接调用。<a href="#s10">S10</a></p>
+<pre><code class="language-js">const hits = await searchTools(&quot;read documentation page&quot;, { limit: 3 });
+if (hits.length === 0) return &quot;没有找到候选工具&quot;;
+text(await describeTool(hits[0].name));
+</code></pre>
+<p>发现结果交回给模型后，下一轮模型再据此写出精确的参数调用。把探索接口和执行操作分成两轮，比硬塞进一段赌运气的长脚本稳得多。</p>
+<p>v1.5.0 到 v1.6.0 连续修通了工具发现里的几处常见暗礁：第一，旧版分词器只认 ASCII 字母和数字，中文、日文、泰文查询几乎搜不到结果；现在 <code>tool_search</code> 和 <code>searchTools()</code> 支持多语种与无空格中文切词（例如直接搜 <code>搜索记录</code>），也做了 Unicode 规范化匹配。第二，排序规则改成了工具名命中权重远高于描述词出现次数，且命中更多查询词的条目排在前面，避免搜 <code>peekaboo app</code> 时真正叫 <code>mcp__peekaboo__app</code> 的工具排到十几名开外。第三，v1.5.1 起索引器会沿着本地 <code>$ref</code> 展开 <code>$defs</code> 里的字段名和描述（带循环引用防护，遇到非法百分号转义降级为 <code>unknown</code> 而不让整个脚本崩掉）。第四，v1.6.0 修复了某个扩展在 <code>session_start</code> 里关闭自家工具时，顺带把 <code>tool_search</code> 之前动态加载进来的 MCP 工具在恢复或 <code>/reload</code> 后弄丢的问题。<a href="#s2">S2</a></p>
+<h3>codemode.mode 的 on 与 only</h3>
+<p>默认配置是 <code>on</code>：已声明的工具保持直接可见，同时附带脚本编排提示。切到 <code>only</code> 后，底层工具从模型直接声明里隐藏，调用入口收拢到 <code>codemode</code>；但脚本依然能调用它们，隐藏声明只影响提示词呈现与编排方式，不会带来额外的操作系统隔离。</p>
+<pre><code class="language-json">{
+  &quot;defaultTools&quot;: [&quot;+codemode&quot;],
+  &quot;codemode&quot;: { &quot;mode&quot;: &quot;on&quot;, &quot;inlineBudget&quot;: 3000 }
+}
+</code></pre>
+<p><code>inlineBudget</code> 按大约每四个字符折算一个 token 的方式估算内联声明预算，超出预算的工具交由发现接口按需查找。默认暴露为 <code>codemode</code> 的 MCP 工具本就不会逐个铺进说明里。v1.5.0 还缩减了复杂输出类型的内联声明：对象联合类型改由字段与鉴别器摘要展示，更长的多行类型则引导脚本调用 <code>describeTool()</code> 查看完整声明。<a href="#s2">S2</a>、<a href="#s17">S17</a></p>
+<h3>MCP 为什么不拖慢每次启动</h3>
+<p>自 v0.99.2 起，非 <code>direct</code> 的 MCP 服务器在后台异步建连，不卡住首个 prompt。具体等到什么时候才等待连接就绪，靠编排工具声明的 <code>reachesTools(input)</code> 契约决定：脚本里点名调用了 <code>tools.mcp__docs__search</code>，MCP 扩展只等 <code>docs</code> 这一个服务连好；如果脚本调用了 <code>searchTools()</code> 或访问 <code>ALL_TOOLS</code>，说明可能覆盖全目录，才等待全部延迟服务器就绪。v1.2.0 借由 <code>reachesTools</code> 把 MCP 和内置 Code Mode 彻底解耦，替换自定义编排器时只需实现同一契约即可联动延迟连接。<a href="#s2">S2</a>、<a href="#s15">S15</a>、<a href="#s16">S16</a></p>
+<p>在连接与传输稳定性上，v1.5.0 与 v1.5.1 也有几项务实加固：MCP OAuth 登录默认改用 <code>oauth.clientRegistration: &quot;auto&quot;</code>，优先走 Client ID Metadata Document，服务端不支持再回退到动态客户端注册，并拒绝非 <code>http:</code>/<code>https:</code> 协议的授权地址；stdio 传输修复了大消息分片到达时反复拷贝扫描的卡顿，POSIX 退出时能清理掉孤儿守护子进程；Streamable HTTP 与 SSE 则补齐了消息体积上限，超过上限或错误响应超过 8 KiB 会立即取消传输，不再把整份异常响应读进内存。<a href="#s2">S2</a></p>
+<h3>一条容易误判权限的 CLI 参数</h3>
+<pre><code class="language-sh">pi --tools read,codemode
+</code></pre>
+<p>在当前版本里，上面这条命令<strong>不会顺手删掉 MCP 工具</strong>，脚本里依然能调到已配置的 MCP 服务。如果要彻底屏蔽 MCP，必须显式加上 <code>--no-mcp</code>；要按名称筛选 MCP 用 <code>mcp__</code> 模式，排除特定工具用 <code>--exclude-tools</code>。千万别单看 <code>--tools</code> 白名单就以为做完了权限收口。<a href="#s16">S16</a>、<a href="#s19">S19</a></p>
+<h1 id="chapter-8">第 8 章：返回值、失败处理、并发与状态边界</h1>
+<p>写 Code Mode 脚本时，语法错误很少见，真正让人半夜翻车的几乎全出在契约误判上：以为每个工具都返回字符串，以为命令失败一定会 <code>throw</code>，或者以为脚本报错会自动把前面写坏的文件回滚回去。</p>
+<h3>三类高频工具的返回形态</h3>
+<table>
+<thead>
+<tr>
+<th>工具类别</th>
+<th>脚本实际拿到的返回值</th>
+<th>必须主动核对的字段</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>read</code> 读文本</td>
+<td>字符串（读图片时为图片块对象）</td>
+<td>内容是否被截断、能否安全按预期格式解析</td>
+</tr>
+<tr>
+<td><code>bash</code></td>
+<td><code>{ output, exit_code, truncated, full_output_path?, ... }</code></td>
+<td><code>exit_code</code>，Promise 正常 resolve 也可能命令执行失败</td>
+</tr>
+<tr>
+<td>MCP 工具</td>
+<td>完整 <code>CallToolResult</code>（含 <code>content</code>、<code>structuredContent</code>、<code>isError</code>）</td>
+<td>先看 <code>isError</code>，再读结构化字段，别只取第一条文本就判成功</td>
+</tr>
+</tbody></table>
+<p>声明了 output schema 的工具会直接把结构化对象交给脚本；参数校验失败、扩展钩子拦截或内部异常才会 reject Promise。MCP 工具保留了协议原样对象，因此必须显式检查 <code>isError</code>。一切以 <code>describeTool()</code> 返回的声明为准。<a href="#s10">S10</a>、<a href="#s14">S14</a>、<a href="#s16">S16</a></p>
+<pre><code class="language-js">const result = await tools.bash({ command: &quot;npm test&quot; });
+if (result.exit_code !== 0) {
+  text({ passed: false, tail: result.output.slice(-4000) });
+} else {
+  text({ passed: true });
+}
+</code></pre>
+<p>调用 MCP 工具时的判错套路如下（工具名与参数仅作契约示意，使用前需先经发现接口确认）：</p>
+<pre><code class="language-js">// 伪代码：工具名需先通过 searchTools / describeTool 核实
+const result = await tools.mcp__docs__search({ query: &quot;session&quot; });
+if (result.isError) throw new Error(JSON.stringify(result.content));
+text(result.structuredContent ?? result.content);
+</code></pre>
+<p>顺便记住扩展侧调用外部命令的 <code>pi.exec()</code> 在 v1.5.0 和 v1.6.0 的变化：它新增了 <code>maxBuffer</code> 选项（默认上限为 256 MiB 与运行时字符串上限中的较小者，超限会终止进程并把 <code>truncated</code> 标为 <code>true</code>），超时或取消发 <code>SIGTERM</code> 后若 5 秒内进程仍不退出会补发 <code>SIGKILL</code>，而且从 v1.6.0 起，被信号杀死的命令不再误报退出码 <code>0</code>，而是照 shell 惯例返回 <code>128 + 信号编号</code>（例如 <code>SIGTERM</code> 为 <code>143</code>，<code>SIGKILL</code> 为 <code>137</code>）。<a href="#s2">S2</a></p>
+<h3>两层成功状态要分开判</h3>
+<p><code>Promise.allSettled()</code> 里某一项拿到 <code>status === &quot;fulfilled&quot;</code>，只代表跨桥调用正常返回，既不代表 shell 退出码为零，也不代表远端业务执行成功。独立沙箱的 <code>sandbox.execute()</code> 遇到脚本内部抛错时，同样是正常返回 <code>{ ok: false, error }</code> 而不是直接 reject。把传输完成、命令退出码和业务成功拆成三道检查，脚本才不容易静默吞错。</p>
+<h3>await 直接决定在途调用的生死</h3>
+<pre><code class="language-js">// 错误写法：脚本立刻返回，尚未完成的 read 会被取消
+tools.read({ path: &quot;package.json&quot; });
+return &quot;完成&quot;;
+</code></pre>
+<pre><code class="language-js">// 正确写法：等依赖调用落袋再输出
+const source = await tools.read({ path: &quot;package.json&quot; });
+text(JSON.parse(source).name);
+</code></pre>
+<p>脚本一旦结束，所有还没跑完的在途工具调用都会收到取消信号；而已经执行完的外部写操作无法撤回。<code>Promise.all()</code> 只要有一项提前 reject，同样会带着外层脚本提前终止并取消同批其他调用。互不依赖的只读查询优先用 <code>Promise.allSettled()</code>，有读写因果的操作按顺序串行执行。</p>
+<h3>store 只管分支内小状态，不管文件回滚</h3>
+<p><code>store(key, value)</code> 和 <code>load(key)</code> 用来在同一会话分支内跨脚本保存小型 JSON 数据。CLI 只有在整段脚本成功结束后，才会把变更追加成一条 <code>codemode-store</code> 会话条目；单值 JSON 长度上限 262,144 字符，总量上限 1,048,576 字符。重新打开会话或用 <code>/tree</code> 切换分支时，Pi 只沿着当前路径重放状态。<a href="#s10">S10</a>、<a href="#s14">S14</a></p>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 456" role="img" aria-labelledby="branch-store-title branch-store-desc" style="font-family:'Noto Sans CJK SC',system-ui,-apple-system,sans-serif"><title id="branch-store-title">状态沿分支重放，外部文件独立演化</title><desc id="branch-store-desc">从早期节点分叉时不继承另一条分支上的 store 写入，但文件系统副作用脱离会话分支单独存在。</desc><defs><marker id="branch-store-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--brand, #1B365D)"/></marker></defs><rect width="960" height="456" rx="6" fill="var(--paper, #faf9f5)"/><path d="M280 205 H312 Q320 205 320 197 V113 Q320 105 328 105 H360" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#branch-store-arrow)"/><path d="M280 237 H300 Q308 237 308 245 V319 Q308 327 316 327 H360" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#branch-store-arrow)"/><path d="M600 105 H680" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#branch-store-arrow)"/><path d="M600 327 H680" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#branch-store-arrow)"/><rect x="40" y="174" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="160.0" y="208" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">共同历史</text><text x="160.0" y="245" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">store: inspected = 1</text><rect x="360" y="62" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="96" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">分支 A 成功</text><text x="480.0" y="133" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">store: inspected = 2</text><rect x="680" y="62" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="800.0" y="96" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">继续 A</text><text x="800.0" y="133" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">load 得到 2</text><rect x="360" y="284" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="318" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">分支 B</text><text x="480.0" y="355" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">从共同历史分叉</text><rect x="680" y="284" width="240" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="800.0" y="318" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">继续 B</text><text x="800.0" y="355" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">load 得到 1</text><text x="40" y="426" font-size="16" fill="var(--muted, #5e5d57)">分支 A 写出的文件在切回分支 B 后保持原样；脚本失败跳过 store 提交，也不撤销已写入文件。</text></svg><figcaption>分支状态重放与外部文件副作用的分离：切回旧分支会恢复 store，但磁盘文件保持不变</figcaption></figure>
+<pre><code class="language-js">const count = (load(&quot;inspected&quot;) ?? 0) + 1;
+store(&quot;inspected&quot;, count);
+text({ count });
+</code></pre>
+<p>假如脚本先调用 <code>tools.write</code> 改了磁盘文件，接着调用 <code>store()</code>，最后几行抛了异常：结果是 <code>store</code> 变更不会提交，但磁盘上那个文件已经被改掉了。分叉会话也一样，分支 A 写进 <code>store</code> 的游标不会漏进分支 B，可两边面对的是同一份文件系统。因此 <code>store</code> 只适合放分页游标、已筛选 ID 或短摘要，大体积日志、源码全文和图片 base64 应当留给文件或外部服务。</p>
+<h3>取消、真实退出与 worker FIFO 排队</h3>
+<p>同一个 Pi 进程里，Code Mode 默认最多同时存活两个 worker，跨会话共享；通过环境变量 <code>PI_CODEMODE_MAX_WORKERS</code> 可以设成更大的正整数，非法值自动回退到 2。由于 Bun 下某些不轮询中断的同步内建操作在取消后还会拖一小会儿才退出，v1.3.0 把立即向调用方返回取消结果，和等 worker 真正退出后再归还并发名额拆成了两件事，防止反复取消把僵尸 worker 越攒越多。<a href="#s2">S2</a>、<a href="#s13">S13</a>、<a href="#s14">S14</a></p>
+<p>v1.4.0 在此基础上补上了排队机制：名额占满时，<code>reserveCodemodeWorker()</code> 不再直接报错拒绝，而是把等待者排进 FIFO 队列，等已有 worker 真正释放后由 <code>admitCodemodeWorkers()</code> 按顺序放行。排队最长等 60 秒，并且<strong>等待耗时直接算在脚本自己的总 <code>timeout_ms</code> 里</strong>。如果脚本总时限 10 秒、排队用掉 8 秒，实际能跑的时间就只剩 2 秒，拿到名额不会重算计时。<a href="#s26">S26</a></p>
+<p>还要分清两组并行额度：进程级默认的两个 worker 管的是同时运行的脚本实例数量；单个脚本里并发发起十个互不依赖的普通工具调用，只占这一个 worker。而脚本内调用 <code>models.classify()</code> 和 <code>models.generateImages()</code> 另受每脚本最多 4 项在途请求的限制。脚本自身禁止嵌套启动另一个 <code>codemode</code>，调高 <code>PI_CODEMODE_MAX_WORKERS</code> 会同步推高内存与外部请求峰值，需要根据宿主资源评估。</p>
+<h3>四类高频故障的排查顺序</h3>
+<table>
+<thead>
+<tr>
+<th>报错现象</th>
+<th>优先检查的点</th>
+<th>稳妥的恢复动作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>tools.X</code> 不存在或报错</td>
+<td>拼写、命名空间前缀、工具是否被过滤或处于 <code>hidden</code></td>
+<td>走 <code>searchTools</code> / <code>describeTool</code> 核实，别反复瞎猜</td>
+</tr>
+<tr>
+<td><code>JSON.parse</code> 失败</td>
+<td>返回值是否被工具截断、混入日志或拿到错误页</td>
+<td>换结构化工具，或先缩小读取范围</td>
+</tr>
+<tr>
+<td>等待空闲 worker 超时</td>
+<td>全进程在途脚本、残留未退出 worker 与总 deadline</td>
+<td>检查谁占着名额，别写死循环高频重试</td>
+</tr>
+<tr>
+<td>超时或部分失败</td>
+<td>已经落盘或发往外部系统的副作用</td>
+<td>先核查实际外部状态再决定是否重试，写操作需幂等</td>
+</tr>
+</tbody></table>
+<h1 id="chapter-9">第 9 章：扩展、渲染缓存、模型与集成界面</h1>
+<p>把一个长期工程接进 Pi 时，最容易犯的架构错误是把 Code Mode 当成万能胶。其实五种定制入口各守一块地盘：临时多步工具编排归 Code Mode，挂进宿主进程的可执行能力归扩展，按需加载的领域指令归 skill，可复用输入归提示模板，终端配色归主题。</p>
+<h3>扩展的打包、生命周期与诊断</h3>
+<p>自 v0.35.0 把 hooks 和自定义工具合为统一的 extensions 后，扩展就是一个接收 <code>ExtensionAPI</code> 的 TypeScript 工厂函数，直接运行在 Pi 宿主进程里，可以访问本地文件、凭据和会话状态，不受 QuickJS 那套沙箱限制。加载来源不明的扩展等同于在本地跑第三方代码。<a href="#s2">S2</a>、<a href="#s15">S15</a></p>
+<pre><code class="language-ts">import type { ExtensionAPI } from &quot;@earendil-works/pi-coding-agent&quot;;
+
+export default function (pi: ExtensionAPI) {
+  pi.registerCommand(&quot;hello&quot;, {
+    description: &quot;显示问候&quot;,
+    handler: async (name, ctx) =&gt; {
+      ctx.ui.notify(`你好，${name || &quot;世界&quot;}`, &quot;info&quot;);
+    },
+  });
+}
+</code></pre>
+<p>写扩展要盯牢四条生命周期和打包规矩：</p>
+<p>第一，工厂函数里只做注册，别一上来就起文件 watcher、socket 或定时器，因为有些命令只加载扩展并不会开启会话。长寿命资源放进 <code>session_start</code> 启动，并在 <code>session_shutdown</code> 里幂等回收。顺带一提，v1.6.0 修掉了一个很折磨 SDK 宿主的 bug：以前 <code>AgentSession.reload()</code> 发出 <code>session_shutdown</code> 后漏发了 <code>session_start</code>，导致像 MCP 这样靠 <code>session_start</code> 建连的扩展在重载后一直处于断开状态；现在重载流程会完整触发重新启动。<a href="#s2">S2</a>、<a href="#s15">S15</a></p>
+<p>第二，状态按可见性分开放。分支相关的工具细节放结果 <code>details</code>，不给模型看的持久元数据用 <code>appendEntry()</code>，需要模型参与的自定义消息用 <code>sendMessage()</code>，跨会话数据走外部存储；重建分支状态始终读 <code>getBranch()</code>，别扫全文件把别的分支混进来。</p>
+<p>第三，打包发布扩展包时，宿主提供的五个共享包（<code>@earendil-works/pi-ai</code>、<code>pi-agent-core</code>、<code>pi-coding-agent</code>、<code>pi-tui</code>、<code>typebox</code>）必须声明在 <code>peerDependencies</code>（范围 <code>&quot;*&quot;</code>）而非 <code>dependencies</code>，避免在 ESM 环境里装出双份类实例和注册表。v1.5.0 新增了扩展包更新日志展示：只要包里包含至少一个扩展，升级版本号后下次冷启动就会自动读取根目录 <code>CHANGELOG.md</code>（或 <code>package.json</code> 里的 <code>pi.changelogPath</code>，设成 <code>&quot;&quot;</code> 可关闭），在 Extension Updates 区域列出新条目，用户可以通过 <code>collapseChangelog</code> 设置把每个包折叠成单行。同期，工具与消息渲染上下文里开始直接注入 <code>keyText()</code> 和 <code>keyHint()</code>，避免扩展自己 import 一份副本却读不到用户改过的快捷键；v1.6.0 还修通了单文件独立二进制解析扩展 npm 依赖 <code>package.json</code> 里 <code>main</code> 和 <code>exports</code> 入口的问题。<a href="#s2">S2</a>、<a href="#s36">S36</a></p>
+<p>第四，v1.6.0 收拢了扩展和配置告警的输出通道。过去 <code>/reload</code>、<code>/new</code>、<code>/resume</code> 期间一旦触发 <code>git</code>/<code>npm</code> 刷新输出、<code>pi.events</code> 处理器异常或 <code>enabledModels</code> 告警，文字会直接冲刷覆盖全屏 TUI 画面。现在交互模式统一收进聊天区展示，print、JSON 和 RPC 模式写往 stderr，且通过 <code>AgentSessionRuntime.takeUnreportedDiagnostics()</code> 去重，防止每切换一次会话把同一条警告打印一遍。<a href="#s40">S40</a></p>
+<h3>v1.5.0 到 v1.6.0 的性能主线：增量流式解析与 TUI 只读渲染缓存</h3>
+<p>聊长了、工具参数动辄几十 KB 时，很多终端 Agent 都会突然卡成幻灯片：一边是每个流式字符块都在重头解析整段 JSON，一边是每来一个增量或滚一下滚轮都在把整屏上千行历史重新高亮和拷贝一遍。v1.5.0 和 v1.6.0 连续对这条热路径动了两次大手术。</p>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 468" role="img" aria-labelledby="streaming-and-render-cache-title streaming-and-render-cache-desc" style="font-family:'Noto Sans CJK SC',system-ui,-apple-system,sans-serif"><title id="streaming-and-render-cache-title">v1.5.0 至 v1.6.0 流式解析与 TUI 只读渲染缓存链路</title><desc id="streaming-and-render-cache-desc">大型工具调用经 StreamingJsonParser 增量解析并按帧合并更新；TUI Container 对未变子树返回同一只读数组引用，避免长会话滚动逐层拷贝。</desc><defs><marker id="streaming-and-render-cache-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--brand, #1B365D)"/></marker></defs><rect width="960" height="468" rx="6" fill="var(--paper, #faf9f5)"/><rect x="32" y="34" width="896" height="162" rx="8" fill="var(--paper-2, #f4f1e8)" fill-opacity="0.45" stroke="var(--line, #c4bfb0)" stroke-dasharray="6 5" stroke-width="1.5"/><text x="48" y="60" font-size="16" font-weight="500" fill="var(--muted, #5e5d57)">流式工具参数解析链路（packages/ai + coding-agent，v1.5.0）</text><rect x="32" y="242" width="896" height="162" rx="8" fill="var(--paper-2, #f4f1e8)" fill-opacity="0.45" stroke="var(--line, #c4bfb0)" stroke-dasharray="6 5" stroke-width="1.5"/><text x="48" y="268" font-size="16" font-weight="500" fill="var(--muted, #5e5d57)">TUI 只读渲染与祖先缓存链路（packages/tui，v1.6.0）</text><path d="M306 129 H351" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#streaming-and-render-cache-arrow)"/><path d="M609 129 H654" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#streaming-and-render-cache-arrow)"/><path d="M783 172 V216 Q783 224 775 224 H185 Q177 224 177 232 V294" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#streaming-and-render-cache-arrow)"/><path d="M306 337 H351" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#streaming-and-render-cache-arrow)"/><path d="M609 337 H654" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#streaming-and-render-cache-arrow)"/><rect x="48" y="86" width="258" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="177.0" y="120" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">Provider Delta 流</text><text x="177.0" y="157" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">增量到达的参数片段</text><rect x="351" y="86" width="258" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="120" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">StreamingJsonParser</text><text x="480.0" y="157" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">线性 append 与拷贝信用</text><rect x="654" y="86" width="258" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="783.0" y="120" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">ToolExecutionComponent</text><text x="783.0" y="157" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">argsPending 按帧合并渲染</text><rect x="48" y="294" width="258" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="177.0" y="328" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">子组件 render(width)</text><text x="177.0" y="365" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">返回 readonly string[]</text><rect x="351" y="294" width="258" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="328" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">renderChildLines()</text><text x="480.0" y="365" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">比对宽度、子引用与行内容</text><rect x="654" y="294" width="258" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="783.0" y="328" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">Container 缓存复用</text><text x="783.0" y="365" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">未变返回原引用；改动前先拷贝</text><text x="40" y="442" font-size="16" fill="var(--muted, #5e5d57)">流式解析消除 O(N^2) 重解析；Container 引用复用避免长会话全屏滚动打满单核 CPU。</text></svg><figcaption>v1.5.0 至 v1.6.0 的流式工具参数解析与 TUI 只读渲染缓存链路</figcaption></figure>
+<p>先看上半条链（v1.5.0，<code>packages/ai/src/utils/streaming-json.ts</code>）。过去 provider 每收到一小片工具参数 delta，就会把迄今累计的全部文本拿去做一次容错 JSON 解析，流越长 CPU 和内存就按 O(N²) 飙升。现在每个流式工具调用由 <code>ToolCallArgumentsStream</code> 持有原始文本和一个 <code>StreamingJsonParser</code> 实例：<code>append(delta)</code> 逐字符线性推进状态机，每个字符只扫一次；<code>snapshot()</code> 返回供 UI 预览的不可变纯 JSON 对象，只浅拷贝当前尚未闭合的开路径容器，已经闭合的子容器和字符串直接共享引用。<a href="#s30">S30</a></p>
+<p>更有意思的是它防极端输入的拷贝信用机制：开路径上有多少成员和元素，拷贝一次就记多少 <code>#pathCost</code>。每次 <code>append(text)</code> 按 <code>CREDIT_PER_APPEND (256) + CREDIT_PER_CHARACTER (8) * text.length</code> 往账户里充信用；只有当信用够支付当前 <code>#pathCost</code> 时，<code>snapshot()</code> 才生成新快照，否则直接复用上一份快照。这样就算模型一口气往一个未闭合数组里吐几千个元素，预览最多略微滞后几帧，整体时间复杂度绝不会退化成平方级。等到调用结束，<code>finish()</code> 再拿完整原始文本做一次严格 <code>parseToolCallArguments()</code> 产出最终参数与错误诊断。<a href="#s30">S30</a></p>
+<p>流出来的部分参数传到界面层后，<code>ToolExecutionComponent.updateArgs()</code>（<code>packages/coding-agent/src/modes/interactive/components/tool-execution.ts</code>）也不再收到一次 delta 就立刻重跑语法高亮和排版，而是只把 <code>argsPending</code> 置为 <code>true</code> 并调用 <code>ui.requestRender()</code>，把两帧之间涌来的几十个 delta 合并成<strong>每帧最多渲染一次</strong>。同一时期，<code>AssistantMessageComponent</code> 引入了 <code>MarkdownSlot</code> 槽位复用，流式回答过程中已经渲染完的 Markdown 块与代码高亮不再每帧重算。<a href="#s33">S33</a>、<a href="#s34">S34</a></p>
+<p>再看下半条链（v1.6.0，<code>packages/tui/src/tui.ts</code>，也是本版最重要的破坏性变更）。长会话在全屏模式下用鼠标滚轮滚动时，过去每滚一格都要把整段对话树逐层拼接拷贝，很容易把单核 CPU 打满。v1.6.0 把组件契约改成了：</p>
+<pre><code class="language-ts">render(width: number): readonly string[];
+</code></pre>
+<p><code>Container.render(width)</code> 内部调用 <code>renderChildLines(this.children, width, this.childLines)</code>。只要宽度没变、子组件数组引用没变、每个子组件返回的渲染行通过 <code>sameLines()</code> 对比也没变，就直接把上一次缓存的 <code>ChildLines</code> 连同 <code>lines</code> 数组引用原样返回。未变化的子树保持数组引用不变，所有祖先容器都能跳过拼接拷贝。<a href="#s31">S31</a>、<a href="#s32">S32</a></p>
+<p>这项优化直接带来一条必须遵守的扩展开发铁律：<strong>绝不能原地修改 <code>render()</code> 或 <code>super.render()</code> 返回的数组。</strong> 直接往上面 <code>push</code> 或改下标，会当场污染容器缓存并破坏后续帧画面。标准做法看内置的 <code>AssistantMessageComponent</code>（<code>assistant-message.ts</code>）就行：先拿引用做身份比对，只在缓存源变了时拷贝一份再加首尾标记：</p>
+<pre><code class="language-ts">const lines = super.render(width);
+if (this.zoneLines?.source !== lines) {
+  const zoned = [...lines];
+  zoned[0] = OSC133_ZONE_START + zoned[0];
+  zoned[zoned.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + zoned[zoned.length - 1];
+  this.zoneLines = { source: lines, lines: zoned };
+}
+return this.zoneLines.lines;
+</code></pre>
+<p>除此之外，v1.5.1 还给 <code>ctx.ui.custom()</code> 覆盖层补上了 <code>blocked</code> 选项支持（通过 OSC 7501 通知终端当前正在等待用户回答或授权），并给 <code>pi.registerMarkdownTransformer()</code> 增加了 <code>{ messageTypes }</code> 选项，可以按需作用于 <code>custom</code>、<code>summary</code> 和 <code>changelog</code> 表面，内置 Mermaid 渲染也支持了饼图、自定义样式和展开摘要里的图表绘制。<a href="#s2">S2</a>、<a href="#s32">S32</a></p>
+<h3>模型提供商、思考约束与图片分类</h3>
+<p>Code Mode 不会抹平各家模型提供商的协议差异，流式归一化、缓存保活和推理参数适配仍由 <code>packages/ai</code> 承担。从 v1.3.0 起，切换模型时会自动丢弃上一个模型产生的历史 thinking 块，避免它们被当成普通文本喂给新模型。<a href="#s2">S2</a></p>
+<p>v1.5.0 到 v1.6.0 在模型矩阵和协议细节上有多处值得留意的工程约束：</p>
+<ul>
+<li><strong>GPT-6.1 Terra 与 GPT-6.2 Astra / Sol</strong>：v1.5.0 先在 <code>openai</code>、<code>azure</code> 和 <code>openai-codex</code> 上加入 <code>gpt-6.1-terra</code>（Codex 下 500K 上下文，支持工具搜索、会话中途切换思考等级，且允许把思考关到 <code>off</code>）。v1.6.0 上线 <code>gpt-6.2-astra</code> 与 <code>gpt-6.2-sol</code>，并把 <code>gpt-6.2-sol</code> 设为三家提供商的默认模型（Azure 提供 1.05M 上下文，Codex 为 Sol 提供 500K、为 Astra 提供 272K）。注意 <code>packages/ai/catalog/families/openai.ts</code> 中的 <code>GPT_6_NO_NONE_EFFORT_MODEL_IDS</code> 集合明确包含 <code>gpt-6.2-astra</code> 和 <code>gpt-6.2-sol</code>：这两款模型拒绝 <code>none</code> 和 <code>minimal</code> 推理强度，因此无法开启 thinking <code>off</code>。同时，当 OpenAI 在压缩后丢弃旧推理条目（如 <code>prefix_mismatch</code>）且开启了 <code>showCacheMissNotices</code> 时，对话记录里会给出带原因的提示。<a href="#s38">S38</a></li>
+<li><strong>Qwen Token Plan 四套提供商</strong>：v1.5.1 与 v1.6.0 补齐了 Team 与 Individual 两条线的国际站和国内站提供商（<code>qwen-token-plan</code>、<code>qwen-token-plan-cn</code>、<code>qwen-token-plan-individual</code>、<code>qwen-token-plan-individual-cn</code>），切换到新网关 <code>token-plan.maas.qwencloudapi.com</code> 与 <code>token-plan.maas.qianwenaiapi.com</code>（旧 <code>aliyuncs.com</code> 仍兼容），支持按套餐拆分 <code>QWEN_TOKEN_PLAN_TEAM_API_KEY</code> 等环境变量（保留共用变量回退），新增 <code>qwen4-max-preview</code> 和 <code>deepseek-v4.1-flash</code>，同时移除了下线的 <code>deepseek-v3.2</code> 与 <code>deepseek-v4-flash</code>。<a href="#s2">S2</a></li>
+<li><strong>分类器与图片输入</strong>：脚本里的 <code>models.*</code> 可以查目录、调分类器和生图，但不允许把聊天模型当作任意子 Agent 直接递归调用。<code>models.classify()</code> 自 v1.4.0 起支持传入 <code>images</code>（适用于具备视觉能力的 Jev、Clef 分类器，v1.5.1 又接入了通过 GitHub Copilot 调用的 Microsoft-Decision-1 分类器）。模型类型是 <code>classifier</code> 不代表一定支持图片，调用前必须检查 <code>m.input?.includes(&quot;image&quot;)</code>，并按 <code>models-configuration.md</code> 核对代理的 <code>compat.imageInput</code> 与 <code>sendImageOptInHeader</code> 字段。图片展示走 <code>image(block)</code>，绝不用 <code>text()</code> 打印 base64。<a href="#s10">S10</a>、<a href="#s27">S27</a>、<a href="#s29">S29</a></li>
+</ul>
+<p>下面这段脚本和 <code>examples/scripts/06-classify-image.js</code> 保持逐字一致，用来演示图片分类器的完整契约检查（真实运行需要可用图片分类器凭据与本地 <code>screenshot.png</code>，可能产生费用）：</p>
+<pre><code class="language-js">const candidates = await models.getAvailableOfType(&quot;classifier&quot;);
+const vision = candidates.find(m =&gt; m.input?.includes(&quot;image&quot;));
+if (!vision) throw new Error(&quot;没有可用的图片分类器&quot;);
+const photo = await tools.read({ path: &quot;screenshot.png&quot; });
+if (photo.type !== &quot;image&quot;) throw new Error(&quot;需要图片块&quot;);
+const result = await models.classify(vision, {
+  state: { task: &quot;检查页面布局&quot; },
+  images: [photo],
+  questions: {
+    broken: {
+      type: &quot;bool&quot;,
+      instructions: &quot;图片中是否有重叠或被截断的内容？&quot;,
+      criteria: { true: &quot;存在布局缺陷&quot;, false: &quot;未发现布局缺陷&quot; },
+    },
+  },
+});
+if (result.stopReason !== &quot;stop&quot;) {
+  throw new Error(result.errorMessage ?? result.stopReason);
+}
+const answer = result.answers.broken;
+if (answer?.type !== &quot;bool&quot;) throw new Error(&quot;分类回答类型不符&quot;);
+text({ probability: answer.probability });
+</code></pre>
+<h3>命令行运维新入口：凭据管理与自定义自更新</h3>
+<p>在自动化或 Nix、mise 托管环境里，过去常遇到两个麻烦：一是为了给某个 provider 登录还得先启一个交互会话，二是 <code>pi update</code> 碰到非官方包管理器安装会直接报错放弃。v1.5.0 和 v1.5.1 把这两块补齐了：</p>
+<ul>
+<li><strong>自定义自更新命令（v1.5.0）</strong>：设置环境变量 <code>PI_SELF_UPDATE_COMMAND</code>（按空白拆分参数，优先级最高）或在全局 <code>~/.pi/agent/settings.json</code> 里写 argv 数组 <code>selfUpdateCommand</code>（支持含空格的参数）。当 pi.dev 报告新版本时，<code>pi update</code> 会把 <code>{packageName}</code>、<code>{version}</code>、<code>{installSpec}</code> 替换成新版本信息并执行该命令，例如 <code>mise use -g npm:{packageName}@{version}</code> 或 <code>[&quot;nix&quot;, &quot;profile&quot;, &quot;upgrade&quot;, &quot;pi&quot;]</code>。<a href="#s19">S19</a></li>
+<li><strong>脱离会话的命令行登录（v1.5.1）</strong>：在 shell 里直接运行 <code>pi auth login &lt;provider&gt;</code>（支持 <code>--api-key</code> 静默录入密钥、<code>--no-browser</code> 走设备码或复制码登录）与 <code>pi auth logout &lt;provider&gt;</code>，登录 Radius 时还会顺带配好对应的 MCP 服务器。配合 <code>pi auth check --json</code> 与 <code>pi update --extensions</code> 逐包版本差异报告，CI 和无头机器上的运维顺畅很多。<a href="#s19">S19</a></li>
+</ul>
+<h3>选哪一种集成接口</h3>
+<table>
+<thead>
+<tr>
+<th>使用场景</th>
+<th>推荐入口</th>
+<th>需要提前注意的边界</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>人在终端里交互编码</td>
+<td>TUI</td>
+<td>默认全屏模式，可切回 regular；自定义组件遵守只读 <code>render()</code></td>
+</tr>
+<tr>
+<td>单次脚本或管道任务</td>
+<td><code>--print</code></td>
+<td>跑完一轮后退出，无交互确认框</td>
+</tr>
+<tr>
+<td>外部程序消费事件流</td>
+<td><code>--mode json</code></td>
+<td>stdout 输出 JSONL 事件流，v1.6.0 修复启动期 <code>session_start</code> 事件丢失</td>
+</tr>
+<tr>
+<td>非 TypeScript 宿主长连控制</td>
+<td>RPC</td>
+<td>stdin 发指令，stdout 收响应与事件；关停期间等待清理完成</td>
+</tr>
+<tr>
+<td>Node / Bun 应用内嵌</td>
+<td>SDK</td>
+<td>宿主自管生命周期、资源加载、诊断读取与内置扩展绑定</td>
+</tr>
+<tr>
+<td>只需要受限工具脚本引擎</td>
+<td>独立 <code>pi-codemode</code></td>
+<td>零 Pi 内部依赖，不必拖入整个编码代理</td>
+</tr>
+<tr>
+<td>需要跨重启持久任务恢复</td>
+<td>实验性 <code>pi-durable</code></td>
+<td>独立存储、journal 与 replay 策略，属于实验 API</td>
+</tr>
+</tbody></table>
+<p>TUI 只是事件消费者与终端绘制层，RPC 和 SDK 驱动的都是同一套 <code>AgentSession</code> 和 Agent 循环。写自定义交互组件时要检查 <code>ctx.mode</code> / <code>ctx.hasUI</code>，不能假定 print 模式下也有弹窗确认。另外，CLI 默认装配了内置 Code Mode、<code>tool_search</code> 和 MCP 三个扩展，而 <strong>SDK 默认不会自动装好它们</strong>，必须在 <code>DefaultResourceLoader.extensionFactories</code> 里显式传入，并在创建会话后调用 <code>session.bindExtensions({})</code> 触发 <code>session_start</code>（完整代码见 <code>examples/sdk-codemode-mcp.ts</code>）。<a href="#s9">S9</a>、<a href="#s20">S20</a></p>
+<p>如果企业要求每次执行 shell 前必须过合规审批，切忌把审批逻辑塞进模型生成的 Code Mode 脚本里。可审计的拦截规则应当落在扩展的 <code>tool_call</code> 钩子边界，而文件、进程和网络的硬隔离则交给容器和操作系统权限去守。</p>
+<h1 id="chapter-10">第 10 章：从 v0.99.2 到 v1.6.0，到底演进了什么</h1>
+<p>如果团队线上跑的早就是 <code>v0.99.2</code>，Code Mode、独立 <code>pi-codemode</code> 包、工具按需发现、MCP、树形会话和统一扩展这些骨架其实早就已经在车上了。真正需要逐条核对的，是从 <code>v0.99.2</code> 一路走到 <code>v1.6.0</code> 这段时间里落下的契约调整、性能重构和破坏性变更。<a href="#s2">S2</a>、<a href="#s21">S21</a></p>
+<table>
+<thead>
+<tr>
+<th>版本</th>
+<th>关键架构与运行时变化</th>
+<th>对开发者与使用者的直接影响</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>v1.0.0</td>
+<td>缩短 Code Mode 提示词、新增 <code>models.generateImages()</code>、默认全屏 TUI、从 <code>pi-agent-core</code> 移除旧实验 <code>AgentHarness</code></td>
+<td>提示开销下降；探测工具改用 <code>in</code>；依赖旧实验 harness 的 SDK 需迁移</td>
+</tr>
+<tr>
+<td>v1.0.1 至 v1.0.4</td>
+<td>16 Mi 字符与 10 万条输出硬上限、<code>image()</code> 落盘临时文件、冻结内建原型、<code>read</code> 读图返回图片块</td>
+<td>防止无限输出拖垮宿主；不能再篡改 <code>Array.prototype</code> 等内建对象</td>
+</tr>
+<tr>
+<td>v1.1.0</td>
+<td>CLI <code>--tools +name/-name</code> 增量语法、输出项分隔</td>
+<td>增减单个工具更顺手，多段输出边界更清晰</td>
+</tr>
+<tr>
+<td>v1.2.0</td>
+<td><code>reachesTools</code> 解耦 MCP 与 Code Mode；独立包新增 <code>RemoteCodemodeSandbox</code>、<code>InlineCodemodeSandbox</code>、确定性 <code>sandbox.start()</code>；Durable 接入可重放 Code Mode；清理未发布实验服务栈</td>
+<td>编排器可替换；沙箱可部署到 Cloudflare；旧实验目录不可继续沿用</td>
+</tr>
+<tr>
+<td>v1.3.0</td>
+<td>取消结果与真实 worker 退出解耦；恢复会话保留活动工具集；内部包精确版本锁定</td>
+<td>重复超时不再无限堆积残留 worker；恢复后的工具集更稳定</td>
+</tr>
+<tr>
+<td>v1.4.0</td>
+<td>worker 满额 FIFO 排队（上限 60 秒，计入总 deadline）、<code>PI_CODEMODE_MAX_WORKERS</code>；摘要改用模型输出上限；<code>models.classify()</code> 支持图片输入与 <code>models-configuration.md</code>；修补截断工具消息配对与并发弹窗</td>
+<td>并行脚本不再立刻因满额失败；<code>reserveTokens</code> 不再错当摘要长度上限</td>
+</tr>
+<tr>
+<td>v1.5.0</td>
+<td>新增零 <code>eval</code> 闭包校验库 <code>@earendil-works/pi-schema</code>；<code>StreamingJsonParser</code> 增量解析大工具调用与 TUI 按帧合并及高亮复用；扩展包更新日志与 <code>collapseChangelog</code>；<code>PI_SELF_UPDATE_COMMAND</code> / <code>selfUpdateCommand</code>；GPT-6.1 Terra 与多语种 CJK 工具搜索；移除原生 OS <code>sandbox/</code> 示例</td>
+<td>JSON Schema 与 MCP 工具统一宽松转换；大参数流式不再卡顿；TypeBox 非 JSON Schema 特性不再用于参数校验</td>
+</tr>
+<tr>
+<td>v1.5.1</td>
+<td><code>pi auth login/logout</code>；默认开启空闲 prompt 缓存预热；Anthropic 消息线程；流式 <code>read</code> 与 ripgrep <code>grep</code> 上下文（废弃 <code>GrepOperations.readFile</code>）；OpenAI 兼容端点省略空 <code>&quot;tools&quot;: []</code>；MCP <code>$ref</code> 搜索与流大小限制；Copilot 分类器与更丰富的 Mermaid 图表</td>
+<td>降低长会话和重复提示费用；大文件读取不再打爆内存；自定义 <code>GrepOperations</code> 需改写 <code>execute()</code></td>
+</tr>
+<tr>
+<td>v1.5.2</td>
+<td>原工作目录消失时，恢复/导入会话提供 <code>Continue</code>、<code>Fork</code>、<code>Cancel</code></td>
+<td>移动或重命名项目目录后，一次 Fork 即可绑定新路径不再反复弹窗</td>
+</tr>
+<tr>
+<td>v1.6.0</td>
+<td>TUI <code>Component.render()</code> 改为返回 <code>readonly string[]</code>，<code>Container</code> 复用未变子树的缓存数组引用；GPT-6.2 Astra/Sol 成为默认模型（不支持 thinking <code>off</code>）；Qwen Token Plan 四套提供商与新网关；<code>AgentSessionRuntime.takeUnreportedDiagnostics()</code>；修复 SDK <code>reload()</code> 漏发 <code>session_start</code> 与 <code>find</code> 相对路径模式</td>
+<td>长会话全屏滚动不再打满单核 CPU；原地修改 <code>super.render()</code> 的扩展必须先拷贝；切换与重载告警不再刷花终端</td>
+</tr>
+</tbody></table>
+<h3>从 v1.4.0 升到 v1.6.0，优先核对六处破坏性或高影响变更</h3>
+<p>如果已经跑在 v1.4.0，往 v1.6.0 升级时先把下面六件事逐项查完，能省掉绝大部分线上踩坑：</p>
+<ol>
+<li><strong>检查所有自定义 TUI 组件与 <code>Container</code> 子类（v1.6.0）</strong>：搜索代码里对 <code>render()</code> 或 <code>super.render(width)</code> 返回值调用 <code>.push()</code>、<code>.splice()</code>、<code>.unshift()</code> 或下标赋值的地方，一律改成先拷贝再改（<code>const lines = [...super.render(width)]</code>），否则会直接破坏 <code>Container</code> 的帧缓存。<a href="#s31">S31</a>、<a href="#s32">S32</a></li>
+<li><strong>检查工具参数里的 TypeBox 私有用法（v1.5.0）</strong>：<code>pi-schema</code> 只执行标准 JSON Schema 约束与内置格式，不再运行 <code>Type.Refine()</code>、<code>Type.Codec()</code> 或 <code>Format.Set()</code>。依赖这些校验的工具要把额外检查搬进 <code>execute()</code>；如果上游提示词或测试硬匹配了 TypeBox 旧英文报错文案，也要同步更新成 <code>pi-schema</code> 的 <code>- field: reason</code> 格式。<a href="#s15">S15</a></li>
+<li><strong>检查自定义远程 <code>grep</code> 扩展（v1.5.1）</strong>：<code>GrepOperations.readFile</code> 不再被上下文行逻辑调用，面向远端文件系统的扩展需要直接覆写 <code>grep</code> 工具的 <code>execute()</code>。<a href="#s2">S2</a></li>
+<li><strong>检查 OpenAI 兼容网关与思考等级假设（v1.5.1 / v1.6.0）</strong>：禁用全部工具时 Pi 不再发送 <code>&quot;tools&quot;: []</code>；若老版本代理在历史含工具调用时强制要求带上该字段，需在 <code>models.json</code> 里设置 <code>compat.requiresToolsWithToolHistory: true</code>。切换到默认 <code>gpt-6.2-sol</code> 后，不能再假定 thinking <code>off</code> 始终可用。<a href="#s2">S2</a>、<a href="#s38">S38</a></li>
+<li><strong>检查 <code>find</code> 工具的路径 glob 写法（v1.6.0）</strong>：含 <code>/</code> 的模式现在相对搜索目录匹配（<code>src/*.ts</code> 只命中根目录 <code>src/a.ts</code>，不再误扫 <code>pkg/src/a.ts</code>），跨层级匹配需写 <code>**/src/*.ts</code>。<a href="#s2">S2</a></li>
+<li><strong>检查扩展重启与诊断上报（v1.6.0）</strong>：SDK 宿主可在启动和每次会话切换后调用 <code>runtime.takeUnreportedDiagnostics()</code> 读取去重后的加载告警，并确认依赖 <code>session_start</code> 的扩展在 <code>reload()</code> 后能正常重连。<a href="#s40">S40</a></li>
+</ol>
+<h3>顺手澄清三个老版本迁移断点与一句流行数字</h3>
+<p>如果你是从 v0.99.2 跨大版本直奔 v1.6.0，下面三个早期断点同样躲不过：探测工具是否存在别写 <code>typeof tools.foo</code>（访问未知成员可能直接抛带近似建议的错），统一改用 <code>&quot;foo&quot; in tools</code>；独立 MCP 包早在 v1.2.0 就删掉了 <code>MCP_TYPESCRIPT_PREAMBLE</code> 与 <code>mcpStructuredContentSchema()</code>，输出 schema 直接描述完整返回对象；独立沙箱 <code>close()</code> 和执行结果返回只代表发出了关闭请求，自己做资源池必须挂 <code>onWorkerStarted(exited)</code> 或 <code>acquireWorker()</code> 释放回调追踪真实退出。<a href="#s13">S13</a>、<a href="#s21">S21</a></p>
+<p>另外，社区里常转述的一句“Code Mode 少用约 40% token”，出处是 v1.0.0 变更日志里的一个特定样本：开启默认工具和 Code Mode 时，一次 GPT-5.6 请求的初始提示词从约 5,300 降到了约 3,300 token，省下来的是精简后的工具说明与按需加载。那是上游记录的单一场景数字，既不是本书实测，也不能当成所有模型和工具规模下的通用折扣。<a href="#s2">S2</a></p>
+<h1 id="chapter-11">第 11 章：独立沙箱、云端隔离与 Durable 重放</h1>
+<p>工程评审里常听到一句模糊的话：“Pi 的 Code Mode 已经支持崩溃恢复了。”这句话缺了主语，很容易把三种保障级别完全不同的运行时混成一锅粥。</p>
+<table>
+<thead>
+<tr>
+<th>运行形态</th>
+<th>工具与状态归谁管</th>
+<th>进程中途崩溃后会发生什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>普通 CLI Code Mode</td>
+<td><code>AgentSession</code> 与内置扩展</td>
+<td>此前已成功提交的小型 <code>store</code> 仍在分支里；中途死掉的脚本没有指令级续跑</td>
+</tr>
+<tr>
+<td>独立 <code>CodemodeSandbox.execute()</code></td>
+<td>你的宿主程序</td>
+<td>宿主自管持久化；单次执行不会自动变成持久任务</td>
+</tr>
+<tr>
+<td>独立 <code>sandbox.start()</code></td>
+<td>宿主驱动的确定性 VM</td>
+<td>提供可重放的确定性执行引擎，但 journal 与调度归宿主自己写</td>
+</tr>
+<tr>
+<td>实验性 <code>pi-durable/codemode</code></td>
+<td>Durable Harness、存储、任务与 journal</td>
+<td>重启后按日志顺序重放已交付结果再继续推进；未完成调用按各自 <code>replay</code> 策略处理</td>
+</tr>
+</tbody></table>
+<h3>11.1 不引入整个编码代理，单独使用沙箱</h3>
+<p><code>packages/codemode</code> 没有任何 Pi 内部包依赖，非常适合嵌进你自己的服务或 Agent 产品里，只借用它的受限脚本执行和工具桥接能力：<a href="#s13">S13</a></p>
+<pre><code class="language-ts">import { CodemodeSandbox } from &quot;@earendil-works/pi-codemode&quot;;
+
+const sandbox = new CodemodeSandbox({
+  timeoutMs: 10_000,
+  tools: [{
+    name: &quot;lookup&quot;,
+    execute: async ({ id }) =&gt; ({ id, title: `条目 ${id}`, privateNote: &quot;不输出&quot; }),
+  }],
+});
+
+try {
+  const result = await sandbox.execute(`
+    const row = await tools.lookup({ id: 7 });
+    text({ id: row.id, title: row.title });
+  `);
+  if (!result.ok) throw new Error(result.error.message);
+  console.log(result.output);
+} finally {
+  await sandbox.close();
+}
+</code></pre>
+<p>这是独立注入自有可信函数的写法。如果打算把它接进已有 Agent 框架，工具桥接必须回落到框架自己的完整工具调用管线（像官方 CLI 走 <code>ctx.executeTool()</code> 一样），切忌直接调用裸 <code>tool.execute()</code> 绕开校验与安全钩子。<a href="#s13">S13</a></p>
+<h3>11.2 为什么 Cloudflare 要把 VM 放进单独部署的 Worker</h3>
+<p>Node 和 Bun 下可以用 worker thread 把 QuickJS 计算挪出主事件循环。Cloudflare Workers 没有同样的线程模型，QuickJS 的同步计算会直接堵住承载它的 isolate。</p>
+<p>v1.2.0 引入的 <code>RemoteCodemodeSandbox</code> 把位置拆开了：工具和调用账本留在会话侧，QuickJS VM 放到<strong>单独部署的 Worker 里的 Durable Object</strong> 中，每次工具调用走 Workers RPC 回调宿主。注意这里的 Durable Object 是 Cloudflare 的平台原语，跟 Pi 仓库里的 <code>pi-durable</code> 包没有任何从属关系。<a href="#s13">S13</a>、<a href="#s21">S21</a></p>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 506" role="img" aria-labelledby="deployment-title deployment-desc" style="font-family:'Noto Sans CJK SC',system-ui,-apple-system,sans-serif"><title id="deployment-title">同一脚本 API，三种计算部署位置</title><desc id="deployment-desc">Node/Bun 使用 worker thread，Cloudflare 可把 VM 放到独立 Worker 的 Durable Object，inline 模式在调用线程运行。</desc><defs><marker id="deployment-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--brand, #1B365D)"/></marker></defs><rect width="960" height="506" rx="6" fill="var(--paper, #faf9f5)"/><path d="M340 103 H620" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#deployment-arrow)"/><path d="M340 261 H620" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#deployment-arrow)"/><path d="M340 419 H620" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#deployment-arrow)"/><rect x="40" y="60" width="300" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="190.0" y="94" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">Node / Bun 宿主</text><text x="190.0" y="131" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">工具管线与 deadline</text><rect x="620" y="60" width="300" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="770.0" y="94" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">worker thread</text><text x="770.0" y="131" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">QuickJS VM（默认 256 MiB）</text><rect x="40" y="218" width="300" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="190.0" y="252" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">Cloudflare 会话侧</text><text x="190.0" y="289" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">工具与调用记录</text><rect x="620" y="218" width="300" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="770.0" y="252" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">独立部署的 Worker</text><text x="770.0" y="289" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">Durable Object 内 VM（32 MiB）</text><rect x="40" y="376" width="300" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="190.0" y="410" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">Inline 宿主</text><text x="190.0" y="447" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">接受同步计算阻塞调用线程</text><rect x="620" y="376" width="300" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="770.0" y="410" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">同一线程的 VM</text><text x="770.0" y="447" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">interrupt budget 约束</text><text x="415" y="84" font-size="16" fill="var(--muted, #5e5d57)">线程消息</text><text x="410" y="242" font-size="16" fill="var(--muted, #5e5d57)">Workers RPC</text><text x="420" y="400" font-size="16" fill="var(--muted, #5e5d57)">直接调用</text></svg><figcaption>三种沙箱部署模式：Node/Bun worker thread、Cloudflare 独立 Worker RPC 与单线程 inline 模式</figcaption></figure>
+<p>上游 <code>packages/codemode/README.md</code> 记录过一组 Cloudflare 实测对比：让脚本持续做十秒密集计算，如果 VM 跑在会话对象内部或其动态加载的 Worker 里，同一会话对象的其他请求会被卡住约十秒；拆到单独部署的 Worker 后，其他请求的响应延迟大约在 50 ms。这个数字出自上游测试环境，说明的是隔离部署的架构理由，不代表你在任意账号区域都能复现一模一样的延迟。</p>
+<p>在 Cloudflare 上跑还要盯紧三条额外约束：脚本如果不主动 yield，墙钟 timeout 挡不住纯 CPU 死循环，必须配 interrupt budget；远端 abort 先解除调用侧等待，VM 要等到下一次工具调用或耗尽中断预算才会停；远端单个 VM 默认内存上限只有 32 MiB，远小于普通 CLI 的 256 MiB。至于 <code>InlineCodemodeSandbox</code>，它直接在调用线程里跑 VM，适合明确接受短暂阻塞的轻量宿主，配合零 Node 依赖的 portable 入口共用同一套脚本 API。<a href="#s13">S13</a></p>
+<h3>11.3 Durable 重放的是调用日志，不存 VM 内存快照</h3>
+<p><code>packages/durable</code> 是一套仍在快速演进的实验性持久执行运行时。它的 Harness 把会话条目、文档状态、任务检查点和提交统一写进底层存储；结合确定性 <code>sandbox.start()</code> 后，能让长时间运行的 Code Mode 脚本跨进程重启恢复。<a href="#s23">S23</a></p>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 468" role="img" aria-labelledby="durable-replay-title durable-replay-desc" style="font-family:'Noto Sans CJK SC',system-ui,-apple-system,sans-serif"><title id="durable-replay-title">确定性重放机制，脱离内存快照</title><desc id="durable-replay-desc">首次运行先将工具结果写入 journal 再交付脚本；重启后在相同代码与确定性条件下按序重放结果，再继续执行。</desc><defs><marker id="durable-replay-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--brand, #1B365D)"/></marker></defs><rect width="960" height="468" rx="6" fill="var(--paper, #faf9f5)"/><path d="M294 111 H348" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#durable-replay-arrow)"/><path d="M612 111 H666" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#durable-replay-arrow)"/><path d="M294 337 H348" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#durable-replay-arrow)"/><path d="M612 337 H666" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#durable-replay-arrow)"/><path d="M798 154 V256 Q798 264 790 264 H488 Q480 264 480 272 V294" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#durable-replay-arrow)"/><rect x="30" y="68" width="264" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="162.0" y="102" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">相同代码与环境</text><text x="162.0" y="139" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">seed、虚拟时间、VM 指纹</text><rect x="348" y="68" width="264" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="102" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">首次运行</text><text x="480.0" y="139" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">发出嵌套工具任务</text><rect x="666" y="68" width="264" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="798.0" y="102" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">先记账再交付</text><text x="798.0" y="139" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">结果顺序写入 journal</text><rect x="30" y="294" width="264" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="162.0" y="328" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">进程重启</text><text x="162.0" y="365" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">恢复 Harness 与任务</text><rect x="348" y="294" width="264" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="328" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">重新运行脚本</text><text x="480.0" y="365" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">按序喂回已记录结果</text><rect x="666" y="294" width="264" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="798.0" y="328" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">关联任务并继续</text><text x="798.0" y="365" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">未完成调用服从 replay 策略</text><text x="30" y="434" font-size="16" fill="var(--muted, #5e5d57)">外部副作用仍需服务端幂等；普通 CLI 的单次脚本执行不含这套持久重放保证。</text></svg><figcaption>Durable Code Mode 的确定性重放流程：记录顺序日志、重启后重跑脚本喂回旧结果再续跑</figcaption></figure>
+<p>它的恢复原理跟时间旅行调试很像，不依赖给 QuickJS 堆拍内存快照：</p>
+<ol>
+<li>启动脚本时锁定全部不确定因素：由宿主提供虚拟 <code>Date.now()</code>、固定随机种子、锁定 UTC 时区、隐藏 <code>WeakRef</code> 与 <code>FinalizationRegistry</code>，并校验代码和 VM 指纹。</li>
+<li>脚本发出的嵌套工具调用会注册成 Durable 子任务。</li>
+<li>工具完成后，宿主先按交付顺序把结果写进 journal，再把值交回 VM。</li>
+<li>进程崩溃重启后，Harness 从头重跑同一段脚本，沿着 journal 把已经记录过的结果按原序瞬间喂回去。</li>
+<li>脚本在确定性条件下推演出完全一致的调用序列，自动接上已完成或仍在跑的子任务，然后继续推进尚未执行的新步骤。</li>
+</ol>
+<h3>一个检验边界的案例：扣款成功瞬间宕机</h3>
+<p>假设脚本调用了外部支付工具，远端银行已经扣款成功，但本地进程还没来得及把结果写进 journal 就断电了。重启后框架能盲目再调一次吗？绝对不能。在 Durable 里，只有工具明确声明了 <code>replay: &quot;safe&quot;</code>，中断后的未决调用才允许自动重跑；默认情况下框架会报 interrupted 错误，把善后权交回业务层。就算标成了 <code>safe</code>，真正避免重复扣款靠的还是外部服务端的幂等 key 或查询对账。<a href="#s23">S23</a></p>
+<p>确定性重放提供的是可追溯、可检查、可恢复的编排调度，变不出跨任意外部系统的恰好一次副作用魔法。只要脚本代码改了路径、VM 指纹变了或者总 deadline 过期，重放都会主动报错停下，避免在错位状态下继续发外部请求。</p>
+<h3>11.4 远程执行环境 pi-env 解决另一半问题</h3>
+<p><code>packages/env</code> 决定命令和文件操作在哪台机器上执行：本地留着 Harness、存储和模型凭据，通过 SSH 在目标机器上拉起一个小型 Rust daemon，用协议化接口跑文件和进程操作，让 <code>RemoteExecutionEnv</code> 尽量贴近 <code>NodeExecutionEnv</code> 的语义。<a href="#s24">S24</a></p>
+<p>把 QuickJS VM 放到远端（<code>RemoteCodemodeSandbox</code>）和把文件与命令放到远端（<code>pi-env</code>）是两个正交的架构选择：前者管脚本计算位置，后者管工具副作用落点。远程执行同样不等于自动沙箱，仍然必须校验 SSH host key，并收紧远端账户权限、网络出口和凭据暴露面。</p>
+<figure><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 492" role="img" aria-labelledby="durable-package-dependencies-title durable-package-dependencies-desc" style="font-family:'Noto Sans CJK SC',system-ui,-apple-system,sans-serif"><title id="durable-package-dependencies-title">Durable 与远程执行环境的内部包关系</title><desc id="durable-package-dependencies-desc">env 依赖 durable 与 chord；durable 依赖 ai、codemode、chord、pi-schema 与 telemetry，独立于普通 CLI。</desc><defs><marker id="durable-package-dependencies-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="var(--brand, #1B365D)"/></marker></defs><rect width="960" height="492" rx="6" fill="var(--paper, #faf9f5)"/><path d="M480 114 V174" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#durable-package-dependencies-arrow)"/><path d="M610 71 H644 Q652 71 652 79 V292 Q652 300 644 300 H598 Q590 300 590 308 V336" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#durable-package-dependencies-arrow)"/><path d="M400 260 V284 Q400 292 392 292 H142 Q134 292 134 300 V336" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#durable-package-dependencies-arrow)"/><path d="M446 260 V296 Q446 304 438 304 H370 Q362 304 362 312 V336" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#durable-package-dependencies-arrow)"/><path d="M514 260 V296 Q514 304 522 304 H576 Q584 304 584 312 V336" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#durable-package-dependencies-arrow)"/><path d="M560 260 V284 Q560 292 568 292 H814 Q822 292 822 300 V336" fill="none" stroke="var(--brand, #1B365D)" stroke-width="2" marker-end="url(#durable-package-dependencies-arrow)"/><rect x="350" y="28" width="260" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="62" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">env</text><text x="480.0" y="99" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">远程 ExecutionEnv / Rust daemon</text><rect x="350" y="174" width="260" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="480.0" y="208" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">durable</text><text x="480.0" y="245" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">实验性持久任务 Harness</text><rect x="36" y="336" width="196" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="134.0" y="370" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">ai</text><text x="134.0" y="407" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">模型接入</text><rect x="264" y="336" width="196" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="362.0" y="370" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">codemode</text><text x="362.0" y="407" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">确定性 QuickJS</text><rect x="492" y="336" width="196" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="590.0" y="370" text-anchor="middle" font-size="19" font-weight="500" fill="var(--ink, #20201d)">chord</text><text x="590.0" y="407" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">文档状态与 RPC</text><rect x="720" y="336" width="204" height="86" rx="6" fill="var(--paper-2, #f4f1e8)" stroke="var(--brand, #1B365D)" stroke-width="1.5"/><text x="822.0" y="362" text-anchor="middle" font-size="17" font-weight="500" fill="var(--ink, #20201d)">pi-schema</text><text x="822.0" y="384" text-anchor="middle" font-size="17" font-weight="500" fill="var(--ink, #20201d)">telemetry</text><text x="822.0" y="407" text-anchor="middle" font-size="14" fill="var(--muted, #5e5d57)">校验与观测</text><text x="36" y="464" font-size="16" fill="var(--muted, #5e5d57)">依据 v1.6.0 各包 package.json。普通 CLI 不会自动继承 Durable 的持久重放保证。</text></svg><figcaption>Durable、env、chord 与共享底层包的实际依赖关系：独立于普通 CLI 运行链</figcaption></figure>
+<p>把这张图和第 3 章的 CLI 依赖图放在一起对照最直观：两边共享 <code>ai</code>、<code>codemode</code>、<code>pi-schema</code> 和 <code>telemetry</code> 四个底层包，但在上层分道扬镳。普通 CLI 不会自动继承 Durable 的持久重放契约。</p>
+<h1 id="chapter-12">第 12 章：迁移路线、动手实验与核对工具</h1>
+<p>读完架构图之后，最怕关上页面只剩满脑子术语。这一章把迁移核对拆成可执行清单，再给四组零付费模型成本就能在本地跑通的动手实验。</p>
+<h3>12.1 从 v0.9.4 跨版本迁移，按所在层逐项拆解</h3>
+<p>如果只用终端 CLI，先备份现有会话和配置目录，把包名从 <code>@mariozechner/*</code> 切到 <code>@earendil-works/*</code>，并确认运行环境满足 Node.js 22.19 或更新版本（别继续沿用早期仓库的 Node 20 门槛），再逐步启用 Code Mode 和 MCP。</p>
+<p>如果在业务代码里嵌入了旧版 <code>Agent</code>，重点核对旧 transport 抽象到当前 <code>streamFn</code>、消息转换器、事件流以及默认并行工具语义的变化。曾经引用过旧 <code>AgentHarness</code> 的项目要注意，<code>pi-agent-core</code> 自 v1.0.0 起已经移除该导出，需要明确决定迁向标准 <code>AgentSession</code>，还是进入实验性 <code>pi-durable</code>。<a href="#s6">S6</a>、<a href="#s22">S22</a></p>
+<p>如果维护着旧版自定义 hooks 和工具，按当前 <code>ExtensionAPI</code> 统一合并注册入口，逐条核对拦截、改写事件的返回值契约，并把宿主提供的核心包放进 <code>peerDependencies</code>。</p>
+<h3>12.2 升级至 v1.6.0 的工程检查表</h3>
+<ul>
+<li><input disabled="" type="checkbox" /> 自定义 TUI 组件与 <code>Container</code> 子类把 <code>render()</code> 输出视为只读，改动前先浅拷贝数组（<code>[...super.render(width)]</code>）。</li>
+<li><input disabled="" type="checkbox" /> 工具参数校验不再依赖 <code>Type.Refine()</code>、<code>Type.Codec()</code>、<code>Format.Set()</code> 等非 JSON Schema 特性，必要检查移入 <code>execute()</code>。</li>
+<li><input disabled="" type="checkbox" /> 远端文件检索扩展不再依赖已废弃的 <code>GrepOperations.readFile</code>，改为覆写 <code>grep</code> 的 <code>execute()</code>。</li>
+<li><input disabled="" type="checkbox" /> 探测工具存在性使用 <code>&quot;name&quot; in tools</code>，所有发现 helper 均带 <code>await</code>。</li>
+<li><input disabled="" type="checkbox" /> 脚本显式检查 <code>bash</code> 的 <code>exit_code</code> 与 MCP 的 <code>isError</code>，不把 Promise fulfilled 当成业务成功。</li>
+<li><input disabled="" type="checkbox" /> <code>// @options:</code> 确实放在脚本第一行；图片结果走 <code>image()</code> 而非用 <code>text()</code> 打印 base64。</li>
+<li><input disabled="" type="checkbox" /> 自定义沙箱资源池追踪真实 worker 退出回调释放名额，并清楚排队时间会扣减总 deadline。</li>
+<li><input disabled="" type="checkbox" /> <code>compaction.reserveTokens</code> 只按触发阈值配置，不再拿来折算摘要输出长度。</li>
+<li><input disabled="" type="checkbox" /> 使用 <code>gpt-6.2-sol</code> / <code>gpt-6.2-astra</code> 时不假设 thinking <code>off</code> 可用；如使用老代理且需保留空 <code>tools: []</code>，按需配置 <code>compat.requiresToolsWithToolHistory</code>。</li>
+<li><input disabled="" type="checkbox" /> <code>find</code> 工具含 <code>/</code> 的路径模式已按搜索目录相对路径核对（跨层改用 <code>**/...</code>）。</li>
+<li><input disabled="" type="checkbox" /> 恢复或重载会话后，核对活动工具、<code>--no-mcp</code> 隔离边界，以及 SDK 宿主的 <code>bindExtensions({})</code> 与 <code>takeUnreportedDiagnostics()</code>。</li>
+<li><input disabled="" type="checkbox" /> 扩展包若需在更新后展示变更说明，检查 <code>package.json</code> 版本号与 <code>pi.changelogPath</code>；使用 Nix/mise 托管时按需配置 <code>PI_SELF_UPDATE_COMMAND</code> 或 <code>selfUpdateCommand</code>。</li>
+</ul>
+<h3>12.3 核对固定版本源码快照</h3>
+<p>本书依据固定标签源码编写，完整提交 SHA 与区间文件统计记在 <code>sources/UPSTREAM.md</code> 和 <code>sources/versions.json</code> 里。读者如需对照任意一行上游代码，可以直接按对应标签检出官方仓库，不影响本机已安装的全局 Pi：</p>
+<pre><code class="language-sh">git clone --depth 1 --branch v1.6.0 https://github.com/earendil-works/pi.git pi-v1.6.0
+git -C pi-v1.6.0 rev-parse HEAD
+# faac585884ae2c013a6b1400f3e9e77f10b34bac
+</code></pre>
+<h3>实验 A：开启 Code Mode 观察信息瘦身</h3>
+<p>在已安装 v1.6.0 或兼容版本的终端里，用增量参数启动：</p>
+<pre><code class="language-sh">pi --tools +codemode
+</code></pre>
+<p>或者把下面配置合并进项目的 <code>.pi/settings.json</code>（保留原有其他字段）：</p>
+<pre><code class="language-json">{
+  &quot;defaultTools&quot;: [&quot;+codemode&quot;]
+}
+</code></pre>
+<p>让模型同时检查仓库里五到十个配置文件并只返回名称和版本号。观察 TUI 里出现的一个外层 <code>codemode</code> 卡片和内部多次嵌套 <code>read</code> 调用，再对比要求它直接逐个输出完整文件内容时的上下文膨胀速度。</p>
+<h3>实验 B：零模型依赖跑通 Python 教学模型与 20 项单元测试</h3>
+<p>本书 <code>examples/pi_runtime_model.py</code> 用零第三方依赖的 Python 3.10+ 复刻了 Pi v1.6.0 的四块核心架构机制：树形会话投影与截断配对、Code Mode 工具桥接及 <code>pi-schema</code> 宽松转换与 worker 排队、v1.5.0 增量流式 JSON 解析与 v1.6.0 <code>Container</code> 只读渲染缓存、以及 MCP exposure 矩阵与多语种 <code>reachesTools</code> 延迟连接。配套的 20 项单元测试可以直接在终端验证：</p>
+<pre><code class="language-sh">python3 -m unittest discover -s examples -v
+</code></pre>
+<p>同时，原有的 Node 模拟检查脚本 <code>examples/run-checks.mjs</code> 依然保留，验证 <code>examples/scripts/</code> 里的 6 段 JavaScript 教学脚本（字段筛选、部分失败、非零 shell 退出码、成功与失败的 <code>store</code> 提交、磁盘副作用留存和图片分类正反契约）：</p>
+<pre><code class="language-sh">node examples/run-checks.mjs
+</code></pre>
+<p>这两套本地检查都用模拟工具验证控制流与不变量，不消耗模型费用，也不替代 QuickJS 安全审计或上游集成测试。</p>
+<h3>实验 C：亲眼验证分支 store 与磁盘文件的分离</h3>
+<p>在一个可丢弃的临时目录里开启会话，跑一段脚本先用 <code>tools.write</code> 写一个测试文件，再调用 <code>store(&quot;step&quot;, 1)</code>。接着用 <code>/tree</code> 回到该脚本执行前的节点开辟新分支，在新分支里调用 <code>load(&quot;step&quot;)</code> 并检查目录里的测试文件：此时 <code>load(&quot;step&quot;)</code> 返回 <code>undefined</code>，而那个测试文件依然稳稳躺在磁盘上。切勿拿生产数据做这个实验。</p>
+<h3>实验 D：对照官方 SDK 示例装配三个内置扩展</h3>
+<p>打开本书保存的 <code>examples/sdk-codemode-mcp.ts</code>（与 v1.6.0 上游 <code>packages/coding-agent/examples/sdk/14-codemode-mcp.ts</code> 逐字节一致），盯住三处关键装配点：<code>extensionFactories</code> 显式传入内置 Code Mode、<code>tool_search</code> 与 MCP 扩展，<code>defaultTools</code> 增量开启能力，以及创建会话后调用 <code>session.bindExtensions({})</code> 触发后台连接。</p>
+<h3>五道自测题</h3>
+<ol>
+<li><strong>Code Mode 带来的收益只是把工具调用从串行变并行吗？</strong> 现在的普通工具调用默认就已经支持同回合并行；Code Mode 真正多出来的是执行侧的控制流、异常处理与中间数据筛选。</li>
+<li><strong>脚本执行到一半抛异常，前面已经写出的磁盘文件会跟着回滚吗？</strong> 不会。<code>codemode-store</code> 只在脚本成功结束时提交，它和外部文件系统之间没有分布式事务。</li>
+<li><strong>MCP 工具调用返回的 Promise 正常 resolve 了，就能直接判定操作成功吗？</strong> 不能。必须检查返回的 <code>CallToolResult.isError</code> 字段和具体内容。</li>
+<li><strong>把一个 TUI 扩展升级到 v1.6.0 后，为什么往 <code>super.render(width)</code> 返回的数组里 <code>push</code> 一行状态提示会导致画面错乱？</strong> 因为 <code>Container</code> 在子组件未变化时直接返回缓存数组引用；原地修改会污染缓存，导致下一帧重复叠加。必须先拷贝一份新数组再修改。</li>
+<li><strong>QuickJS 里拿不到 <code>fs</code> 和 <code>fetch</code>，是不是就意味着脚本里跑任何工具都绝对安全？</strong> 不是。脚本的破坏半径由宿主注入的工具及其背后进程或容器的真实权限决定。</li>
+</ol>
+<h3>术语速查表</h3>
+<table>
+<thead>
+<tr>
+<th>术语</th>
+<th>在本书语境下的准确含义</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Agent loop</td>
+<td>模型生成响应、执行工具调用、判断是否进入下一轮的核心循环</td>
+</tr>
+<tr>
+<td>Harness</td>
+<td>环绕在 Agent 循环外围的会话、上下文投影、资源、扩展与生命周期层</td>
+</tr>
+<tr>
+<td>AgentSession</td>
+<td>普通编码代理中统筹单场会话与运行状态的核心对象</td>
+</tr>
+<tr>
+<td>Turn / Run</td>
+<td>Turn 指单次模型回复及其工具调用；Run 指一次用户输入触发的整串回合直至 <code>agent_settled</code></td>
+</tr>
+<tr>
+<td>Exposure</td>
+<td>控制工具如何声明给模型、能否被脚本或 <code>tool_search</code> 触达的策略</td>
+</tr>
+<tr>
+<td>Nested call</td>
+<td>由编排工具内部发起、原始结果先回到调用方脚本的工具调用</td>
+</tr>
+<tr>
+<td>Projection</td>
+<td>从磁盘原始树形历史按活动分支、压缩边界与上下文编辑算出的模型输入</td>
+</tr>
+<tr>
+<td>Copy credit</td>
+<td><code>StreamingJsonParser</code> 用来限制大容器开路径快照拷贝频次的信用额度，防止退化为平方复杂度</td>
+</tr>
+<tr>
+<td>Read-only render cache</td>
+<td>v1.6.0 <code>Container</code> 对未变子树返回同一 <code>readonly string[]</code> 引用以省去逐层拷贝的机制</td>
+</tr>
+<tr>
+<td>Journal / replay</td>
+<td>Durable 运行时按顺序记录已交付工具结果并在重启后确定性重放的机制</td>
+</tr>
+<tr>
+<td>Idempotency</td>
+<td>同一外部业务操作在重试时不会造成重复不可逆副作用的契约</td>
+</tr>
+</tbody></table>
+<h3>顺着源码继续深挖的路线</h3>
+<p>想先吃透普通 CLI，推荐从 <code>docs/how-pi-works.md</code> 和 <code>docs/sdk.md</code> 入手，再依次读 <code>docs/codemode.md</code>、<code>extensions/codemode/tool.ts</code> 与 <code>execute.ts</code>；想研究 v1.5.0 和 v1.6.0 的热路径优化，直接翻 <code>packages/ai/src/utils/streaming-json.ts</code>、<code>packages/tui/src/tui.ts</code> 中的 <code>renderChildLines()</code> 与 <code>packages/schema/</code>；打算把受限脚本能力嵌进自有产品，优先读 <code>packages/codemode/README.md</code>；只有确定业务真的需要跨进程重启恢复长任务时，再进入 <code>packages/durable/README.md</code> 与 <code>packages/env/README.md</code>。</p>
+<h1 id="sources">来源索引与核查范围</h1>
+<p>所有源码链接均固定到对应版本标签，正文方括号编号可直接跳转。版本提交与差异统计见仓库中的 <code>sources/UPSTREAM.md</code> 与 <code>sources/versions.json</code>。</p>
+<div class="source" id="s1">
+
+<p><strong>[S1] <a href="https://github.com/earendil-works/pi/releases/tag/v1.6.0">最新发布与固定标签 v1.6.0</a></strong></p>
+<p>本版比较端点：v1.6.0（提交 faac585884ae2c013a6b1400f3e9e77f10b34bac，发布于 2026-11-20）；详细元数据见 versions.json 与 UPSTREAM.md。</p>
+</div>
+
+<div class="source" id="s2">
+
+<p><strong>[S2] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/CHANGELOG.md">coding-agent 版本变更日志</a></strong></p>
+<p>完整版本时间线，涵盖 Code Mode/MCP 引入及 v1.0.0 至 v1.6.0 的演进与破坏性变更。</p>
+</div>
+
+<div class="source" id="s3">
+
+<p><strong>[S3] <a href="https://github.com/earendil-works/pi/blob/v0.9.4/packages/agent/src/agent.ts">旧版有状态 Agent</a></strong></p>
+<p>早期 transport.run、消息转换、事件与队列设计。</p>
+</div>
+
+<div class="source" id="s4">
+
+<p><strong>[S4] <a href="https://github.com/earendil-works/pi/blob/v0.9.4/packages/ai/src/agent/agent-loop.ts">旧版 ai 包中的工具循环</a></strong></p>
+<p>工具参数校验、顺序工具执行与回合循环。</p>
+</div>
+
+<div class="source" id="s5">
+
+<p><strong>[S5] <a href="https://github.com/earendil-works/pi/blob/v0.9.4/packages/coding-agent/src/session-manager.ts">旧版线性 SessionManager</a></strong></p>
+<p>线性 JSONL 记录与复制到新文件的早期分支方式。</p>
+</div>
+
+<div class="source" id="s6">
+
+<p><strong>[S6] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/agent/README.md">当前 Agent 核心文档</a></strong></p>
+<p>消息变换、事件流、默认并行工具执行与历史写入顺序保证。</p>
+</div>
+
+<div class="source" id="s7">
+
+<p><strong>[S7] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/how-pi-works.md">How Pi Works</a></strong></p>
+<p>当前主运行链、上下文、会话和交互接口总览。</p>
+</div>
+
+<div class="source" id="s8">
+
+<p><strong>[S8] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/package.json">普通 CLI 包清单与依赖</a></strong></p>
+<p>v1.6.0 依赖精确固定；直接依赖 agent-core、ai、codemode、mcp、tui，不依赖 durable、env 或 chord。</p>
+</div>
+
+<div class="source" id="s9">
+
+<p><strong>[S9] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/sdk.md">SDK 生命周期与状态</a></strong></p>
+<p>AgentSession、SessionManager、agent_settled、资源加载与内置扩展差异。</p>
+</div>
+
+<div class="source" id="s10">
+
+<p><strong>[S10] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/codemode.md">Code Mode 用户与脚本契约</a></strong></p>
+<p>全局接口、返回值、输出上限、store、models 辅助能力与资源限制。</p>
+</div>
+
+<div class="source" id="s11">
+
+<p><strong>[S11] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/session-format.md">当前会话文件格式</a></strong></p>
+<p>树形条目、压缩边界、context_edit、自定义状态与上下文投影。</p>
+</div>
+
+<div class="source" id="s12">
+
+<p><strong>[S12] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/compaction.md">压缩机制</a></strong></p>
+<p>触发阈值、保留边界、模型输出上限预算、分支总结与恢复。</p>
+</div>
+
+<div class="source" id="s13">
+
+<p><strong>[S13] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/codemode/README.md">独立 Code Mode 沙箱库</a></strong></p>
+<p>worker 与 QuickJS/WASM、独立接入、Cloudflare 远程沙箱、确定性 start 与结果契约。</p>
+</div>
+
+<div class="source" id="s14">
+
+<p><strong>[S14] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/src/extensions/codemode/execute.ts">Code Mode executor 实现</a></strong></p>
+<p>ctx.executeTool 调用链、结果适配、状态提交、worker 排队与容量准入。</p>
+</div>
+
+<div class="source" id="s15">
+
+<p><strong>[S15] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/extensions.md">扩展、嵌套调用与工具契约</a></strong></p>
+<p>exposure、reachesTools、pi-schema 参数校验边界、生命周期事件与权限扩展。</p>
+</div>
+
+<div class="source" id="s16">
+
+<p><strong>[S16] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/mcp.md">MCP 接入与 exposure</a></strong></p>
+<p>命名规则、后台连接时机、发现与过滤、CallToolResult、OAuth CIMD 与替换扩展。</p>
+</div>
+
+<div class="source" id="s17">
+
+<p><strong>[S17] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/settings.md">设置与工具呈现</a></strong></p>
+<p>defaultTools、codemode.mode、inlineBudget、cacheWarming、collapseChangelog 与 selfUpdateCommand。</p>
+</div>
+
+<div class="source" id="s18">
+
+<p><strong>[S18] <a href="https://github.com/earendil-works/pi/commit/7472cda0d6e51dfbf53c03f46b47aa42ac64bf64">删除未发布的实验服务栈</a></strong></p>
+<p>2026-10-12 清理从未进入正式发布包的实验客户端/协议/服务端目录。</p>
+</div>
+
+<div class="source" id="s19">
+
+<p><strong>[S19] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/cli.md">命令行参考</a></strong></p>
+<p>增量工具选择、MCP 排除、自定义自更新命令 PI_SELF_UPDATE_COMMAND 与 pi auth 登录命令。</p>
+</div>
+
+<div class="source" id="s20">
+
+<p><strong>[S20] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/examples/sdk/14-codemode-mcp.ts">官方 SDK Code Mode/MCP 示例</a></strong></p>
+<p>装配三个内置扩展、启用工具、bindExtensions 与资源释放。</p>
+</div>
+
+<div class="source" id="s21">
+
+<p><strong>[S21] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/codemode/CHANGELOG.md">独立 Code Mode 包版本记录</a></strong></p>
+<p>start、portable、remote、未知成员报错、内建冻结、close 与真实 worker 生命周期。</p>
+</div>
+
+<div class="source" id="s22">
+
+<p><strong>[S22] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/agent/CHANGELOG.md">Agent 包迁移与清理记录</a></strong></p>
+<p>旧 transport 删除、并行工具执行与 v1.0.0 移除旧实验 harness 导出。</p>
+</div>
+
+<div class="source" id="s23">
+
+<p><strong>[S23] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/durable/README.md">实验性 Durable Harness</a></strong></p>
+<p>持久任务与存储、Code Mode journal/replay、幂等与 replay 策略。</p>
+</div>
+
+<div class="source" id="s24">
+
+<p><strong>[S24] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/env/README.md">远程执行环境 pi-env</a></strong></p>
+<p>SSH、Rust daemon、RemoteExecutionEnv 与 host key 校验。</p>
+</div>
+
+<div class="source" id="s25">
+
+<p><strong>[S25] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/security.md">安全与项目可信决策</a></strong></p>
+<p>默认无逐调用审批；OS 权限、容器隔离、项目信任与 prompt injection 边界。</p>
+</div>
+
+<div class="source" id="s26">
+
+<p><strong>[S26] <a href="https://github.com/earendil-works/pi/blob/v1.4.0/packages/coding-agent/src/extensions/codemode/execute.ts">v1.4.0 worker 排队与容量准入</a></strong></p>
+<p>reserveCodemodeWorker、FIFO 放行、60 秒等待上限、共享 deadline 与 PI_CODEMODE_MAX_WORKERS。</p>
+</div>
+
+<div class="source" id="s27">
+
+<p><strong>[S27] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/models.md">分类器图片能力与供应商边界</a></strong></p>
+<p>classifier input 能力、图片格式、System One 与 Copilot 分类器、usage 与计费边界。</p>
+</div>
+
+<div class="source" id="s28">
+
+<p><strong>[S28] <a href="https://github.com/earendil-works/pi/blob/v1.4.0/packages/coding-agent/src/core/compaction/compaction.ts">摘要输出预算实现</a></strong></p>
+<p>移除按 reserveTokens 折算的固定输出上限，将自定义指令透传到切分回合前缀摘要。</p>
+</div>
+
+<div class="source" id="s29">
+
+<p><strong>[S29] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/models-configuration.md">Models Configuration 字段参考</a></strong></p>
+<p>由 schema 生成的 provider、模型与 compat 字段参考，含 supportsMessageThreads 与分类器图片协议字段。</p>
+</div>
+
+<div class="source" id="s30">
+
+<p><strong>[S30] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/ai/src/utils/streaming-json.ts">增量流式工具参数解析器</a></strong></p>
+<p>v1.5.0 新增 StreamingJsonParser 与 ToolCallArgumentsStream：线性 append、开路径拷贝信用额度与不可变快照共享。</p>
+</div>
+
+<div class="source" id="s31">
+
+<p><strong>[S31] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/tui/src/tui.ts">TUI 组件契约与 Container 渲染缓存</a></strong></p>
+<p>v1.6.0 破坏性变更：render() 返回 readonly string[]，renderChildLines 在子组件未变时复用缓存数组引用。</p>
+</div>
+
+<div class="source" id="s32">
+
+<p><strong>[S32] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/tui.md">TUI 扩展与响应性文档</a></strong></p>
+<p>只读渲染行契约、复制后再修改规范、blocked 状态与高性能渲染实践。</p>
+</div>
+
+<div class="source" id="s33">
+
+<p><strong>[S33] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/src/modes/interactive/components/assistant-message.ts">AssistantMessageComponent 块复用与拷贝写</a></strong></p>
+<p>MarkdownSlot 流式块复用，以及在修改 super.render() 输出前先拷贝到 zoneLines 的示范实现。</p>
+</div>
+
+<div class="source" id="s34">
+
+<p><strong>[S34] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/src/modes/interactive/components/tool-execution.ts">ToolExecutionComponent 按帧合并渲染</a></strong></p>
+<p>updateArgs 置 argsPending 并交由下一帧渲染，避免每个流式 delta 重复高亮与重绘。</p>
+</div>
+
+<div class="source" id="s35">
+
+<p><strong>[S35] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/schema/package.json">零 eval 闭包校验库 pi-schema</a></strong></p>
+<p>v1.5.0 新增 @earendil-works/pi-schema，将 JSON Schema Draft 2020-12/7 编译为普通闭包，统一工具参数校验与宽松类型转换。</p>
+</div>
+
+<div class="source" id="s36">
+
+<p><strong>[S36] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/packages.md">扩展包更新日志与依赖规范</a></strong></p>
+<p>pi.changelogPath、collapseChangelog 与 host 提供包的 peerDependencies 规范。</p>
+</div>
+
+<div class="source" id="s37">
+
+<p><strong>[S37] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/ai/src/cache-warming.ts">空闲 Prompt 缓存预热策略</a></strong></p>
+<p>v1.5.1 默认切至 idle 预热，30 分钟窗口与 expectedSavings &gt;= 0.05 美元的经济性门槛。</p>
+</div>
+
+<div class="source" id="s38">
+
+<p><strong>[S38] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/ai/catalog/families/openai.ts">OpenAI 模型家族与思维等级约束</a></strong></p>
+<p>GPT-6.2 Astra/Sol、GPT-6.1 Terra 定价与 GPT_6_NO_NONE_EFFORT_MODEL_IDS 集合定义。</p>
+</div>
+
+<div class="source" id="s39">
+
+<p><strong>[S39] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/sessions.md">会话恢复与目录缺失分叉</a></strong></p>
+<p>v1.5.2 新增目录丢失时 Continue/Fork/Cancel 交互，Fork 生成新会话写入当前目录。</p>
+</div>
+
+<div class="source" id="s40">
+
+<p><strong>[S40] <a href="https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/src/core/agent-session-runtime.ts">AgentSessionRuntime 去重诊断接口</a></strong></p>
+<p>v1.6.0 新增 takeUnreportedDiagnostics()，统一在交互、print、JSON 与 RPC 模式上报会话切换与重载诊断。</p>
+</div>
+
+<h2>核查范围与限制</h2>
+<p>本书逐项核对五个固定版本标签（<code>v0.9.4</code>、<code>v0.99.2</code>、<code>v1.3.0</code>、<code>v1.4.0</code> 与 <code>v1.6.0</code>）的包依赖、主运行链文档、核心循环、Code Mode 适配层、<code>pi-schema</code>、流式解析器与 TUI 渲染缓存源码，正文中明确区分可直接运行的本地示例与教学伪代码。</p>
+<p>本地验证包含零依赖 Python 3.10+ 教学模型及 20 项单元测试、6 个 Node 模拟脚本，以及 HTML、EPUB 3 和 PDF 的结构与渲染核对。未执行上游全量测试套件、真实 Cloudflare 或 SSH 部署、付费模型线上压测或沙箱安全审计；引用的上游性能数字均标明了出处。</p>
+<p>按专题深入源码的优先入口：S7 建立主运行链全景，S10 与 S14 追踪脚本执行契约，S30 至 S34 深入 v1.5.0 与 v1.6.0 的流式解析和只读渲染缓存，S35 阅读 <code>pi-schema</code> 校验层，S13 与 S23 分别面向独立沙箱与实验性 Durable 重放。</p>
+<h2>固定提交</h2>
+<ul>
+<li><code>v0.9.4</code>：<code>a484330cd15e5844dfa42a4749594067128ea0c1</code></li>
+<li><code>v0.99.2</code>：<code>005af57d88ee23b33778f343a9595b32e67ff788</code></li>
+<li><code>v1.3.0</code>：<code>71023aec1546d6d677a65669c5665c0927ce0dd0</code></li>
+<li><code>v1.4.0</code>：<code>4a080252f06caf63a525d7873c5d94d3c23887e0</code></li>
+<li><code>v1.6.0</code>：<code>faac585884ae2c013a6b1400f3e9e77f10b34bac</code></li>
+</ul>
+<p>来源材料归官方仓库所有；本书属于源码整理与教学拆解，不代表项目官方文档。</p>
+<footer>阅读建议：先运行本地 Python 单元测试与 Node 检查脚本，再对照固定标签源码核对需要迁移的接口。</footer></main></div><script>
+const count = document.getElementById('call-count');
+const raw = document.getElementById('raw-size');
+function updateDemo(){
+ const n=Number(count.value), r=Number(raw.value), f=x=>x.toLocaleString('zh-CN');
+ document.getElementById('count-label').textContent=f(n);
+ document.getElementById('raw-label').textContent=f(r);
+ document.getElementById('demo-result').textContent=f(n*r)+' 字符 → '+f(n*300)+' 字符';
+}
+count.addEventListener('input',updateDemo);raw.addEventListener('input',updateDemo);
+document.getElementById('print-book').addEventListener('click',()=>window.print());
+updateDemo();
+
+/* Progressive reading controls; no network and no dependency on writable storage. */
+(() => {
+  const root = document.documentElement;
+  const themeKey = 'ebook-reader:appearance';
+  const get = key => { try { return localStorage.getItem(key); } catch { return null; } };
+  const put = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
+  let theme = get(themeKey) || root.dataset.theme || 'auto';
+  if (!['auto', 'light', 'dark'].includes(theme)) theme = 'auto';
+  const old = document.querySelector('button[data-theme]');
+  const button = old ? old.cloneNode(true) : document.createElement('button');
+  button.type = 'button';
+  button.dataset.readerTheme = '';
+  button.classList.add('control');
+  if (old) old.replaceWith(button);
+  else {
+    const tools = document.querySelector('.reader-tools,.topbar .tools,.topbar,.bar-inner nav,.tools');
+    if (tools) tools.append(button);
+  }
+  function applyTheme() {
+    root.dataset.theme = theme;
+    button.textContent = {auto:'自动',light:'浅色',dark:'深色'}[theme];
+    button.setAttribute('aria-label', '外观：' + button.textContent + '，点击切换');
+    button.title = '依次切换自动、浅色、深色';
+  }
+  applyTheme();
+  button.addEventListener('click', () => {
+    theme = {auto:'light',light:'dark',dark:'auto'}[theme];
+    applyTheme(); put(themeKey, theme);
+  });
+
+  const bookNav = document.querySelector('.layout>nav.toc');
+  if (bookNav) {
+    const wrapper = document.createElement('details');
+    wrapper.className = 'reader-book-toc';
+    const wide = matchMedia('(min-width:1001px)');
+    wrapper.open = wide.matches;
+    wide.addEventListener('change', event => { wrapper.open = event.matches; });
+    const summary = document.createElement('summary'); summary.textContent = '全书目录';
+    bookNav.before(wrapper); wrapper.append(summary, bookNav);
+  }
+  const rail = document.querySelector('.chapter-rail');
+  if (rail && !document.querySelector('.reader-mobile-toc')) {
+    const list = rail.querySelector('ol');
+    const header = document.querySelector('.chapter-head');
+    if (list && header) {
+      const toc = document.createElement('details');
+      toc.className = 'reader-mobile-toc';
+      const label = document.createElement('summary');
+      label.textContent = '本章目录';
+      toc.append(label, list.cloneNode(true));
+      header.after(toc);
+    }
+  }
+  document.querySelectorAll('table').forEach(table => {
+    if (table.closest('.table-wrap')) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'table-wrap';
+    table.before(wrap); wrap.append(table);
+  });
+  document.querySelectorAll('.table-wrap').forEach(wrap => {
+    wrap.tabIndex = 0;
+    wrap.setAttribute('role', 'region');
+    if (!wrap.hasAttribute('aria-label')) wrap.setAttribute('aria-label', '数据表，可横向滚动');
+  });
+  document.querySelectorAll('pre').forEach(pre => {
+    pre.tabIndex = 0;
+    pre.setAttribute('aria-label', '代码示例，可横向滚动');
+  });
+  document.querySelectorAll('.prose pre,.content pre').forEach(pre => {
+    if (pre.querySelector('button')) return;
+    const copy = document.createElement('button');
+    copy.className = 'copy'; copy.type = 'button'; copy.textContent = '复制';
+    pre.append(copy);
+  });
+  document.querySelectorAll('button.copy').forEach(oldButton => {
+    // Replace the original listener so clipboard rejection always has a recovery.
+    const copy = oldButton.cloneNode(true);
+    oldButton.replaceWith(copy);
+    copy.setAttribute('aria-label', '复制这段代码');
+    copy.setAttribute('aria-live', 'polite');
+    copy.addEventListener('click', async () => {
+      const code = copy.closest('pre')?.querySelector('code');
+      if (!code) return;
+      try {
+        await navigator.clipboard.writeText(code.textContent);
+        copy.textContent = '已复制';
+      } catch {
+        const range = document.createRange(); range.selectNodeContents(code);
+        const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+        copy.textContent = '已选中';
+        copy.title = '浏览器限制复制，请按 Ctrl+C 或长按复制';
+      }
+      setTimeout(() => { copy.textContent = '复制'; }, 1600);
+    });
+  });
+  // Print folded examples too, then restore the reader's disclosure state.
+  let printDetails = [];
+  addEventListener('beforeprint', () => {
+    printDetails = [...new Set([...printDetails, ...document.querySelectorAll('main details:not([open])')])];
+    printDetails.forEach(details => { details.open = true; });
+  });
+  addEventListener('afterprint', () => {
+    printDetails.forEach(details => { details.open = false; });
+    printDetails = [];
+  });
+  const links = [...document.querySelectorAll('.chapter-rail a[href^="#"],.reader-mobile-toc a[href^="#"],nav.toc>a[href^="#"]')];
+  const headings = [...new Set(links.map(link => document.getElementById(decodeURIComponent(link.hash.slice(1)))).filter(Boolean))];
+  if (headings.length && 'IntersectionObserver' in window) {
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) if (entry.isIntersecting) {
+        links.forEach(link => {
+          if (decodeURIComponent(link.hash.slice(1)) === entry.target.id) link.setAttribute('aria-current','location');
+          else link.removeAttribute('aria-current');
+        });
+      }
+    }, {rootMargin:'-10% 0px -65% 0px'});
+    headings.forEach(heading => observer.observe(heading));
+  }
+})();
+</script></body></html>

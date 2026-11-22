@@ -1,0 +1,10 @@
+sources/repos/
+sources/drafts-v0/
+sources/papers/
+sources/notebook-review.txt
+wiki/node_modules/
+**/__pycache__/
+*.pyc
+.venv/
+.chrome-tmp-*
+

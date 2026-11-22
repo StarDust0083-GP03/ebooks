@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从文档解析、切分、混合检索到纠错、图谱、评估与上线边界的 RAG 工程实战指南"><meta name="author" content="独立源码研究">
+<title>需求篇：先框住哪些问题必须答对 · RAG 工程实战</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">RAG</span><span>RAG 工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 01</div><div class="rail-title">需求篇：先框住哪些问题必须答对</div><ol><li><a href="#三类使用者-五类边界请求">三类使用者，五类边界请求</a></li><li><a href="#响应结构要先区分状态">响应结构要先区分状态</a></li><li><a href="#文档更新与删除也是功能需求">文档更新与删除也是功能需求</a></li><li><a href="#怎么写可验证的验收条件">怎么写可验证的验收条件</a></li><li><a href="#为什么第一版先不上-agent">为什么第一版先不上 Agent</a></li><li><a href="#本章对应代码与资料">本章对应代码与资料</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 01 章</div><h1>需求篇：先框住哪些问题必须答对</h1><div class="chapter-meta">RAG_Techniques 快照 2026-11-02 · 约 8 分钟</div></header><div class="prose"><p>动手选向量库之前，先拿一个具体请求把验收标准钉死：“支付回调验签和幂等如何处理？”如果系统只找回验签顺序，就漏掉了重复通知的去重规则；如果它把已废弃的 v1 文档排在前面，就会给出“先改订单状态再异步验签”这种完全相反的危险建议。检索接口返回两条高分片段，离满足这项业务需求还差得远。</p>
+<h2 id="三类使用者-五类边界请求">三类使用者，五类边界请求<a class="anchor" href="#三类使用者-五类边界请求" aria-label="链接到本节">#</a></h2>
+<p>研发知识库主要服务三类角色：刚接手支付模块的新人想理清主流程，值班研发要快速核对异常条款和评审负责人，文档维护者则关心新发布的规范有没有立刻替换掉旧版。同一套检索后端要承接不同诉求，先把五类典型请求的底线列清楚：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>请求类型</th>
+<th>必须交付的内容</th>
+<th>明确禁止的行为</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>回调处理顺序</td>
+<td>现行 v2 规范的完整前置条件</td>
+<td>引用已废弃的 v1 规则</td>
+</tr>
+<tr>
+<td>重复通知如何处理</td>
+<td>幂等键构成与重复事件处理策略</td>
+<td>把验签等同于幂等</td>
+</tr>
+<tr>
+<td>回调模块找谁评审</td>
+<td>模块归属记录加上对应团队负责人</td>
+<td>仅凭相似人名猜测</td>
+</tr>
+<tr>
+<td>某一笔退款到账了吗</td>
+<td>明确告知需查询实时业务系统</td>
+<td>用规范文档臆断单笔交易状态</td>
+</tr>
+<tr>
+<td>查看同事私人排查笔记</td>
+<td>按服务端认证身份严格隔离</td>
+<td>被换问法或提示注入套出他人笔记</td>
+</tr>
+</tbody></table></div>
+<p>第一版只承诺把现行规范的证据找全、找准，并附上可核对出处。跨文档查负责人这类两跳题先留作评估里的挑战样本，等数据证明现有链路答不上来再考虑二次检索或图谱，不为了演示炫技一上来就搭图数据库。实时交易查询、历史时点回溯、自动执行退款和全库聚合统计全部排除在第一版范围外。</p>
+<h2 id="响应结构要先区分状态">响应结构要先区分状态<a class="anchor" href="#响应结构要先区分状态" aria-label="链接到本节">#</a></h2>
+<p>很多问答接口失败时只会统一回复一句“未找到相关资料”。用户分不清究竟是知识库里确实没写、权限不够、还是下游向量库超时了。先把响应协议拆清楚，前端展示和离线评估才能各司其职：</p>
+<pre><code class="language-json">{
+  &quot;request_id&quot;: &quot;demo-001&quot;,
+  &quot;status&quot;: &quot;evidence_ready&quot;,
+  &quot;answer&quot;: null,
+  &quot;citations&quot;: [&quot;callback-v2:0&quot;, &quot;callback-v2:1&quot;],
+  &quot;index_version&quot;: &quot;teaching-v1&quot;
+}
+</code></pre>
+<p>这里有三个核心状态必须分开：<code>evidence_ready</code> 表示授权、召回和预算打包均已完成，证据包可以交给生成器或直接展示，但本身不保证最终自然语言回答无误；<code>insufficient_evidence</code> 表示在当前用户可见范围内确实没找到足够证据，应触发拒答或人工接管；<code>dependency_failed</code> 表示检索服务、重排器或上游模型异常，运维需要告警，不能伪装成“公司没有这条规范”。</p>
+<p>每一条引用至少要落到文档标识、版本号和片段位置。界面上如果只在回答末尾挂一长串文档标题，审阅者根本没法核对哪句话出自哪一段，也发现不了模型拿验签段落去强行佐证幂等结论的错配。</p>
+<h2 id="文档更新与删除也是功能需求">文档更新与删除也是功能需求<a class="anchor" href="#文档更新与删除也是功能需求" aria-label="链接到本节">#</a></h2>
+<p>支付规范从 v1 升到 v2 后，日常查询默认只能看到 v2。旧版可以留作审计归档，但绝不能因为措辞更贴近用户的老问法就混进当前回答。同样，一旦某位同事删掉自己的私人排查笔记，原文不可读还不够，基于它生成的向量、问题代理、章节摘要和问答缓存都必须同步失效。</p>
+<p>在配套代码里，我们用 <code>active</code> 布尔字段表示当前生效视图，用 <code>scope</code> 字段区分公共文档与个人笔记。命令行参数 <code>--user</code> 只在离线实验里充当身份替身；放到真实服务端时，用户身份和租户必须来自可信会话或令牌校验，绝不能相信客户端在请求体里自己声明的用户名。</p>
+<h2 id="怎么写可验证的验收条件">怎么写可验证的验收条件<a class="anchor" href="#怎么写可验证的验收条件" aria-label="链接到本节">#</a></h2>
+<p>“回答准确率达到 95%”这类指标缺乏题集、判定规则和样本口径，落到工程上基本没法测。更稳妥的做法是先把需求写成固定题集和必要证据清单。</p>
+<p>以回调综合题为例，它的标准答案集合包含 <code>callback-v2:0</code> 和 <code>callback-v2:1</code> 两条片段。哪怕检索器把第一条排到榜首、拿满 MRR 1.0，只要第二条没进最终上下文，这道题在完整性指标上依然记为失败。除正常有答案题外，验收集还必须固定保留三类专项样本：无答案拒答题、废弃版本干扰题和跨用户越权题。面对这三类样本，干净利落地少答甚至不答，比强行凑满 top-k 更有价值。</p>
+<h2 id="为什么第一版先不上-agent">为什么第一版先不上 Agent<a class="anchor" href="#为什么第一版先不上-agent" aria-label="链接到本节">#</a></h2>
+<p>第一版的高频问题几乎都能在“一次授权检索 + 一次证据打包”里收口。过早引入自主规划 Agent，会额外多出工具误选、多轮循环、费用翻倍和难以复现的轨迹波动。先把每一步写成输入输出明确的函数，保留候选 ID 与注入 ID 日志；等评估集里的真实失败案例证明单轮检索解不了“查模块再查负责人”，再按受控状态机逐步放开第二轮检索。</p>
+<h2 id="本章对应代码与资料">本章对应代码与资料<a class="anchor" href="#本章对应代码与资料" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="appendix-code.html">数据模型与证据打包</a></li>
+<li><a href="appendix-code.html">带版本与权限范围的教学语料</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/reliable_rag.ipynb">上游 Reliable RAG</a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="00-opening.html"><small>上一章</small><strong>开篇：文档都在库里，助手为什么还会答错</strong></a><a class="next" href="02-architecture.html"><small>下一章</small><strong>技术方案：从需求推导一条可追踪的链路</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-opening.html"><span>00</span>开篇：文档都在库里，助手为什么还会答错</a><a href="../chapters/01-requirements.html"><span>01</span>需求篇：先框住哪些问题必须答对</a><a href="../chapters/02-architecture.html"><span>02</span>技术方案：从需求推导一条可追踪的链路</a><a href="../chapters/03-ingestion.html"><span>03</span>资料入库：先把文档读对，再谈检索</a><a href="../chapters/04-chunking.html"><span>04</span>文档切分：验签和幂等，为什么总只召回一半</a><a href="../chapters/05-baseline.html"><span>05</span>基础检索：先交付一条能复现的离线链路</a><a href="../chapters/06-fusion-reranking.html"><span>06</span>混合检索与重排：把不同候选放进同一张账</a><a href="../chapters/07-query-enhancement.html"><span>07</span>查询增强：用户不一定会说出幂等这个词</a><a href="../chapters/08-context.html"><span>08</span>证据组装：检索到了，还要让模型完整读到</a><a href="../chapters/09-evaluation.html"><span>09</span>评估：两条高分结果，未必够答完一个问题</a><a href="../chapters/10-corrective.html"><span>10</span>纠错检索：找不到以后，系统走哪一条路</a><a href="../chapters/11-hierarchy-memory.html"><span>11</span>层次索引与记忆：问题开始面向整份资料</a><a href="../chapters/12-graph.html"><span>12</span>图谱检索：从模块一路查到技术负责人</a><a href="../chapters/13-multimodal-agent.html"><span>13</span>多模态与 Agent：处理图表文档与多步任务</a><a href="../chapters/14-production.html"><span>14</span>上线边界：权限、快照、停服与故障不能靠提示词兜底</a><a href="../chapters/15-wrap-up.html"><span>15</span>完结篇：用一次请求串起整套设计</a><a href="../chapters/appendix-map.html"><span>A</span>附录 A：上游 47 份 Notebook 与 21 份脚本阅读地图</a><a href="../chapters/appendix-sources.html"><span>B</span>附录 B：源码快照、论文范围、术语与研究边界</a><a href="../chapters/appendix-code.html"><span>C</span>附录 C：配套教学实现与样例数据</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · RAG_Techniques 2fd7bd0ffe5b（2026-11-02）· 核对 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

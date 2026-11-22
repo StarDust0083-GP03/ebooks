@@ -1,0 +1,147 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Agent Memory from Scratch 中文电子书"><title>从零实现持久记忆 · Agent Memory from Scratch</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><div class="shell"><header class="topbar"><a class="brand" href="../index.html">Agent Memory</a><span class="spacer"></span><a class="control hide-mobile" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="04-from-scratch"><div class="eyebrow">第 4 章</div><details class="toc"><summary>本章目录</summary><ol><li><a href="#先做一个不接大模型的最小记忆实验">先做一个不接大模型的最小记忆实验</a></li><li><a href="#打开-sqlite-看看磁盘里到底存了什么">打开 SQLite，看看磁盘里到底存了什么</a></li><li><a href="#相关性分数到底是怎么算出来的">相关性分数到底是怎么算出来的</a></li><li><a href="#用显式替代-supersedes-更新长期偏好-同时保住历史">用显式替代（supersedes）更新长期偏好，同时保住历史</a></li><li><a href="#把搜索结果装进有限上下文预算">把搜索结果装进有限上下文预算</a></li><li><a href="#软遗忘-先-dry-run-预览-而且绝不是物理删除">软遗忘：先 `dry-run` 预览，而且绝不是物理删除</a></li><li><a href="#动手检查">动手检查</a></li><li><a href="#本章对照结论">本章对照结论</a></li></ol></details><article class="content"><h1 id="从零实现持久记忆">从零实现持久记忆</h1><h2 id="先做一个不接大模型的最小记忆实验">先做一个不接大模型的最小记忆实验</h2><p>前面聊了三章概念，这一章我们直接动手跑代码——而且<strong>彻底剥离大模型 API</strong>，只用 Python 标准库 + SQLite。</p>
+<p>为什么要先去掉大模型？因为一上来就接 LLM 抽取、远程 Embedding 和云向量库，一旦“搜不到”，你根本分不清是模型抽歪了、向量没对齐、网络超时了，还是自己的过滤逻辑写错了。把人工确认过的规程直接写进本地 SQLite，能让你把<strong>持久化、用户隔离、版本替代、Token 预算、软遗忘</strong>这五个核心控制点看得清清楚楚。</p>
+<p>从仓库根目录打开终端，把练习库建在临时目录里跑一遍（代码见 <a href="https://github.com/StarDust0083-GP03/agent-memory-from-scratch/blob/main/examples/mini_memory.py">mini_memory.py</a>）：</p>
+<pre tabindex="0"><code class="hljs">practice=$(<span class="hljs-built_in">mktemp</span> -d)
+python3 examples/mini_memory.py --db <span class="hljs-string">&quot;<span class="hljs-variable">$practice</span>/dev.sqlite&quot;</span> remember \
+  <span class="hljs-string">&quot;payment-gateway 发布前必须核对 idempotency_key 覆盖重试窗口&quot;</span> \
+  --user linyuan --kind procedural --<span class="hljs-built_in">source</span> release-14
+python3 examples/mini_memory.py --db <span class="hljs-string">&quot;<span class="hljs-variable">$practice</span>/dev.sqlite&quot;</span> recall \
+  <span class="hljs-string">&quot;payment-gateway 幂等键&quot;</span> --user linyuan
+python3 examples/mini_memory.py --db <span class="hljs-string">&quot;<span class="hljs-variable">$practice</span>/dev.sqlite&quot;</span> recall \
+  <span class="hljs-string">&quot;payment-gateway 幂等键&quot;</span> --user chenming</code></pre><p>跑完立刻能验证两件事：</p>
+<ol>
+<li><strong>跨进程持久化</strong>：第一条命令写完就退出进程，返回 12 位随机 ID；第二条命令起了全新 Python 进程，依然稳稳读回正文和 <code>source: &quot;release-14&quot;</code>；</li>
+<li><strong>用户范围隔离</strong>：第三条命令换同事 <code>chenming</code> 来查，直接返回空列表 <code>[]</code>——哪怕查询词一模一样，也碰不到 <code>linyuan</code> 的数据。</li>
+</ol>
+<blockquote>
+<p>提醒一句：命令行里的 <code>--user</code> 只是教学演示的过滤参数，谁都能在终端随便填。放到生产环境里，<code>user_id</code> 必须由服务端鉴权会话得出，绝不能让客户端或模型自己填！</p>
+</blockquote>
+<details class="source-example">
+<summary>源码与边界：最小实现和 Mem0 / Graphiti 差在哪（选读）</summary>
+
+<p><img src="../assets/rewrite-memory-a/04-01.svg" alt="零依赖 SQLite 实验的三层验证"></p>
+<h3 id="对照-mem0-最接近的是-infer-false-直存路径">对照 Mem0：最接近的是 <code>infer=False</code> 直存路径</h3><p>Mem0 的 <code>add(..., infer=False)</code> 同样跳过 LLM 事实抽取，直接把审核好的文本存进去，但它依然依赖配置好的 embedding 模型和向量后端，并不是零依赖。另外，Mem0 的状态分散在向量库和 SQLite 历史表里，备份或排障时不能只盯着一个文件看。</p>
+<h3 id="对照-graphiti-从-episode-到图对象链路更长">对照 Graphiti：从 Episode 到图对象链路更长</h3><p>Graphiti 的 <code>add_episode()</code> 即使只喂一条规程，也会调 LLM 抽实体、做消歧、算向量、写图数据库，把信息拆成 Episode、EntityNode、EntityEdge 三个互联对象。验证落盘时不能只看表里有没有一行文字，还得核对端点 UUID 和 <code>episodes</code> 引用连对了没有。</p>
+</details>
+
+<h2 id="打开-sqlite-看看磁盘里到底存了什么">打开 SQLite，看看磁盘里到底存了什么</h2><p><code>MemoryStore.__init__()</code> 开启了 WAL 模式，并建了一张带复合索引 <code>(user_id, valid_to, created_at)</code> 的 <code>memories</code> 表。直接用几行 Python 查库，不经过任何检索打分：</p>
+<pre tabindex="0"><code class="hljs">python3 - <span class="hljs-string">&quot;<span class="hljs-variable">$practice</span>/dev.sqlite&quot;</span> &lt;&lt;<span class="hljs-string">&#x27;PY&#x27;</span>
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as conn:
+    <span class="hljs-keyword">for</span> row <span class="hljs-keyword">in</span> conn.execute(<span class="hljs-string">&quot;SELECT user_id, kind, text, source FROM memories ORDER BY created_at&quot;</span>):
+        <span class="hljs-built_in">print</span>(row)
+PY</code></pre><p>养成这个习惯非常管用：以后排障时，<strong>先直接查底层存储确认数据在不在、范围对不对，再去怀疑检索公式</strong>。库里都没写进去，调一万遍权重也没用。</p>
+<h2 id="相关性分数到底是怎么算出来的">相关性分数到底是怎么算出来的</h2><p>打开 <a href="https://github.com/StarDust0083-GP03/agent-memory-from-scratch/blob/main/examples/mini_memory.py">mini_memory.py</a> 的 <code>recall()</code>，看它的两步控制流：</p>
+<ol>
+<li><strong>先硬过滤</strong>：SQL <code>WHERE user_id = ? AND valid_from &lt;= ? AND (valid_to IS NULL OR ? &lt; valid_to)</code> 先把无权查看和不在有效期的记录直接挡在门外；</li>
+<li><strong>再算六维加权分</strong>：<ul>
+<li>词重叠 <code>lexical</code>（权重 <code>0.42</code>）：英文按词切，中文拆成单字 + 相邻双字；</li>
+<li>256 桶哈希词袋余弦 <code>semantic</code>（权重 <code>0.28</code>）：用 <code>blake2b</code> 把词映射到 256 个桶算余弦；</li>
+<li>新近度 <code>recency</code>（权重 <code>0.10</code>）：30 天指数衰减；</li>
+<li>重要度 <code>importance</code>（<code>0.10</code>）、置信度 <code>confidence</code>（<code>0.07</code>）、访问频次 <code>frequency</code>（<code>0.03</code>，带上限对数）。</li>
+</ul>
+</li>
+</ol>
+<p>注意这里特意暴露了一个“诚实的局限”：虽然输出 JSON 里字段名叫 <code>semantic</code>，但它底层是 <strong>256 桶哈希词袋</strong>，根本没有接入真正的语义向量模型——不同词可能撞进同一个桶，同义词（比如“幂等键”和“防重复扣款标识”）如果不共字，分数就会掉下来。而且只要 <code>importance</code> 或 <code>recency</code> 足够高，字面毫不相关的记录也可能混出超过 <code>0.05</code> 阈值的分数。自己写完一遍，你就能一眼识破很多“玩具记忆库”的底牌。</p>
+<h2 id="用显式替代-supersedes-更新长期偏好-同时保住历史">用显式替代（supersedes）更新长期偏好，同时保住历史</h2><p>现在林远的偏好变了：以前改配置前要求先给 diff，现在改成直接提 PR 附变更说明。最小程序不会自作聪明猜冲突，而是由调用者显式传入旧记录 ID：</p>
+<pre tabindex="0"><code class="hljs">old_pref=$(python3 examples/mini_memory.py --db <span class="hljs-string">&quot;<span class="hljs-variable">$practice</span>/dev.sqlite&quot;</span> remember \
+  <span class="hljs-string">&quot;林远要求改配置前先在终端展示 diff&quot;</span> --user linyuan --kind profile)
+python3 examples/mini_memory.py --db <span class="hljs-string">&quot;<span class="hljs-variable">$practice</span>/dev.sqlite&quot;</span> remember \
+  <span class="hljs-string">&quot;林远要求改配置直接提 PR 并附变更说明&quot;</span> --user linyuan --kind profile \
+  --supersedes <span class="hljs-string">&quot;<span class="hljs-variable">$old_pref</span>&quot;</span>
+python3 examples/mini_memory.py --db <span class="hljs-string">&quot;<span class="hljs-variable">$practice</span>/dev.sqlite&quot;</span> recall \
+  <span class="hljs-string">&quot;改配置&quot;</span> --user linyuan</code></pre><p>进数据库看看发生了什么：在同一个 SQLite 事务里，旧记录的 <code>valid_to</code> 被设为当前时间戳，新记录的 <code>valid_from</code> 也设为同一时刻且 <code>supersedes</code> 指向旧 ID。</p>
+<ul>
+<li>现在查 <code>recall</code>，只会命中新偏好；</li>
+<li>旧记录正文<strong>依然留在库里</strong>，用 Python API 调 <code>recall(..., as_of=旧时刻)</code> 依然能还原历史；</li>
+<li>因为区间是左闭右开 <code>[valid_from, valid_to)</code>，交接那一瞬间精确只落在新记录上，不会出现两条同时有效或一瞬间空白。</li>
+</ul>
+<p>不过要注意边界：这个极简实现把“生效时刻”和“写入时刻”绑在了一起，还处理不了“11 月 4 日补录 11 月 1 日的交接”（双时间轴我们留到第 6 章拆透）。</p>
+<details class="source-example">
+<summary>源码与边界：替代与预算在真实项目里的对应位置（选读）</summary>
+
+<p><img src="../assets/rewrite-memory-a/04-02.svg" alt="显式替代与软遗忘的边界"></p>
+<h3 id="mem0-普通-add-没有-supersedes-参数">Mem0：普通 <code>add()</code> 没有 <code>supersedes</code> 参数</h3><p>别把这里的手工 <code>supersedes</code> 误以为 Mem0 也自带。Mem0 同步 OSS 写入默认是追加，你在 <code>metadata</code> 里写个 <code>supersedes</code> 字符串，底层并不会自动关闭旧记录——真要替代，得自己维护版本视图或显式调 <code>update()</code>。</p>
+<h3 id="graphiti-替代发生在语义与时间解析里">Graphiti：替代发生在语义与时间解析里</h3><p>Graphiti 靠模型判断新旧边矛盾后自动填旧边的 <code>invalid_at</code>，省掉了手工传旧 ID 的麻烦，但代价是模型可能误判（比如把“本周演示只跑 dry-run”误判成替代长期发布规程），所以必须配套正反例测试。</p>
+</details>
+
+<h2 id="把搜索结果装进有限上下文预算">把搜索结果装进有限上下文预算</h2><p>检索返回的 JSON 不能一股脑全扔给大模型，必须按预算打包：</p>
+<pre tabindex="0"><code class="hljs">python3 examples/mini_memory.py --db <span class="hljs-string">&quot;<span class="hljs-variable">$practice</span>/dev.sqlite&quot;</span> context \
+  <span class="hljs-string">&quot;payment-gateway 发布&quot;</span> --user linyuan --budget 40
+python3 examples/mini_memory.py --db <span class="hljs-string">&quot;<span class="hljs-variable">$practice</span>/dev.sqlite&quot;</span> context \
+  <span class="hljs-string">&quot;payment-gateway 发布&quot;</span> --user linyuan --budget 1</code></pre><p>看 <a href="https://github.com/StarDust0083-GP03/agent-memory-from-scratch/blob/main/examples/mini_memory.py">mini_memory.py</a> 里的 <code>context()</code> 实现，有三个细节非常值得拍下来留念：</p>
+<ol>
+<li><strong>整条取舍，不腰斩句子</strong>：先调 <code>recall(limit=20)</code> 拿候选，按顺序能塞下整条就装，太长塞不下就跳过看下一条短的，防止一刀把“不要真发版”里的“不要”切掉；</li>
+<li><strong>近似预算不是精准 Tokenizer</strong>：代码里粗略按 <code>budget * 4</code> 个字符算，而且没把标题行和换行算进去；生产环境必须拿目标模型的真实 tokenizer 对“完整拼接后的文本（含标签和出处）”算总长；</li>
+<li><strong>特意留下的“强化错位”示范</strong>：<code>context()</code> 调 <code>recall()</code> 时默认会给返回的所有候选加 <code>access_count + 1</code>——哪怕排第一的那条长记录因为超预算根本没装进 Prompt，它的访问计数也涨了！这正好提醒你：<strong>生产里必须把“搜到了（selected）”“装进去了（packed）”“模型真用了（used）”和“任务成功了（outcome）”彻底拆开记。</strong></li>
+</ol>
+<h2 id="软遗忘-先-dry-run-预览-而且绝不是物理删除">软遗忘：先 <code>dry-run</code> 预览，而且绝不是物理删除</h2><p>最后跑一下衰减遗忘命令：</p>
+<pre tabindex="0"><code class="hljs">python3 examples/mini_memory.py --db <span class="hljs-string">&quot;<span class="hljs-variable">$practice</span>/dev.sqlite&quot;</span> forget-decayed --user linyuan
+python3 examples/mini_memory.py --db <span class="hljs-string">&quot;<span class="hljs-variable">$practice</span>/dev.sqlite&quot;</span> forget-decayed --user linyuan --apply</code></pre><p>默认不带 <code>--apply</code> 时只返回低强度候选 ID 列表，数据库纹丝不动；加上 <code>--apply</code> 后也只是给旧行填上 <code>valid_to</code>，让它退出当前默认检索，<strong>正文仍然好好躺在 SQLite 里</strong>。所以软遗忘只管降噪，用户如果提出隐私删号请求，必须做真正的物理清除。</p>
+<details class="implementation-notes">
+<summary>实现笔记：跑通自带测试与刻意省略的生产边界（选读）</summary>
+
+<h2 id="跑一遍仓库自带的单元测试">跑一遍仓库自带的单元测试</h2><p>仓库的 <code>examples/test_mini_memory.py</code> 已经覆盖了用户隔离、事务回滚、左闭右开边界、六维公式、预算裁剪、软遗忘预览和 CLI 异常处理，直接跑：</p>
+<pre tabindex="0"><code class="hljs">python3 -m unittest discover -s examples -v</code></pre><h2 id="这-300-行代码刻意没做什么">这 300 行代码刻意没做什么</h2><p>保持简单才能看清骨架。上线前，下面每一项省略都需要你按需替换或补齐：</p>
+<ul>
+<li><strong>没有真实语义向量与分词</strong>：高并发或大库下全量扫用户记录会变慢，应换 FTS5 / 向量索引与兼容的 Embedding 模型；</li>
+<li><strong>没有自动抽取与冲突判别</strong>：目前靠调用方提供干净文本和 <code>supersedes</code> ID；</li>
+<li><strong>没有可信鉴权与加密</strong>：<code>user_id</code> 必须来自服务端认证，而不是 CLI 或模型入参；</li>
+<li><strong>没有合规物理删除与多副本清理</strong>：WAL 文件、备份、日志里的隐私正文都需要独立治理。</li>
+</ul>
+<p>但正因为它足够干净，它非常适合当你的 <strong>Baseline（基线）</strong>：以后每想引入一个复杂框架，先问问它在这套 300 行基线解决不了的哪道具体失败题上，到底带来了多少净收益。</p>
+</details>
+
+<h2 id="动手检查">动手检查</h2><p>不修改数据库，分别把 <code>context</code> 的 <code>--budget</code> 设为 <code>1</code>、<code>40</code>、<code>150</code>，观察输出变化；如果某条记录没出现在最终文本里，你会按什么顺序排查？调试时连续调 <code>recall</code> 为什么会让分数偷偷变高，怎么关掉它？</p>
+<p>答案提示：按“SQLite 表里存没存（查表）→ <code>recall</code> 过没过用户/时间过滤和 <code>0.05</code> 门槛 → <code>context</code> 是不是因为单条太长被跳过”三层定位。连续调 <code>recall</code> 分数变高是因为默认 <code>reinforce=True</code> 增加了 <code>access_count</code>；做调试或消融实验时，在 Python API 里传 <code>reinforce=False</code> 即可冻结状态。</p>
+<figure class="concept-diagram" tabindex="0"><img src="../assets/rewrite-memory-a/04-overview.svg" alt="从本地 300 行代码看清隔离、打分与打包三个控制点" loading="lazy"><figcaption>图：300 行标准库代码把隔离、打分、替代、打包和软遗忘全摆在了明面上。</figcaption></figure>
+
+<details class="comparison-reference">
+<summary>项目对照速查（选读）</summary>
+
+<h2 id="本章对照结论">本章对照结论</h2><table>
+<thead>
+<tr>
+<th><code>mini_memory.py</code> 的控制点</th>
+<th>真实开源项目里的对应机制</th>
+<th>迈向生产时必须补齐的验收</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>SQLite 落盘 + <code>WHERE user_id</code> 过滤</td>
+<td>Hippo、MCP、Basic、TencentDB standalone</td>
+<td>服务端鉴权、并发锁、备份恢复与多索引一致</td>
+</tr>
+<tr>
+<td>词重叠 + 256 桶哈希词袋</td>
+<td>Mem0、Graphiti、MCP 的全文/向量检索</td>
+<td>中文分词、模型版本绑定与候选池边界</td>
+</tr>
+<tr>
+<td>调用方手工传 <code>supersedes</code></td>
+<td>Graphiti 关系解析 / 外层版本表 / Git 修订</td>
+<td>单次例外不能误关长期规程，补齐双时间</td>
+</tr>
+<tr>
+<td>近似字符预算整条打包</td>
+<td>宿主统一组装器</td>
+<td>真实模型 tokenizer 计数与成组证据保护</td>
+</tr>
+<tr>
+<td>召回即加 <code>access_count</code></td>
+<td>Hippo 强化、MemoryOS 热度</td>
+<td>拆开 selected / packed / used / outcome</td>
+</tr>
+<tr>
+<td><code>forget-decayed</code> 默认预览 + 写 <code>valid_to</code></td>
+<td>Hippo、MCP 生命周期治理</td>
+<td>低频高危保护项、恢复窗口与隐私物理删除</td>
+</tr>
+<tr>
+<td>人工提供干净正文</td>
+<td>Mem0 / Graphiti 自动 LLM 提取</td>
+<td>条件保真检查、敏感脱敏与模型超时重试</td>
+</tr>
+</tbody></table>
+</details>
+</article><nav class="pager" aria-label="章节导航"><a href="03-write-path.html"><small>上一章</small>写入管线：什么值得记</a><a href="05-retrieval.html"><small>下一章</small>检索、重排与上下文预算</a></nav></main><div class="toolbar" role="group" aria-label="阅读工具"><a class="control" href="../index.html" aria-label="返回目录">目录</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></div></div><script src="../assets/wiki.js"></script></body></html>

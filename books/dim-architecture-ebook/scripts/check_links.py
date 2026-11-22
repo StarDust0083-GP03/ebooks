@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Check local links, referenced assets, duplicate IDs, and exports in the built wiki."""
+
+from __future__ import annotations
+
+import re
+import sys
+from collections import Counter
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+ROOT = Path(__file__).resolve().parent.parent
+WIKI = ROOT / "wiki"
+PAGES = [WIKI / "index.html", WIKI / "search.html", WIKI / "book.html", *sorted((WIKI / "chapters").glob("*.html"))]
+LINK = re.compile(r'(?:href|src)="([^"]+)"')
+ID_ATTR = re.compile(r'\bid="([^"]+)"')
+
+
+def target_ok(page: Path, link: str) -> bool:
+    parts = urlsplit(link)
+    if parts.scheme or link.startswith("#") or link.startswith("//"):
+        return True
+    raw = unquote(parts.path)
+    if not raw:
+        return True
+    target = (page.parent / raw).resolve()
+    try:
+        target.relative_to(ROOT)
+    except ValueError:
+        return False
+    return target.exists()
+
+
+def main() -> int:
+    bad = []
+    for page in PAGES:
+        if not page.exists():
+            bad.append((page, "<missing page>"))
+            continue
+        html_text = page.read_text(encoding="utf-8")
+        for link in LINK.findall(html_text):
+            if not target_ok(page, link):
+                bad.append((page.relative_to(ROOT), link))
+        id_counts = Counter(ID_ATTR.findall(html_text))
+        for dup_id, count in id_counts.items():
+            if count > 1:
+                bad.append((page.relative_to(ROOT), f"duplicate id={dup_id} ({count}x)"))
+    for label, path in (
+        ("pdf", ROOT / "exports" / "dim-architecture.pdf"),
+        ("epub", ROOT / "exports" / "dim-architecture.epub"),
+        ("wiki-pdf", WIKI / "exports" / "dim-architecture.pdf"),
+        ("wiki-epub", WIKI / "exports" / "dim-architecture.epub"),
+    ):
+        if not path.exists() or path.stat().st_size == 0:
+            bad.append((Path("exports"), f"missing or empty {label}"))
+    if bad:
+        for page, link in bad:
+            print(f"BROKEN {page}: {link}")
+        print(f"{len(bad)} broken reference(s)")
+        return 1
+    print(f"OK: {len(PAGES)} pages, zero duplicate IDs, all local links and exports resolve")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

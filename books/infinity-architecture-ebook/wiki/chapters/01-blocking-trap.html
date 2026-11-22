@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从无阻塞执行切片、RAP 响应式工具协议到堆叠沙箱与跨主机热迁移，解剖 hydro-project/infinity 的 Rust Agent 运行时架构"><meta name="author" content="独立源码研究">
+<title>阻塞式 Agent 的死结与无阻塞切片不变量 · Infinity 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">∞</span><span>Infinity 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 01</div><div class="rail-title">阻塞式 Agent 的死结与无阻塞切片不变量</div><ol><li><a href="#为什么传统-agent-架构卡在等待上">为什么传统 Agent 架构卡在等待上</a></li><li><a href="#一条核心不变量-切片绝不阻塞">一条核心不变量：切片绝不阻塞</a></li><li><a href="#七万五千个-agent-放进树莓派是怎么测出来的">七万五千个 Agent 放进树莓派是怎么测出来的</a></li><li><a href="#同步工具的例外-为什么要允许切片内回环">同步工具的例外：为什么要允许切片内回环</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 01 章</div><h1>阻塞式 Agent 的死结与无阻塞切片不变量</h1><div class="chapter-meta">hydro-project/infinity 快照 e1a3e4b36e5f · 约 16 分钟</div></header><div class="prose"><p>让一个编码 Agent 在真实仓库里跑 <code>cargo test --workspace</code>，或者让运维 Agent 等一个 GitHub PR 通过人工审批，传统同步循环很快会露馅。模型在第 1 秒吐出一条工具调用，工具需要跑二十分钟，MCP 的 stdio 管道或 HTTP SSE 会话就必须一直开着，调用栈上的异步任务、内存里的整段对话历史和宿主进程谁都不能退。把这套模式搬到多 Agent 并行场景，问题会成倍放大：一百个等待 Webhook 的 Agent 占着一百份常驻内存和一百条长连接；放到 AWS Lambda 这类按毫秒计费、单次调用最多十五分钟的无服务器平台上，等待本身就直接变成超时故障和纯浪费账单。</p>
+<h2 id="为什么传统-agent-架构卡在等待上">为什么传统 Agent 架构卡在等待上<a class="anchor" href="#为什么传统-agent-架构卡在等待上" aria-label="链接到本节">#</a></h2>
+<p>常规 Agent 框架把一轮多步任务写成一条长循环：<code>while !done { call_llm(); await call_tool(); }</code>。这种写法把两件性质截然不同的事情绑死在同一个操作系统进程生命周期里。</p>
+<p>大模型推理和本地状态更新属于短时、有界的计算，通常几秒到几十秒结束。而外部世界里的工具耗时完全无界：跑完一轮集成测试可能要二十分钟，等一位同事在 Slack 里点下确认按钮可能要两小时，订阅一个仓库的 PR 动态更是按周甚至按月计算。一旦运行时在 <code>await call_tool()</code> 上挂住，进程亲和性就被锁死了。结果回包必须回到原来那台机器、原来的那个进程、原来的那条管道；机器重启或容器回收，这轮任务就断了线。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 316" width="640" height="316" role="img" aria-label="阻塞式 Agent 与 Infinity 无阻塞切片对比">
+<title>阻塞式 Agent 与 Infinity 无阻塞切片对比</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker><marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--amber)"/></marker><marker id="arrow-forest" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--forest)"/></marker></defs>
+<text x="10" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--amber)" text-anchor="start">传统阻塞模型：等待期间进程、栈与连接全程常驻</text><rect x="10" y="28" width="620" height="88" rx="4" fill="none" stroke="var(--amber)" stroke-width="1" stroke-dasharray="4 3"/><rect x="22" y="42" width="138" height="60" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="32" y="61" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--ink)" text-anchor="start">LLM 轮次 1</text><text x="32" y="78" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">决定调用 CI 构建</text><text x="32" y="94" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">占用常驻任务栈</text><line x1="160" y1="72" x2="192" y2="72" stroke="var(--amber)" stroke-width="1.2" marker-end="url(#arrow-amber)"/><rect x="194" y="42" width="246" height="60" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="204" y="61" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--amber)" text-anchor="start">阻塞等待工具返回 (20 分钟+)</text><text x="204" y="78" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">stdio/HTTP 会话不能断</text><text x="204" y="94" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">Lambda 超时、空闲内存无法回收</text><line x1="440" y1="72" x2="472" y2="72" stroke="var(--amber)" stroke-width="1.2" marker-end="url(#arrow-amber)"/><rect x="474" y="42" width="144" height="60" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="484" y="61" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--ink)" text-anchor="start">LLM 轮次 2</text><text x="484" y="78" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">继续消费结果</text><text x="484" y="94" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">期间始终按时长计费</text><text x="10" y="146" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--forest)" text-anchor="start">Infinity 无阻塞切片模型：派发即让出，等待期间纯数据休眠</text><rect x="10" y="156" width="620" height="148" rx="4" fill="none" stroke="var(--forest)" stroke-width="1.2"/><rect x="22" y="170" width="174" height="72" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="32" y="189" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--forest)" text-anchor="start">切片 1 (Slice)</text><text x="32" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">加载历史 -&gt; 模型流式输出</text><text x="32" y="222" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">先 sync() 落盘再 POST</text><text x="32" y="238" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">收到 200 ACK 立即退出</text><line x1="196" y1="206" x2="226" y2="206" stroke="var(--forest)" stroke-width="1.2" marker-end="url(#arrow-forest)"/><rect x="228" y="170" width="184" height="72" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="238" y="189" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--ink)" text-anchor="start">休眠期 (0 驻留任务)</text><text x="238" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">仅存历史与状态表</text><text x="238" y="222" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">无进程、无栈、无长连接</text><text x="238" y="238" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">本地退驱动 / Lambda 缩零</text><line x1="412" y1="206" x2="442" y2="206" stroke="var(--forest)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow-forest)"/><rect x="444" y="170" width="174" height="72" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="454" y="189" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--forest)" text-anchor="start">切片 2 (新唤醒)</text><text x="454" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">RAP 回调 POST -&gt; 入队</text><text x="454" y="222" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">按 group_id 重载历史</text><text x="454" y="238" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">去重匹配后继续下一轮</text><text x="22" y="268" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">单线程串行与多线程并发由队列层 group_id (SQS FIFO / 本地 mpsc 路由) 保障，运行时无需分布式锁。</text><text x="22" y="288" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="600" fill="var(--forest)" text-anchor="start">实测基准 (agent_scale.rs): 80,000 个空闲 Agent 共占约 8.4 GB RSS，约 102 KiB/Agent。</text>
+</svg>
+<figcaption>阻塞式 Agent 与 Infinity 无阻塞切片对比</figcaption></figure>
+<p>上面这张图对比了两种执行模型的分叉点。上半部分是传统阻塞循环，进程在二十分钟等待期里全程在线；下半部分是 Infinity 的解法，把长循环切碎成一个个彼此独立、绝不等待外部 I/O 的执行切片（slice）。</p>
+<h2 id="一条核心不变量-切片绝不阻塞">一条核心不变量：切片绝不阻塞<a class="anchor" href="#一条核心不变量-切片绝不阻塞" aria-label="链接到本节">#</a></h2>
+<p>阅读 <code>docs/docs/infinity-runtime/architecture.md</code> 和 <code>crates/infinity-agent-core/src/system/thread.rs</code>，整个 Infinity 运行时的设计都围绕同一条约束展开：<strong>单个执行切片绝不阻塞在任何外部操作上</strong>。</p>
+<p>这条约束逼出了四个连环设计决策：</p>
+<ol>
+<li><strong>万物皆消息（Everything is a message）</strong>，<code>crates/infinity-agent-core/src/message.rs</code> 里只定义了一种入口信封 <code>InputMessage</code>。用户输入、异步工具结果、外部订阅事件、子线程回报、OAuth 跳转请求、人工选择弹窗、上下文压缩指令以及定时器唤醒，全都包装成 <code>InputMessage</code> 投进输入队列，通过 <code>group_id: ThreadId</code> 路由到对应线程。进程里不存在一个记录着正在等工具 X 或睡到早上九点的内存状态机。</li>
+<li><strong>先落盘、再派发、立刻让出</strong>，当模型决定调用异步工具时，切片先执行 <code>HistoryManager::sync()</code> 把本轮对话与工具调用写入持久化存储，然后向工具服务器发出一次无状态的 HTTP POST（携带 <code>callback_url</code>），只要对方回一个 <code>2xx</code> 确认收到，当前切片立刻结束。本地常驻驱动退出当前任务，Lambda 函数直接结束进程。</li>
+<li><strong>跨线程并发靠队列分组，不靠分布式锁</strong>，同一个线程的两次切片不能并发读写同一份历史，否则消息顺序会乱；不同线程之间没有共享可变状态，应该彻底并行。Infinity 没有在运行时里手写分布式锁，而是把串行约束直接交给队列层：AWS 侧用 SQS FIFO 的 <code>MessageGroupId</code> 绑定 <code>group_id</code>，本地侧用 <code>route_loop</code> 为每个活跃 <code>ThreadId</code> 维护单条 <code>mpsc</code> 通道。</li>
+<li><strong>重投递安全靠持久化去重与尾扫</strong>，队列只能保证至少一次投递（at-least-once），因此每个切片必须幂等。用户输入与订阅事件在 <code>StateStore</code> 中记录已处理 ID；工具结果则直接逆向扫描历史尾部匹配待应答调用，重复送达自动丢弃。</li>
+</ol>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>传统阻塞式 Agent（如直连 MCP）</th>
+<th>Infinity 无阻塞切片运行时</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>工具等待期资源占用</td>
+<td>进程、任务栈、连接与内存历史全程常驻</td>
+<td>仅持久化存储中的历史行，无任务、无栈、无连接</td>
+</tr>
+<tr>
+<td>进程亲和性</td>
+<td>强绑定原进程与 stdio/SSE 通道</td>
+<td>无亲和性，任意进程按 <code>ThreadId</code> 重载历史继续</td>
+</tr>
+<tr>
+<td>适用等待时长</td>
+<td>秒级到分钟级，长等待依赖轮询或保活</td>
+<td>百毫秒到数天等价，成本只与实际推理切片成正比</td>
+</tr>
+<tr>
+<td>单线程并发控制</td>
+<td>进程内锁或粘性路由</td>
+<td>队列层按 <code>group_id</code> 保证每线程 FIFO，无分布式锁</td>
+</tr>
+<tr>
+<td>Serverless 适配</td>
+<td>只能硬扛空闲计费与超时上限</td>
+<td>原生契合 Lambda 缩容到零，平台缩容即休眠</td>
+</tr>
+</tbody></table></div>
+<h2 id="七万五千个-agent-放进树莓派是怎么测出来的">七万五千个 Agent 放进树莓派是怎么测出来的<a class="anchor" href="#七万五千个-agent-放进树莓派是怎么测出来的" aria-label="链接到本节">#</a></h2>
+<p>README 开篇提到 Infinity 轻到能在一台树莓派内存里装下 75,000 个 Agent。这句宣传语背后对应的真实代码是 <code>crates/infinity-agent-core/examples/agent_scale.rs</code>，以及文档里嵌的实测数据 <code>docs/src/components/MemoryChart.tsx</code>。</p>
+<p>拆开 <code>agent_scale.rs</code> 看测量口径很清楚：基准程序在一个单线程 <code>tokio::task::LocalSet</code> 上启动 <code>LocalAgentSystem</code>，使用内存版 <code>InMemoryConversationStore</code> 和 <code>InMemoryStateStore</code>，配合一个进程内脚本化模型 <code>ScriptedModel</code> 和异步回环工具 <code>RunCommand</code>。每个 Agent 真实走完 20 轮完整切片链路，每轮包含两次模型流式补全（每次 12 块、共约 1.2 KB 文本）加一次异步工具经队列回传。每跑完一波（<code>WAVE=4000</code>），程序等待所有线程驱动退出进入空闲态，排空生命周期通道，调用 Linux 的 <code>libc::malloc_trim(0)</code> 把分配器缓存还给内核，再读取 <code>/proc/self/status</code> 里的 <code>VmRSS</code>。</p>
+<p>上游在 AMD EPYC 9R14 上跑 <code>AGENTS=80000 TURNS=20 WAVE=4000</code> 的记录如下：</p>
+<ul>
+<li>0 个 Agent 基准 RSS：5,304,320 字节（约 5.3 MB）。</li>
+<li>40,000 个空闲 Agent：4,348,772,352 字节（约 4.35 GB）。</li>
+<li>80,000 个空闲 Agent：8,406,446,080 字节（约 8.41 GB）。</li>
+<li>线性斜率折算：约 <strong>102 KiB / Agent</strong>。</li>
+</ul>
+<p>按这个斜率外推，8 GB 内存的树莓派确实能装下约 75,000 个各带 20 轮对话历史的空闲 Agent。不过必须把口径看清：这 102 KiB 几乎全是 20 轮历史字符串本身在 <code>InMemoryConversationStore</code> 里的存储体积，之所以没有额外膨胀，是因为本地路由器 <code>route_loop</code> 直接把每个线程驱动放进 <code>FuturesUnordered</code>，线程一旦空闲就立刻退出并释放整个 <code>drive_thread</code> future 与 <code>HistoryManager</code> 缓存。如果换成真正驻留的大内存工具进程，或者成千上万个线程同时处于模型流式推理中，峰值内存会取决于同时活跃的切片数，而不是总注册 Agent 数。</p>
+<h2 id="同步工具的例外-为什么要允许切片内回环">同步工具的例外：为什么要允许切片内回环<a class="anchor" href="#同步工具的例外-为什么要允许切片内回环" aria-label="链接到本节">#</a></h2>
+<p>并非所有工具都适合发出去然后结束切片。以内置的 <code>spawn_thread</code> 为例，它在 <code>ConversationStore</code> 里写几条元数据、往队列丢一条子线程启动消息，几微秒就能完成。如果让它也走异步让出，不仅白白多出一次存储重载和切片调度，还会引出一个隐蔽竞态：父线程刚派发 <code>spawn_thread</code> 就退出了切片，紧接着一条无关的并发事件抢在 <code>spawn_thread</code> 的结果之前抵达父线程，父线程就会以为 <code>spawn_thread</code> 被中断了，可实际上子线程早就已经启动并在后台跑起来了。</p>
+<p>因此 <code>Tool</code> trait 在 <code>crates/infinity-agent-core/src/tools/mod.rs</code> 里特意留了 <code>supports_sync()</code> 和 <code>execute_synchronous()</code> 两个钩子。当 <code>run_completion</code> 在流里碰到同步工具调用，或者碰到模型幻觉出来的未知工具名时，运行时不会结束切片，而是当场内联执行（或注入错误结果），把结果塞回当前内存历史，在同一个切片里直接发起下一轮模型推理。只有真正跨进程或跨网络的异步工具才会触发落盘屏障与切片让出。</p>
+<p>这种切分把状态变更极快、怕竞态的元操作留在切片内部当场完成，把一切耗时不可控的外部调用隔离在队列边界之外。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="00-preface.html"><small>上一章</small><strong>前言：为什么一台树莓派能装下七万五千个 Agent</strong></a><a class="next" href="02-workspace-topology.html"><small>下一章</small><strong>21 个 Crate 的分层版图与类型化 ID 体系</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：为什么一台树莓派能装下七万五千个 Agent</a><a href="../chapters/01-blocking-trap.html"><span>01</span>阻塞式 Agent 的死结与无阻塞切片不变量</a><a href="../chapters/02-workspace-topology.html"><span>02</span>21 个 Crate 的分层版图与类型化 ID 体系</a><a href="../chapters/03-slice-and-history.html"><span>03</span>切片执行循环与三阶段 HistoryManager</a><a href="../chapters/04-rap-protocol.html"><span>04</span>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</a><a href="../chapters/05-threading-compaction.html"><span>05</span>线程树、上下文继承与位置索引压缩</a><a href="../chapters/06-local-actor-deferral.html"><span>06</span>单线程本地调度器、延迟队列与抢占打断</a><a href="../chapters/07-provider-error-boundary.html"><span>07</span>模型供应协议、跨进程隔离与错误分类契约</a><a href="../chapters/08-stacked-sandboxes.html"><span>08</span>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</a><a href="../chapters/09-daemon-remote-migration.html"><span>09</span>本地守护进程、SSH 远程代理与跨主机热迁移</a><a href="../chapters/10-serverless-aws.html"><span>10</span>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</a><a href="../chapters/11-clients-and-hydro-dataflow.html"><span>11</span>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</a><a href="../chapters/12-tradeoffs-and-limits.html"><span>12</span>失败模式、安全边界与架构取舍</a><a href="../chapters/13-mini-infinity.html"><span>13</span>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：源码索引、实测统计与核心术语对照</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · hydro-project/infinity · 快照 e1a3e4b36e5f · 2026-11-05</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

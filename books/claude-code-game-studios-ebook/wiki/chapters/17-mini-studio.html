@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从需求、配置、角色到 Hook 与验收，解剖 Claude Code Game Studios 的工作流"><meta name="author" content="独立源码研究">
+<title>最小实验：用两百行 Python 亲手跑通四条核心约束 · Claude Code 游戏工作室</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">G</span><span>Claude Code 游戏工作室</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 17</div><div class="rail-title">最小实验：用两百行 Python 亲手跑通四条核心约束</div><ol><li><a href="#场景-纸上看懂不算数-换门语言写一遍才真算摸透">场景：纸上看懂不算数，换门语言写一遍才真算摸透</a></li><li><a href="#约束一-配置解析与非法枚举下落">约束一：配置解析与非法枚举下落</a></li><li><a href="#约束二-代码根解析-有歧义就坚决不猜">约束二：代码根解析，有歧义就坚决不猜</a></li><li><a href="#约束三-状态流转与-跳过不等于同意">约束三：状态流转与“跳过不等于同意”</a></li><li><a href="#约束四-四态判决排序">约束四：四态判决排序</a></li><li><a href="#约束五-内容哈希回执与编号不回收">约束五：内容哈希回执与编号不回收</a></li><li><a href="#直接在本机跑一遍">直接在本机跑一遍</a></li><li><a href="#教学模型故意简化了什么-以及怎么把它升级到-v1-3-0">教学模型故意简化了什么（以及怎么把它升级到 v1.3.0）</a></li><li><a href="#练习">练习</a></li><li><a href="#答案提示">答案提示</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 17 章</div><h1>最小实验：用两百行 Python 亲手跑通四条核心约束</h1><div class="chapter-meta">CCGS v1.3.0 快照 2026-11-09 · 约 14 分钟</div></header><div class="prose"><h2 id="场景-纸上看懂不算数-换门语言写一遍才真算摸透">场景：纸上看懂不算数，换门语言写一遍才真算摸透<a class="anchor" href="#场景-纸上看懂不算数-换门语言写一遍才真算摸透" aria-label="链接到本节">#</a></h2>
+<p>前面十六章拆了几十个脚本和上百条规则，光靠眼睛看，很容易产生“我都懂了”的错觉。验证自己到底有没有吃透一套工作流框架，最硬核的办法就是<strong>脱离 Claude Code、脱离游戏引擎，用自己顺手的语言把最值钱的几条约束从头复刻一遍，再写单元测试把边界全捅一遍</strong>。</p>
+<p>本书配套的 <code>examples/mini_studio.py</code> 就是这么一个零依赖教学模型（约 209 行纯 Python 标准库），外加 <code>examples/test_mini_studio.py</code> 里的 <strong>17 个单元测试</strong>。它不是要把几千行 Bash 脚本照抄成 Python，而是专门拎出决定 CCGS 靠谱程度的五根硬骨头亲手跑一遍：</p>
+<ol>
+<li>配置优先级瀑布与非法枚举下落；</li>
+<li>代码根不瞎猜（歧义直接报未解析）；</li>
+<li>故事显式状态转移与“跳过提问不等于同意”；</li>
+<li>四态判决排序（未知压过通过，失败压过一切）；</li>
+<li>内容哈希证据回执与注册表 ID 永不回收。</li>
+</ol>
+<h2 id="约束一-配置解析与非法枚举下落">约束一：配置解析与非法枚举下落<a class="anchor" href="#约束一-配置解析与非法枚举下落" aria-label="链接到本节">#</a></h2>
+<p>模型里的 <code>resolve()</code> 接三张字典——<code>project</code>、<code>local</code>、<code>legacy</code>——严格按瀑布顺序往下找第一个合法值：</p>
+<pre><code class="language-python">def resolve(project, local=None, legacy=None):
+    ...
+    for key in sorted(keys):
+        for source, table, allowed in ((&quot;project.local.yaml&quot;, local, LOCAL_KEYS),
+                                       (&quot;project.yaml&quot;, project, None),
+                                       (&quot;legacy&quot;, legacy, None)):
+            if allowed is not None and key not in allowed:
+                continue
+            if key in table:
+                if _valid(key, table[key]):
+                    out[key] = (table[key], source)
+                    break
+                notes.append(f&quot;{key}: &#39;{table[key]}&#39; is not a valid enum value; ignored&quot;)
+        else:
+            # rigor expansion, then documented default
+</code></pre>
+<p>四个单元测试钉死了最容易写歪的角落：</p>
+<ul>
+<li><code>test_local_wins_for_whitelisted_key</code>：白名单里的 <code>modes.review_mode</code> 本地优先；</li>
+<li><code>test_local_ignored_for_protected_key</code>：锁死键 <code>qa.level</code> 就算写进 <code>local</code> 也被无视，乖乖走 <code>project.yaml</code>；</li>
+<li><code>test_explicit_key_beats_rigor_expansion</code>：<code>rigor: full</code> 下显式钉死 <code>modes.workflow: minimal</code>，展开不准盖掉它；</li>
+<li><code>test_invalid_enum_falls_through</code>：手滑写了 <code>modes.rigor: strict</code>，不报错崩掉也不拿 <code>strict</code> 硬用，而是记进 <code>_notes</code> 后回落到 <code>minimal</code>。</li>
+</ul>
+<h2 id="约束二-代码根解析-有歧义就坚决不猜">约束二：代码根解析，有歧义就坚决不猜<a class="anchor" href="#约束二-代码根解析-有歧义就坚决不猜" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-python">def resolve_code_root(engine, dirs):
+    by_engine = {&quot;godot&quot;: &quot;src&quot;, &quot;unity&quot;: &quot;Assets&quot;, &quot;unreal&quot;: &quot;Source&quot;}
+    if engine in by_engine:
+        return by_engine[engine], &quot;engine.name&quot;
+    candidates = [d for d in (&quot;src&quot;, &quot;Assets&quot;, &quot;Source&quot;) if d in dirs]
+    if len(candidates) == 1:
+        return candidates[0], &quot;detected&quot;
+    return None, &quot;unresolved&quot;
+</code></pre>
+<p>三个测试覆盖了三条路径：设了引擎就听引擎的、没设引擎且目录里只有一个候选根才推断、同时出现 <code>src</code> 和 <code>Assets</code> 时直接吐 <code>(None, &quot;unresolved&quot;)</code>，绝不偷懒默认返回 <code>src</code>。</p>
+<h2 id="约束三-状态流转与-跳过不等于同意">约束三：状态流转与“跳过不等于同意”<a class="anchor" href="#约束三-状态流转与-跳过不等于同意" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-python">def start(self):
+    if self.status not in (&quot;Ready&quot;, &quot;Blocked&quot;):
+        return f&quot;refused: {self.status} cannot start&quot;
+    if self.answer not in (&quot;yes&quot;, &quot;approved&quot;):
+        return &quot;waiting: no explicit approval&quot;
+    self.status = &quot;In Progress&quot;
+    return &quot;started&quot;
+</code></pre>
+<p>只有用户明确给出 <code>&quot;yes&quot;</code> 或 <code>&quot;approved&quot;</code> 才允许把故事推进到 <code>In Progress</code>；<code>None</code>、空字符串、或者弹窗被关掉返回的 <code>&quot;skipped&quot;</code> 统统原地踏步（<code>test_skipped_question_is_not_approval</code>）。同样，关故事时 <code>close()</code> 绝不接受 <code>UNKNOWN</code> 判决（<code>test_no_close_on_unknown</code>），必须全绿 <code>PASS</code> 且处于进行中状态才放行。</p>
+<h2 id="约束四-四态判决排序">约束四：四态判决排序<a class="anchor" href="#约束四-四态判决排序" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-python">PASS, NOTES, UNKNOWN, FAIL = &quot;PASS&quot;, &quot;PASS_WITH_NOTES&quot;, &quot;UNKNOWN&quot;, &quot;FAIL&quot;
+RANK = {FAIL: 3, UNKNOWN: 2, NOTES: 1, PASS: 0}
+
+def verdict(criteria):
+    states = {state for _, state in criteria}
+    if &quot;FAILS&quot; in states:
+        return FAIL
+    if &quot;UNTESTED&quot; in states:
+        return UNKNOWN
+    if &quot;DEFERRED&quot; in states:
+        return NOTES
+    return PASS
+</code></pre>
+<p>逻辑短到只有 8 行，但三个单测直接锁死了整套验收门禁的灵魂：<code>FAIL</code> 压过 <code>UNKNOWN</code>，<code>UNKNOWN</code> 压过 <code>PASS</code>，只有合理延期 <code>DEFERRED</code> 才落进 <code>PASS_WITH_NOTES</code>。</p>
+<h2 id="约束五-内容哈希回执与编号不回收">约束五：内容哈希回执与编号不回收<a class="anchor" href="#约束五-内容哈希回执与编号不回收" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-python">def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+
+def evidence_state(stamp, paths):
+    if not stamp:
+        return [&quot;RECEIPT_NONE&quot;] + [f&quot;NEW: {p}&quot; for p in paths]
+    ...
+
+def next_id(kind, seen):
+    nums = [int(x.rsplit(&quot;-&quot;, 1)[-1]) for x in seen if x.rsplit(&quot;-&quot;, 1)[-1].isdigit()]
+    return f&quot;{kind}-{max(nums, default=0) + 1:03d}&quot;
+</code></pre>
+<p>测试里在临时目录建一个 <code>combat.gd</code>、打完回执先测 <code>UNCHANGED</code>，往文件里多写一行立刻报 <code>CHANGED</code>，删掉文件立刻报 <code>GONE</code>；连“压根没有回执”也单独测了必须吐 <code>RECEIPT_NONE</code>，绝不返回空列表冒充“没变化”。编号生成器面对 <code>[&quot;story-001&quot;, &quot;story-007&quot;]</code> 铁定发 <code>story-008</code>，绝不捡漏回收 <code>story-002</code>。另外还有 <code>test_always_ask_survives_autonomous</code>，验证哪怕切到 <code>autonomous</code>，撞上 <code>file_deletions</code> 依然必须停下来问人。</p>
+<h2 id="直接在本机跑一遍">直接在本机跑一遍<a class="anchor" href="#直接在本机跑一遍" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-bash">cd examples
+python3 -m unittest -v test_mini_studio.py
+# Ran 17 tests in 0.001s
+# OK
+
+python3 mini_studio.py demo
+</code></pre>
+<p>演示输出把所有机制摊在一屏里：</p>
+<pre><code class="language-text">config: {&#39;docs.density&#39;: (&#39;balanced&#39;, &#39;rigor:standard&#39;), ...,
+         &#39;modes.review_mode&#39;: (&#39;solo&#39;, &#39;project.local.yaml&#39;), ...}
+invalid enum: (&#39;minimal&#39;, &#39;rigor:minimal&#39;)
+code root: (&#39;Assets&#39;, &#39;engine.name&#39;)
+code root ambiguous: (None, &#39;unresolved&#39;)
+start without answer: waiting: no explicit approval
+start with answer: started
+close on UNKNOWN: refused: verdict=UNKNOWN status=In Progress
+close on PASS: closed
+verdict mixed: PASS_WITH_NOTES
+verdict untested: UNKNOWN
+evidence fresh: [&#39;UNCHANGED: /tmp/.../combat.gd&#39;]
+evidence stale: [&#39;CHANGED: /tmp/.../combat.gd&#39;]
+ids: story-008
+</code></pre>
+<h2 id="教学模型故意简化了什么-以及怎么把它升级到-v1-3-0">教学模型故意简化了什么（以及怎么把它升级到 v1.3.0）<a class="anchor" href="#教学模型故意简化了什么-以及怎么把它升级到-v1-3-0" aria-label="链接到本节">#</a></h2>
+<p>为了把代码压在两百行以内让你一眼看完，这份教学模型刻意省掉了上游 v1.3.0 里不少实战细节，而这些差距刚好是最好的动手练手题：</p>
+<ul>
+<li><strong>运行环境与解析器</strong>：上游用 Bash + awk（部分调 Python 3）扛住了 macOS 老 Bash 3.2、Windows CRLF、UTF-8 BOM、Tab 缩进报错、重复块合并、块标量跳过；模型直接用 Python 字典跳过文本解析。</li>
+<li><strong>v1.3.0 引擎表与自定义根</strong>：上游已经在 <code>.claude/engines/engines.tsv</code> 里加上了 <code>Web</code> 引擎，并在第 0 步支持 <code>engine.code_root</code>（含 <code>.</code> 根目录和“非法不回退”）；模型里的 <code>resolve_code_root</code> 目前只写了三家引擎，还没加自定义根校验。</li>
+<li><strong>完整本地白名单</strong>：上游 <code>yaml-helper.sh</code> 的本地白名单有 15 个键；模型只示范了 <code>rigor</code> 族里的 2 个核心键。</li>
+<li><strong>v1.3.0 的 <code>Own calls</code> 与同种子回放</strong>：模型里的 <code>verdict()</code> 还没把“有未确认的 AI 自主拍板项”和“同种子回放 <code>CHANGED, not accepted</code>”接进 <code>FAIL</code> / <code>UNKNOWN</code> 门禁。</li>
+<li><strong>故事状态机</strong>：上游全靠技能纪律约束，模型反而用代码写成了更硬的显式状态机。</li>
+</ul>
+<h2 id="练习">练习<a class="anchor" href="#练习" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>给 <code>examples/mini_studio.py</code> 的 <code>resolve_code_root()</code> 加上 v1.3.0 的 <code>web</code> 引擎和可选参数 <code>custom_root</code>（支持 <code>.</code>，若目录不存在或含 <code>..</code> 或指向 <code>.claude</code>/<code>docs</code> 则直接返回 <code>(None, &quot;invalid&quot;)</code> 且不回退到引擎默认），并补 3 个单元测试。</li>
+<li>扩展 <code>verdict()</code>，增加 <code>own_calls</code> 参数（每条带状态 <code>kept</code> / <code>change_requested</code> / <code>unanswered</code>）：只要有任何 <code>change_requested</code> 直接判 <code>FAIL</code>，有 <code>unanswered</code> 最高判 <code>UNKNOWN</code>，写测试验证优先级。</li>
+<li>给 <code>Story</code> 增加 <code>Blocked</code> 状态的解锁方法 <code>unblock(answer)</code>，要求同样严格遵守“跳过不等于同意”，只有明确批准才回到 <code>Ready</code>。</li>
+</ol>
+<h2 id="答案提示">答案提示<a class="anchor" href="#答案提示" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>在 <code>by_engine</code> 里补 <code>&quot;web&quot;: &quot;src&quot;</code>；函数开头先判断 <code>custom_root</code>：如果不为空，校验非绝对路径、不含 <code>..</code>、不在框架保留目录集合中且存在于 <code>dirs</code>（或等于 <code>.</code>），不合法立刻 <code>return None, &quot;invalid&quot;</code>，切记不要 <code>continue</code> 到下面的引擎映射。</li>
+<li>把 <code>change_requested</code> 并入 <code>FAIL</code> 分支判断，把 <code>unanswered</code> 并入 <code>UNKNOWN</code> 分支判断，即可复现 v1.3.0 <code>/story-done</code> Phase 5 和 Phase 7 的真实优先级。</li>
+<li><code>if self.status != &quot;Blocked&quot;: return &quot;refused...&quot;</code>；<code>if answer not in (&quot;yes&quot;, &quot;approved&quot;): return &quot;waiting...&quot;</code>；通过后将 <code>self.status = &quot;Ready&quot;</code> 并返回 <code>&quot;unblocked&quot;</code>。</li>
+</ol>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="16-verification.html"><small>上一章</small><strong>验证与演进：Markdown 写的框架，怎么证明自己没改坏</strong></a><a class="next" href="appendix-sources.html"><small>下一章</small><strong>附录：v1.3.0 源码索引、实测数据、术语与核验命令</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：先看清这东西到底是怎么跑起来的</a><a href="../chapters/01-requirements.html"><span>01</span>需求：一个人写游戏，为什么还要套规矩</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：一个会话，四种约束</a><a href="../chapters/03-onboarding.html"><span>03</span>入门：先玩一把（<code>/prototype</code>）与 Studio Mode（<code>/start</code>）双轨入口</a><a href="../chapters/04-config.html"><span>04</span>配置求值：一个 <code>rigor</code> 如何长出六个设置</a><a href="../chapters/05-agents.html"><span>05</span>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</a><a href="../chapters/06-skill-protocol.html"><span>06</span>Skill 协议：一条斜杠命令怎么从解析走到交接</a><a href="../chapters/07-artifacts.html"><span>07</span>产物模型：一页简报与故事、需求、ADR 三张网</a><a href="../chapters/08-dev-story.html"><span>08</span>实施链路：<code>/dev-story</code> 怎么把故事变成代码</a><a href="../chapters/09-story-done.html"><span>09</span>验收：<code>/story-done</code> 如何堵死“基本完成”</a><a href="../chapters/10-hooks.html"><span>10</span>Hook：十五个检查点里，到底谁真的能拦住</a><a href="../chapters/11-registries.html"><span>11</span>注册表：跨文档事实怎么管才不漂移</a><a href="../chapters/12-teams.html"><span>12</span>协作：团队流水线、默认塌缩与“透镜折叠”</a><a href="../chapters/13-engine.html"><span>13</span>引擎与品类适配：统一引擎表、Web 一等公民与品类库</a><a href="../chapters/14-context.html"><span>14</span>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</a><a href="../chapters/15-security.html"><span>15</span>安全边界：能聊天、有 Hook，不等于有沙箱</a><a href="../chapters/16-verification.html"><span>16</span>验证与演进：Markdown 写的框架，怎么证明自己没改坏</a><a href="../chapters/17-mini-studio.html"><span>17</span>最小实验：用两百行 Python 亲手跑通四条核心约束</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.3.0 源码索引、实测数据、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · CCGS v1.3.0 · 快照 abc0de79d6ce · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

@@ -1,0 +1,446 @@
+{
+  "repo": "https://github.com/NirDiamant/RAG_Techniques",
+  "commit": "2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6",
+  "commit_date": "2026-11-02",
+  "snapshot_date": "2026-11-22",
+  "notebook_count": 47,
+  "runnable_script_count": 21,
+  "notebooks": [
+    {
+      "path": "all_rag_techniques/Agentic_RAG.ipynb",
+      "sha256": "bb7f4a335cd5f9cf82cea479c32da5cf1b532661b100dc5fc25f0e7be2eb452b",
+      "cells": 76,
+      "code_cells": 30,
+      "chapter": "13-multimodal-agent"
+    },
+    {
+      "path": "all_rag_techniques/HyDe_Hypothetical_Document_Embedding.ipynb",
+      "sha256": "441258844a4997180a61c73aaf7b9e1b805411fce8b35beea643f625c7203e27",
+      "cells": 21,
+      "code_cells": 9,
+      "chapter": "07-query-enhancement"
+    },
+    {
+      "path": "all_rag_techniques/HyPE_Hypothetical_Prompt_Embeddings.ipynb",
+      "sha256": "c579b1e23cae2a2c63280a25b731237bd4c53d0a90a4f22ab145b9e719b1cc65",
+      "cells": 24,
+      "code_cells": 12,
+      "chapter": "07-query-enhancement"
+    },
+    {
+      "path": "all_rag_techniques/Microsoft_GraphRag.ipynb",
+      "sha256": "be29d297da19c447d5b5c2e35c1183f469ef06253f39cdc36541412dcbf009aa",
+      "cells": 24,
+      "code_cells": 10,
+      "chapter": "12-graph"
+    },
+    {
+      "path": "all_rag_techniques/adaptive_retrieval.ipynb",
+      "sha256": "d6e54105f318921c1f0f8c10b5cc93b2eaf7edfb800f70b0cb6d2cd804a6ecec",
+      "cells": 30,
+      "code_cells": 14,
+      "chapter": "10-corrective"
+    },
+    {
+      "path": "all_rag_techniques/choose_chunk_size.ipynb",
+      "sha256": "866d58abd1ca747b7ce190111302eecfc367826d5d64249e3d22672eeaa5bed6",
+      "cells": 15,
+      "code_cells": 7,
+      "chapter": "04-chunking"
+    },
+    {
+      "path": "all_rag_techniques/context_enrichment_window_around_chunk.ipynb",
+      "sha256": "4e9151f769caeb573bacf9ab560ef8f35027c5e0c214ded405ad86b9938658e2",
+      "cells": 30,
+      "code_cells": 14,
+      "chapter": "08-context"
+    },
+    {
+      "path": "all_rag_techniques/context_enrichment_window_around_chunk_with_llamaindex.ipynb",
+      "sha256": "92f053666e8e4091a05dfddf78a53698ce8a3487fa3c458e97dbcf7d3f789333",
+      "cells": 27,
+      "code_cells": 12,
+      "chapter": "08-context"
+    },
+    {
+      "path": "all_rag_techniques/contextual_chunk_headers.ipynb",
+      "sha256": "5c482aa80ce2228dc690237482b4536f7bdb1ce4f23553a1c4e4f502c9165f6f",
+      "cells": 18,
+      "code_cells": 6,
+      "chapter": "04-chunking"
+    },
+    {
+      "path": "all_rag_techniques/contextual_compression.ipynb",
+      "sha256": "46945a685ce446ed668b51fd6bc1973dc1b3559ba0bc2aab0ce7bdb636e4483c",
+      "cells": 17,
+      "code_cells": 8,
+      "chapter": "08-context"
+    },
+    {
+      "path": "all_rag_techniques/crag.ipynb",
+      "sha256": "34a7e990f7451bf08157418567259701ff30e1c658e040125941de9966800ff9",
+      "cells": 29,
+      "code_cells": 14,
+      "chapter": "10-corrective"
+    },
+    {
+      "path": "all_rag_techniques/dartboard.ipynb",
+      "sha256": "305ec69767eaaecde9281fc34078635b14badd4d6406e15f38dbb4523116f6b0",
+      "cells": 28,
+      "code_cells": 14,
+      "chapter": "06-fusion-reranking"
+    },
+    {
+      "path": "all_rag_techniques/document_augmentation.ipynb",
+      "sha256": "50427c73a2fa538c339df627646c9fd4082816d104070d71d5e7d3a9de78601d",
+      "cells": 20,
+      "code_cells": 10,
+      "chapter": "07-query-enhancement"
+    },
+    {
+      "path": "all_rag_techniques/document_parsing_with_mistral_ocr.ipynb",
+      "sha256": "3161e926d5417947a247621dd94016dbffdc71b0fd1085974435f48a638504a8",
+      "cells": 45,
+      "code_cells": 18,
+      "chapter": "03-ingestion"
+    },
+    {
+      "path": "all_rag_techniques/explainable_retrieval.ipynb",
+      "sha256": "298752fe15ac2d52a527d36520ff0419ce037102d5429fff6387adfb27b79d20",
+      "cells": 13,
+      "code_cells": 6,
+      "chapter": "08-context"
+    },
+    {
+      "path": "all_rag_techniques/fusion_retrieval.ipynb",
+      "sha256": "cf223daf8ed91ce14c0505b425c3932ee254fcec752d10e46a3995f42ac954fb",
+      "cells": 22,
+      "code_cells": 11,
+      "chapter": "06-fusion-reranking"
+    },
+    {
+      "path": "all_rag_techniques/fusion_retrieval_with_llamaindex.ipynb",
+      "sha256": "d2db1285563871b818204ef31f9254b0a961092201cf301a80d852fc47147ce3",
+      "cells": 27,
+      "code_cells": 12,
+      "chapter": "06-fusion-reranking"
+    },
+    {
+      "path": "all_rag_techniques/graph_rag.ipynb",
+      "sha256": "365eaf09a3dac40e9cc5dedc3ccf7833f9f62e0361e41accbef6273ce8e5aae9",
+      "cells": 29,
+      "code_cells": 14,
+      "chapter": "12-graph"
+    },
+    {
+      "path": "all_rag_techniques/graph_rag_local_attribution.ipynb",
+      "sha256": "b4c3d9da87f121e2910063058650b1e29779eef5bbfb14de91a9c430521422f7",
+      "cells": 23,
+      "code_cells": 10,
+      "chapter": "12-graph"
+    },
+    {
+      "path": "all_rag_techniques/graphrag_with_milvus_vectordb.ipynb",
+      "sha256": "06e1a7f8abef11421a889ff9d9359eac2de428043a4197979c957d28b2af12b3",
+      "cells": 43,
+      "code_cells": 17,
+      "chapter": "12-graph"
+    },
+    {
+      "path": "all_rag_techniques/hierarchical_indices.ipynb",
+      "sha256": "c22ed5154d35ed07bae6c49e901645d4237fe36fb49a8c0ea161b0923e640075",
+      "cells": 20,
+      "code_cells": 9,
+      "chapter": "11-hierarchy-memory"
+    },
+    {
+      "path": "all_rag_techniques/json_rag.ipynb",
+      "sha256": "a05fb43ff851ba1ee2440cc0becf30389b9176e63c3c6db522434cb0e51a8db3",
+      "cells": 25,
+      "code_cells": 10,
+      "chapter": "03-ingestion"
+    },
+    {
+      "path": "all_rag_techniques/light_rag.ipynb",
+      "sha256": "ed6c8c7fca7b6a07d27a3a110cb05be36afa3b461a9aef764bd1fe77ccdd7323",
+      "cells": 33,
+      "code_cells": 14,
+      "chapter": "12-graph"
+    },
+    {
+      "path": "all_rag_techniques/local_rag_huggingface_faiss.ipynb",
+      "sha256": "e8109891bffa70ab89bd6fd07e5b9f714605408a4ef5dcfd92748c92e687135e",
+      "cells": 34,
+      "code_cells": 15,
+      "chapter": "05-baseline"
+    },
+    {
+      "path": "all_rag_techniques/memorag.ipynb",
+      "sha256": "18af9873b7a8a9afbdcbad1465cce14f9fa808c385a4ef65b2462fc901f6a923",
+      "cells": 77,
+      "code_cells": 32,
+      "chapter": "11-hierarchy-memory"
+    },
+    {
+      "path": "all_rag_techniques/multi_faceted_filtering.ipynb",
+      "sha256": "8d65d90087f66a32814a5c29a8db9455e81db7f914a764da8f5a17fcde9b606c",
+      "cells": 27,
+      "code_cells": 13,
+      "chapter": "06-fusion-reranking"
+    },
+    {
+      "path": "all_rag_techniques/multi_model_rag_with_captioning.ipynb",
+      "sha256": "27942a83c8d9007021fa749dcb1ff084a987a352b239ea293361ba2a2f79dee4",
+      "cells": 23,
+      "code_cells": 12,
+      "chapter": "13-multimodal-agent"
+    },
+    {
+      "path": "all_rag_techniques/multi_model_rag_with_colpali.ipynb",
+      "sha256": "febb91b17172ca55de88126351bd637323bf668a852029fb8b06a15b12efdc8c",
+      "cells": 27,
+      "code_cells": 16,
+      "chapter": "13-multimodal-agent"
+    },
+    {
+      "path": "all_rag_techniques/proposition_chunking.ipynb",
+      "sha256": "79faf35ef1795a8a8d6a5b281e6f8e63d9e105d104b4e77333b72d961843d591",
+      "cells": 41,
+      "code_cells": 24,
+      "chapter": "04-chunking"
+    },
+    {
+      "path": "all_rag_techniques/query_transformations.ipynb",
+      "sha256": "1b94903b677b141ee56761e7bfd6364e8e5dbbbf9661507a2ecd86b5eafa4cab",
+      "cells": 19,
+      "code_cells": 8,
+      "chapter": "07-query-enhancement"
+    },
+    {
+      "path": "all_rag_techniques/raptor.ipynb",
+      "sha256": "58c59754490da09e3462c43198201ee2aea5353c6a54c908da2d49f3e3005345",
+      "cells": 36,
+      "code_cells": 18,
+      "chapter": "11-hierarchy-memory"
+    },
+    {
+      "path": "all_rag_techniques/relevant_segment_extraction.ipynb",
+      "sha256": "948c9f6065fe9b7bd64c6398d64216ae355481e8cec83cff4dbfed3a1f397604",
+      "cells": 25,
+      "code_cells": 11,
+      "chapter": "08-context"
+    },
+    {
+      "path": "all_rag_techniques/reliable_rag.ipynb",
+      "sha256": "56fb841a6cfddc4ca1d36f89a9e37d1a8246654daff19588a32f815de4d2d776",
+      "cells": 27,
+      "code_cells": 12,
+      "chapter": "10-corrective"
+    },
+    {
+      "path": "all_rag_techniques/reranking.ipynb",
+      "sha256": "214035f1a0e3953b72d4a38a6539fc46bc6998707fbbcba7e7ecf5bdc873b584",
+      "cells": 32,
+      "code_cells": 13,
+      "chapter": "06-fusion-reranking"
+    },
+    {
+      "path": "all_rag_techniques/reranking_with_llamaindex.ipynb",
+      "sha256": "d4039fa05e03cb26e2cbd1647c7b747cc81da5068a03c3ae3a954a0a5d4900a0",
+      "cells": 26,
+      "code_cells": 10,
+      "chapter": "06-fusion-reranking"
+    },
+    {
+      "path": "all_rag_techniques/retrieval_with_feedback_loop.ipynb",
+      "sha256": "8bdcf9f06e29b2fb137455b291252e05725b066de002ff3eaf9335de2b24c48a",
+      "cells": 27,
+      "code_cells": 13,
+      "chapter": "10-corrective"
+    },
+    {
+      "path": "all_rag_techniques/self_rag.ipynb",
+      "sha256": "5471ec778317a4221dc78c04f314f21b5da425a3cde21975a65b119df056cfc6",
+      "cells": 23,
+      "code_cells": 11,
+      "chapter": "10-corrective"
+    },
+    {
+      "path": "all_rag_techniques/semantic_chunking.ipynb",
+      "sha256": "9a5f1ba7c42a7191ca8e2c82265c96148b0e5c873c82d65aa8afbcee309dfa16",
+      "cells": 21,
+      "code_cells": 10,
+      "chapter": "04-chunking"
+    },
+    {
+      "path": "all_rag_techniques/simple_csv_rag.ipynb",
+      "sha256": "d3098e34e2f027afbf5dd47ca11a313f91e608a6d995a33b8d419eb8e304b9d5",
+      "cells": 21,
+      "code_cells": 9,
+      "chapter": "03-ingestion"
+    },
+    {
+      "path": "all_rag_techniques/simple_csv_rag_with_llamaindex.ipynb",
+      "sha256": "28d823ee2109be2a1362c3664a87e91ec97773a73ef5a1d4e3f89c5d9a3a3080",
+      "cells": 20,
+      "code_cells": 10,
+      "chapter": "03-ingestion"
+    },
+    {
+      "path": "all_rag_techniques/simple_rag.ipynb",
+      "sha256": "a1ed687ff1c639d6406b6d63ddf8f57a112a20c6a10ad764b4ab52f09067854f",
+      "cells": 23,
+      "code_cells": 11,
+      "chapter": "05-baseline"
+    },
+    {
+      "path": "all_rag_techniques/simple_rag_with_llamaindex.ipynb",
+      "sha256": "13963d37a1984458543e11f38fb564189991def3f15e0ba762a823c015237a08",
+      "cells": 26,
+      "code_cells": 14,
+      "chapter": "05-baseline"
+    },
+    {
+      "path": "evaluation/define_evaluation_metrics.ipynb",
+      "sha256": "3a8fa9dfe5085ddd08e3d70cb69142fe52775af5e52a23cbcd1c24a63799d070",
+      "cells": 16,
+      "code_cells": 13,
+      "chapter": "09-evaluation"
+    },
+    {
+      "path": "evaluation/end-2-end_rag_evaluation.ipynb",
+      "sha256": "94fa30b200f7e115457c5419881024b662731f16fc70900cfae11b162042ad85",
+      "cells": 27,
+      "code_cells": 13,
+      "chapter": "09-evaluation"
+    },
+    {
+      "path": "evaluation/evaluation_deep_eval.ipynb",
+      "sha256": "fc4ab0bff5a5930b94242aeea9349f9c895c7a58b6df2a0aa264f1eaf154c3a7",
+      "cells": 16,
+      "code_cells": 8,
+      "chapter": "09-evaluation"
+    },
+    {
+      "path": "evaluation/evaluation_grouse.ipynb",
+      "sha256": "377c23bee17adc05a48342bb66649af9e65bd39e7747f42a4bd477cbd07be127",
+      "cells": 48,
+      "code_cells": 18,
+      "chapter": "09-evaluation"
+    },
+    {
+      "path": "evaluation/open-rag-eval-example.ipynb",
+      "sha256": "296062a40c71e63dc6067e0639b3ab2553c06ffd708626e892cbf75a55340fee",
+      "cells": 22,
+      "code_cells": 10,
+      "chapter": "09-evaluation"
+    }
+  ],
+  "runnable_scripts": [
+    {
+      "path": "all_rag_techniques_runnable_scripts/HyDe_Hypothetical_Document_Embedding.py",
+      "sha256": "88f9233513150b45ab729124bc079870227f3501c495ec0e35f95ba9e1530bbb",
+      "lines": 81
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/HyPE_Hypothetical_Prompt_Embeddings.py",
+      "sha256": "03aea442a3448bec42bbb9c263f84a533cb16f9ae92652c687ad1494ffed212c",
+      "lines": 206
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/adaptive_retrieval.py",
+      "sha256": "e3c9ac94315f81c9f4ab1bcb63fdae7251f3a3b99abd488c2f9a442fc07db16d",
+      "lines": 249
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/choose_chunk_size.py",
+      "sha256": "760a245d42540f041979d2651231db8498ebacd03b1938367d5000c777932a5f",
+      "lines": 146
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/context_enrichment_window_around_chunk.py",
+      "sha256": "0c7eb3080f9e3e1459c3c4e59d85580f37145b564f93ace16b6e8a2b5d77c293",
+      "lines": 148
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/contextual_compression.py",
+      "sha256": "b5cc16d2fbddc68b7eb68f98937ad653a6513ad6146057ec464e498d44c93b5c",
+      "lines": 129
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/crag.py",
+      "sha256": "437f5c2ddc0d65ccf2af9bfb28ae1cfdcfcdf5e4edc922f8a4dd12f013f7b50c",
+      "lines": 240
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/document_augmentation.py",
+      "sha256": "f74957a05c527b902b5f9ef0585af2783d4c2fcf34352f743fae63ef394dfc43",
+      "lines": 190
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/explainable_retrieval.py",
+      "sha256": "650d70e41b38434b11ee5ef6ad60d2eb32abcd8b9a12967e2439016b7aeb6487",
+      "lines": 89
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/fusion_retrieval.py",
+      "sha256": "84edf5db92380a8d99f97c82d25bece6bcea61f1872e1f98d16dd2afdc28ff45",
+      "lines": 143
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/graph_rag.py",
+      "sha256": "cfcf84c172c926ddfaebab806f6568f3f6f866e474a92e666ed993c65fe4fc49",
+      "lines": 819
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/hierarchical_indices.py",
+      "sha256": "e8b0a93ec00bafaa8a27dffa811b8ceb02a388b09b79f973a44e0ff944bc60cc",
+      "lines": 128
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/light_rag.py",
+      "sha256": "3b7bf067f12889b60cc84cb54aadbb74768dbcabeefbfb50948543ed89a1719f",
+      "lines": 321
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/multi_faceted_filtering.py",
+      "sha256": "13698e7b53f7e3f32520a36f733d6605c94749d4367f62d1460723bc094be19d",
+      "lines": 194
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/query_transformations.py",
+      "sha256": "d32a18a675d1b5eba8a7d941839905202424842963c24a70e1cc6e1e0f394542",
+      "lines": 143
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/raptor.py",
+      "sha256": "dce8f0159ddfbf53aa3473be07238d37f6b11235a699d46fb6f78ddbbfcac8e8",
+      "lines": 235
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/reranking.py",
+      "sha256": "5c98d69df72ef389a6f6ed6f50b92448ed789f74efdfe43b7ff0741d8e563cc0",
+      "lines": 174
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/retrieval_with_feedback_loop.py",
+      "sha256": "27e5c8f58cd0f561fde7fb5dbd91b53d9f343d3d922220fca28dba743b038221",
+      "lines": 151
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/self_rag.py",
+      "sha256": "61596ff6310ad5f10d054f0bbf22975ec704980d0bdbd8800941524b48ff3e6e",
+      "lines": 173
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/semantic_chunking.py",
+      "sha256": "9da55c7bd46d863010b152d0faddaa898a409ff5384bf9d8dfa0b4b8a50c93de",
+      "lines": 124
+    },
+    {
+      "path": "all_rag_techniques_runnable_scripts/simple_rag.py",
+      "sha256": "9437978dc5e2cab42ce751c4404bb097121b38ef31b222c28b5105b7c755718f",
+      "lines": 115
+    }
+  ]
+}

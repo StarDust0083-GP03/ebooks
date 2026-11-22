@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从无阻塞执行切片、RAP 响应式工具协议到堆叠沙箱与跨主机热迁移，解剖 hydro-project/infinity 的 Rust Agent 运行时架构"><meta name="author" content="独立源码研究">
+<title>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器 · Infinity 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">∞</span><span>Infinity 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 10</div><div class="rail-title">零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</div><ol><li><a href="#无锁并发-用-sqs-fifo-替代分布式锁">无锁并发：用 SQS FIFO 替代分布式锁</a></li><li><a href="#双存储分工-aurora-dsql-存历史树-dynamodb-存状态与缓存">双存储分工：Aurora DSQL 存历史树，DynamoDB 存状态与缓存</a></li><li><a href="#持久定时器-900-秒为界的双轨休眠">持久定时器：900 秒为界的双轨休眠</a></li><li><a href="#云端适配里的显式取舍">云端适配里的显式取舍</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 10 章</div><h1>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</h1><div class="chapter-meta">hydro-project/infinity 快照 e1a3e4b36e5f · 约 18 分钟</div></header><div class="prose"><p>把一个本地能跑的 Agent 搬上无服务器平台（Serverless），通常要大动干戈重写一遍状态机：本地内存通道没了，本地文件没了，<code>tokio::time::sleep</code> 超过十五分钟直接被 Lambda 强杀，多个并发回调同时撞进来还会把数据库写花。</p>
+<p>Infinity 最具辨识度的架构验证，就落在 <code>crates/infinity-agent-lambda/</code>（1,894 行）和根目录的 <code>agent/</code>（AWS CDK 栈，1,200 行 TypeScript）里。它没有为云端另写一套执行引擎，而是把同一个 <code>infinity-agent-core</code> 的 <code>AgentSystemBuilder</code> 换上四块云端存储与传输适配器，直接跑在按次计费、空闲缩零的 AWS Lambda 上。</p>
+<h2 id="无锁并发-用-sqs-fifo-替代分布式锁">无锁并发：用 SQS FIFO 替代分布式锁<a class="anchor" href="#无锁并发-用-sqs-fifo-替代分布式锁" aria-label="链接到本节">#</a></h2>
+<p>云端架构的入口只有两条：所有外部事件（用户输入、RAP 工具回调、定时器唤醒、子线程报告）全部汇入同一条 <strong>SQS FIFO 输入队列</strong>；外部工具服务的异步回包则 POST 到一个极薄的 <strong>RAP Receiver Lambda Function URL</strong>（<code>crates/infinity-agent-lambda/src/bin/rap-receiver.rs</code>，仅 136 行）。</p>
+<p><code>rap-receiver</code> 的代码干净得像一段胶水：解开可选的 Base64 请求体，解析 <code>RapCallback</code>，调用与本地守护进程完全共享的 <code>infinity_rap_bridge::prepare_callback</code>。如果是 <code>ViewUpdate</code>（旁路展示通道，无服务器环境没有常驻前端），直接返回 <code>200 {&quot;ok&quot;:true}</code> 丢弃；其余四类回调则直接调用 <code>sqs_client.send_message()</code> 投进输入队列：</p>
+<pre><code class="language-rust">// crates/infinity-agent-lambda/src/bin/rap-receiver.rs
+sqs_client
+    .send_message()
+    .queue_url(input_queue_url)
+    .message_body(enqueue.message_body)
+    .message_group_id(enqueue.group_id.into_inner())
+    .message_deduplication_id(enqueue.dedup_id)
+    .send()
+    .await
+</code></pre>
+<p>这两行队列参数承载了整个云端并发控制的核心保证：</p>
+<ul>
+<li><strong><code>message_group_id</code> 设为 <code>ThreadId</code></strong>，SQS FIFO 保证同一个 <code>MessageGroupId</code> 在同一时刻最多只会被一个 Lambda 实例拉取消费，彻底串行化单线程的读写切片；而一千个不同的 <code>ThreadId</code> 属于一千个不同的消息组，Lambda 会自动并行拉起多个实例水平扩展。核心运行时不需要引入 Redis 锁或数据库悲观锁。</li>
+<li><strong><code>message_deduplication_id</code> 设为 <code>dedup_id</code></strong>，先在队列入口挡掉 5 分钟窗口内的重复投递；超过窗口的重投则由第 3 章的 <code>StateStore</code> 去重集合和历史尾扫兜底。</li>
+</ul>
+<p>当 SQS 触发主 Agent Lambda（<code>crates/infinity-agent-lambda/src/event_handler.rs</code>）时，处理函数把收到的 <code>SqsEvent</code> 记录解析成 <code>(InputMessage, message_id)</code> 批次，交给 <code>AgentSystem::step</code>。即便把 SQS <code>batchSize</code> 调大到一次拉多条横跨不同消息组的记录，<code>step</code> 内部也会按 <code>group_id</code> 自动分组并并发推进各线程切片，完事把最终输出发往 <code>OUTPUT_QUEUE_URL</code>，随后进程退出，等待期间零算力账单。</p>
+<h2 id="双存储分工-aurora-dsql-存历史树-dynamodb-存状态与缓存">双存储分工：Aurora DSQL 存历史树，DynamoDB 存状态与缓存<a class="anchor" href="#双存储分工-aurora-dsql-存历史树-dynamodb-存状态与缓存" aria-label="链接到本节">#</a></h2>
+<p>无服务器切片每次唤醒都要从零重建 <code>HistoryManager</code>，因此云端实现了 <code>ConversationStore</code> 和 <code>StateStore</code> 的持久化版本，刻意拆给两套特征互补的 AWS 存储服务：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>抽象 Trait</th>
+<th>AWS 实现</th>
+<th>数据结构与表设计</th>
+<th>选用考量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ConversationStore</code></td>
+<td><code>DsqlConversationStore</code>（<code>conversation_history.rs</code>）</td>
+<td>Aurora DSQL（兼容 Postgres）：<code>conversation_history(session_id, message_order, message_id, message_data)</code>、<code>thread_hierarchy(thread_id, parent_thread_id, root_thread_id, spawn_message_order, spawn_tool_call_id, closed, is_subscription_event, is_compaction, fresh_context)</code>、<code>compaction_summaries(thread_id, up_to_order, summary)</code></td>
+<td>需要按 <code>message_order</code> 区间切片读取（<code>start_from</code>/<code>up_to</code>）、递归追溯祖先链以及按 <code>up_to_order &lt;= cutoff</code> 查询压缩摘要，关系型范围查询最契合</td>
+</tr>
+<tr>
+<td><code>StateStore</code> 与 <code>ToolsetCache</code></td>
+<td><code>DynamoDbStateStore</code> / <code>DynamoDbToolsetCache</code>（<code>state_store.rs</code>、<code>toolset_cache.rs</code>）</td>
+<td>单表 <code>InfinityAgentsState</code>（主键 <code>session</code>）：存放去重 ID 集合、会话元数据、活跃订阅集合、挂起人工选择项、工具集配置和 RAP 清单缓存</td>
+<td>键值读写频率高、结构松散、冷启动建连零握手开销</td>
+</tr>
+</tbody></table></div>
+<p>读 <code>DsqlConversationStore::new</code>（第 36 至 81 行）能看到几个真实的云端适配细节：它不存静态数据库密码，而是每次冷启动通过 <code>aws_sdk_dsql::auth_token::AuthTokenGenerator</code> 签发临时 IAM 管理员令牌，强制 <code>PgSslMode::Require</code> 走 TLS 建立最大 5 连接的 <code>sqlx</code> Postgres 连接池，并在建表时用了 DSQL 特有的 <code>CREATE INDEX ASYNC IF NOT EXISTS</code>。</p>
+<p>另外，<code>traits.rs</code> 里关于 <code>load_history_up_to</code> 的一段注释解释了一个容易踩坑的边界对齐问题：本地 <code>InMemoryConversationStore</code> 内部用 0-based 数组下标（左闭右开 <code>[a, b)</code>），而 <code>DsqlConversationStore</code> 的 <code>message_order</code> 是 1-based 行号（SQL 条件 <code>message_order &gt; $start AND message_order &lt;= $up_to</code>）。为了不让 <code>spawn_message_order</code> 和压缩 <code>up_to_order</code> 在两种存储间差一位，trait 契约统一规定<strong>所有边界参数一律按前导消息条数（leading-row count）解释</strong>，于是无论 0-based 还是 1-based，<code>(Some(a), Some(b))</code> 取出的都是逻辑上的第 <code>a</code> 到 <code>b-1</code> 条消息。</p>
+<h2 id="持久定时器-900-秒为界的双轨休眠">持久定时器：900 秒为界的双轨休眠<a class="anchor" href="#持久定时器-900-秒为界的双轨休眠" aria-label="链接到本节">#</a></h2>
+<p>本地驱动里的 <code>TokioSleepTool</code> 和 <code>TokioSleepUntilTool</code> 只要 <code>tokio::spawn</code> 一个内存定时器就行，但在 Lambda 上进程两秒后就退出了，内存定时器根本活不到唤醒时刻。</p>
+<p><code>crates/infinity-agent-lambda/src/tools/sleep.rs</code> 用 <code>WakeupScheduler</code> 实现了完全无状态的<strong>持久定时器（durable timers）</strong>，以 SQS 的最大原生延迟 <strong>900 秒（15 分钟）</strong> 为分水岭切出两条路径：</p>
+<ul>
+<li><strong>延迟 <code>&lt;= 0</code> 秒（或目标时间已过）</strong>：直接调用 <code>send_to_input_queue</code> 立即投回主输入队列唤醒。</li>
+<li><strong>延迟 <code>1 ..= 900</code> 秒</strong>：把唤醒消息包进信封发往一条独立的延迟中继队列 <code>delay_queue_url</code>，设置 SQS 原生的 <code>delay_seconds</code>。到期后中继队列触发极轻量的 <code>delay-relay</code> Lambda，把里面的 <code>InputMessage</code> 按原 <code>group_id</code> 和 <code>dedup_id</code> 转发回主 FIFO 输入队列。</li>
+<li><strong>延迟 <code>&gt; 900</code> 秒</strong>：调用 AWS EventBridge Scheduler 的 <code>create_schedule</code>，用 <code>at(YYYY-MM-DDTHH:MM:SS)</code> 创建一个精确触发（<code>FlexibleTimeWindowMode::Off</code>）的一次性调度计划，目标直接指向 <code>input_queue_arn</code> 并附带 <code>SqsParameters { message_group_id }</code>。哪怕 Agent 决定睡到下周一早上九点纽约时间，这期间整个 AWS 账号里没有任何运行中的计算实例。</li>
+</ul>
+<p>而且这两条路径和本地一样完全可打断：<code>SleepTool</code> 和 <code>SleepUntilTool</code> 都标记了 <code>is_passive() == true</code>。如果在休眠期间用户提前发了新消息，切片立刻醒来、给休眠调用注入中断结果继续干活；等几小时后 EventBridge 真的把迟到的唤醒消息投进来时，<code>HistoryManager::match_tool_result</code> 逆向尾扫发现早就跨过了轮次边界，直接当作过期消息静默丢弃，不会惊扰正在进行的新对话。</p>
+<h2 id="云端适配里的显式取舍">云端适配里的显式取舍<a class="anchor" href="#云端适配里的显式取舍" aria-label="链接到本节">#</a></h2>
+<p>对比 <code>infinity-agent-lambda</code> 和 <code>infinity-daemon</code>，也能清楚看到无服务器部署为了换取缩容到零而主动接受的几条限制：</p>
+<ul>
+<li><code>event_handler.rs</code> 传入的是 <code>NoDeferral</code>，这意味着如果某个活跃远程 RAP 工具正在执行时恰好有另一条订阅事件或子线程报告到达主输入队列，Lambda 切片无法在内存里暂存它，会直接按中断处理（除非自行实现传输层延迟重投的 <code>DeferQueue</code>）。</li>
+<li>发起外部 RAP 请求使用 <code>RapHttpClient</code> 自动附带 SigV4 签名，免去在工具函数 URL 上维护静态共享密钥。</li>
+<li><code>event_handler.rs</code> 第 35 行目前把云端模型 ID 硬编码为 <code>global.anthropic.claude-sonnet-4-6</code>（源码注释明确写着 <code>&quot;hardcoded for now&quot;</code>），且不携带本地 <code>drive_thread</code> 里的 75% 自动压缩逻辑。这些现状我们在第 12 章还会集中复盘。</li>
+</ul>
+<p>后台的本地守护进程和云端 Lambda 两条运行底座都看全了，接下来转向最外层：人类开发者和外部团队究竟通过哪些交互壳子接触到 Infinity？下一章拆解终端 TUI、Zed/ACP 编辑器协议，以及用 Hydro 数据流语言写成的 Slack 机器人。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="09-daemon-remote-migration.html"><small>上一章</small><strong>本地守护进程、SSH 远程代理与跨主机热迁移</strong></a><a class="next" href="11-clients-and-hydro-dataflow.html"><small>下一章</small><strong>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：为什么一台树莓派能装下七万五千个 Agent</a><a href="../chapters/01-blocking-trap.html"><span>01</span>阻塞式 Agent 的死结与无阻塞切片不变量</a><a href="../chapters/02-workspace-topology.html"><span>02</span>21 个 Crate 的分层版图与类型化 ID 体系</a><a href="../chapters/03-slice-and-history.html"><span>03</span>切片执行循环与三阶段 HistoryManager</a><a href="../chapters/04-rap-protocol.html"><span>04</span>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</a><a href="../chapters/05-threading-compaction.html"><span>05</span>线程树、上下文继承与位置索引压缩</a><a href="../chapters/06-local-actor-deferral.html"><span>06</span>单线程本地调度器、延迟队列与抢占打断</a><a href="../chapters/07-provider-error-boundary.html"><span>07</span>模型供应协议、跨进程隔离与错误分类契约</a><a href="../chapters/08-stacked-sandboxes.html"><span>08</span>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</a><a href="../chapters/09-daemon-remote-migration.html"><span>09</span>本地守护进程、SSH 远程代理与跨主机热迁移</a><a href="../chapters/10-serverless-aws.html"><span>10</span>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</a><a href="../chapters/11-clients-and-hydro-dataflow.html"><span>11</span>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</a><a href="../chapters/12-tradeoffs-and-limits.html"><span>12</span>失败模式、安全边界与架构取舍</a><a href="../chapters/13-mini-infinity.html"><span>13</span>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：源码索引、实测统计与核心术语对照</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · hydro-project/infinity · 快照 e1a3e4b36e5f · 2026-11-05</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

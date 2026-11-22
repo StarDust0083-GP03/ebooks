@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从时间总线、分支路由、rutis 跨语言数据面到权限与压缩重放，源码级解剖 arcships/dim Agent v4 架构"><meta name="author" content="独立源码研究">
+<title>前言与全景导读 · Dim 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">D</span><span>Dim 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 00</div><div class="rail-title">前言与全景导读</div><ol><li><a href="#阅读路线">阅读路线</a></li><li><a href="#研究口径与边界">研究口径与边界</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 00 章</div><h1>前言与全景导读</h1><div class="chapter-meta">arcships/dim v0.1.0-alpha.27 · 快照 2026-11-22 · 约 8 分钟</div></header><div class="prose"><p>给一个编码 Agent 加上工具审批、后台长命令、并行排查分支、跨语言插件和会话重启恢复之后，多数原型里那段几十行的 <code>while</code> 对话循环会迅速失控。两个客户端同时点下同意和拒绝，工具到底执行几次；子任务跑在后台时用户按了中断，进程要不要杀；插件热重载之后，已经在途的模型请求怎么收尾，才不会把同一个写文件操作跑两遍。</p>
+<p><code>arcships/dim</code> 给出的解法，是把整个 Agent 运行时改写成一张围绕事件序号运转的状态机网络。在固定提交 <code>88a3df3669405730cbee6bfd113a7f75cf520677</code>（工作区版本 <code>0.1.0-alpha.27</code>，快照日期 2026-11-22）的源码里，Dim 用 Rust 2024 和 <code>rutis 0.23.0</code> 搭起了一套完全由插件组成的运行时（项目内称 Agent v4）：28 个 Cargo 工作区成员、111 个真实装配服务、20 个分支级 Capability、3 个内置运行时插件包以及 26 份架构决策记录（ADR 001 至 026）。</p>
+<p>这本书不复述产品宣传页，也不把设计文档当实现现状。整本书按源码实情拆解 Dim 的六根承重柱：三层作用域如何消灭胶水层，时间总线（Time Bus）怎样把并发竞争压成单调序号，分支时间线怎样同时支撑默认分支切换与受保护祖先链配额，<code>rutis</code> 如何通过跨语言数据面让 Rust、TypeScript 和 Python 共用同一套契约，上下文压缩为什么把不可变摘要与可丢弃快照拆开，以及权限系统在 ADR 003 到 ADR 018 之间经历过哪些真实取舍与回撤。</p>
+<h2 id="阅读路线">阅读路线<a class="anchor" href="#阅读路线" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>章节区间</th>
+<th>核心问题</th>
+<th>建议读者重点关注</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>第 1 至 2 章</td>
+<td>为什么放弃普通对话循环，28 个 Crate 怎么分层</td>
+<td>Process / Session / Branch 作用域划分与五种跨层关系</td>
+</tr>
+<tr>
+<td>第 3 至 4 章</td>
+<td>事件怎么写、怎么落盘、怎么按序消费</td>
+<td><code>committed</code> 与 <code>published</code> 双水位、<code>before</code> 钩子、副作用不重放</td>
+</tr>
+<tr>
+<td>第 5 章</td>
+<td>一条会话怎么长出多条并行行为线</td>
+<td>起点 <code>main</code> 与可移动默认分支、三键块、<code>DEFAULT_MAX_OPEN_LINES</code></td>
+</tr>
+<tr>
+<td>第 6 至 7 章</td>
+<td>插件系统怎样跨语言并支持会话内自写</td>
+<td><code>HostDispatch</code> 数据面、75/111 迁移现状、<code>plugin-authoring</code></td>
+</tr>
+<tr>
+<td>第 8 至 9 章</td>
+<td>长会话如何控内存，危险动作谁拍板</td>
+<td><code>RecoverySnapshot</code> SHA-256 校验、脱离工作持有、ADR 018 预设收敛</td>
+</tr>
+<tr>
+<td>第 10 至 11 章</td>
+<td>脚本编排、模型接入与多端协议怎么对接</td>
+<td><code>rquickjs</code> 边界、Aimux 缓存断点、App Server RPC v3 与 ACP 网关</td>
+</tr>
+<tr>
+<td>第 12 至 13 章</td>
+<td>代价在哪里，怎么用最少代码验证核心不变量</td>
+<td><code>xtask-check</code> 静态门禁、已知窗口期代价、18 个 Python 单元测试</td>
+</tr>
+</tbody></table></div>
+<h2 id="研究口径与边界">研究口径与边界<a class="anchor" href="#研究口径与边界" aria-label="链接到本节">#</a></h2>
+<p>本书属于独立源码分析，非 <code>arcships/dim</code> 官方文档。正文引用的文件路径、结构体名称、事件键、服务目录统计与配置上限均核对自上游仓库快照 <code>88a3df3669405730cbee6bfd113a7f75cf520677</code>（<code>v0.1.0-alpha.27</code>）。文中区分三类信息：静态源码与生成目录中的实装事实、上游设计文档或 ADR 中声明的契约与演进意图、以及第 13 章零依赖 Python 教学模型 <code>examples/mini_dim.py</code> 的离线验证结果。本书未执行生产集群压测或真实大模型基准评测，涉及吞吐与延迟的数据均明确标注上游文档原始测试口径。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a class="next" href="01-why-not-a-chat-loop.html"><small>下一章</small><strong>为什么不用普通对话循环</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言与全景导读</a><a href="../chapters/01-why-not-a-chat-loop.html"><span>01</span>为什么不用普通对话循环</a><a href="../chapters/02-workspace-and-scopes.html"><span>02</span>28 个 Crate 与三层作用域</a><a href="../chapters/03-time-bus.html"><span>03</span>时间总线与只认序号的事实流</a><a href="../chapters/04-event-driven-contracts.html"><span>04</span>事件驱动契约：Dispatcher、before 与重启重建</a><a href="../chapters/05-timeline-branches.html"><span>05</span>分支时间线：默认分支、父子通信与配额路由</a><a href="../chapters/06-rutis-and-data-faces.html"><span>06</span>rutis 插件引擎与跨语言数据面</a><a href="../chapters/07-self-evolving-plugins.html"><span>07</span>在会话里给自己写插件与热重载自演化</a><a href="../chapters/08-context-compaction-and-replay.html"><span>08</span>上下文投影、压缩与历史渲染边界</a><a href="../chapters/09-detached-work-and-permissions.html"><span>09</span>脱离工作、工具审批与权限边界</a><a href="../chapters/10-codemode-and-aimux.html"><span>10</span>Code Mode 与 Aimux 模型宿主</a><a href="../chapters/11-server-cli-web-and-protocols.html"><span>11</span>App Server、CLI、Web 与 ACP / MCP 网关</a><a href="../chapters/12-tradeoffs-and-boundaries.html"><span>12</span>架构权衡与工程边界</a><a href="../chapters/13-teaching-model.html"><span>13</span>零依赖 Python 教学模型与 18 个单元测试</a><a href="../chapters/appendix-sources.html"><span>A</span>附录 A：源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · arcships/dim v0.1.0-alpha.27 · 快照 88a3df366940 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

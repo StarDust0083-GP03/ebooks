@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从需求、配置、角色到 Hook 与验收，解剖 Claude Code Game Studios 的工作流"><meta name="author" content="独立源码研究">
+<title>配置求值：一个 rigor 如何长出六个设置 · Claude Code 游戏工作室</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">G</span><span>Claude Code 游戏工作室</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 04</div><div class="rail-title">配置求值：一个 rigor 如何长出六个设置</div><ol><li><a href="#场景-少写配置-为什么反而更稳">场景：少写配置，为什么反而更稳</a></li><li><a href="#五级瀑布解析链">五级瀑布解析链</a></li><li><a href="#rigor-展开表与-显式值压过展开">rigor 展开表与“显式值压过展开”</a></li><li><a href="#个人白名单-哪些能本地改-哪些被锁死">个人白名单：哪些能本地改，哪些被锁死</a></li><li><a href="#脏数据兜底-生产级-bash-python-解析器踩过的坑">脏数据兜底：生产级 Bash/Python 解析器踩过的坑</a></li><li><a href="#技能里的-注入-别让模型自己算配置">技能里的 ! 注入：别让模型自己算配置</a></li><li><a href="#常见误解">常见误解</a></li><li><a href="#练习">练习</a></li><li><a href="#答案提示">答案提示</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 04 章</div><h1>配置求值：一个 <code>rigor</code> 如何长出六个设置</h1><div class="chapter-meta">CCGS v1.3.0 快照 2026-11-09 · 约 24 分钟</div></header><div class="prose"><h2 id="场景-少写配置-为什么反而更稳">场景：少写配置，为什么反而更稳<a class="anchor" href="#场景-少写配置-为什么反而更稳" aria-label="链接到本节">#</a></h2>
+<p>你在 <code>project.yaml</code> 里其实只写了两行：</p>
+<pre><code class="language-yaml">modes:
+  rigor: standard
+</code></pre>
+<p>可等技能跑起来，上下文里自动冒出了六个清清楚楚的值：<code>workflow: standard</code>、<code>qa.level: standard</code>、<code>review_mode: lean</code>、<code>team.size: individual</code>、<code>docs.density: balanced</code>、<code>story_granularity: balanced</code>。</p>
+<p>接着你在被 <code>.gitignore</code> 忽略的 <code>project.local.yaml</code> 里加了一句 <code>modes.review_mode: solo</code>。你自己的会话瞬间省掉了多总监评审，团队里其他人一点不受影响。万一哪天手滑把 <code>modes.rigor</code> 拼成了 <code>strict</code>，整套流程也没炸，而是悄悄回落到 <code>minimal</code>，还在 <code>notes</code> 里把你拼错的词点名拎出来。</p>
+<p>这套把“简单入口、团队规范、个人习惯、老版本兼容、脏数据兜底”全捏在一起的求值器，全写在 <code>.claude/hooks/yaml-helper.sh</code> 里，配套的读写技能在 v1.3.0 里正式改名叫 <strong><code>/project-settings</code></strong>（老名字 <code>/settings</code> 保留为转发层）。它是全仓库被调得最勤的一块代码。</p>
+<h2 id="五级瀑布解析链">五级瀑布解析链<a class="anchor" href="#五级瀑布解析链" aria-label="链接到本节">#</a></h2>
+<p>调用 <code>resolve_setting &lt;key&gt;</code> 时，脚本不看心情，死板地沿着五级瀑布往下走，<strong>谁先给出一个合法值，谁就赢</strong>：</p>
+<ol>
+<li><strong><code>project.local.yaml</code></strong>：前提是这个键在“本地可覆盖”白名单里，不在白名单的直接跳过。</li>
+<li><strong><code>project.yaml</code></strong>：团队共享的显式配置。</li>
+<li><strong>旧版纯文本镜像</strong>：兼容老版本留下的 <code>production/review-mode.txt</code>、<code>production/stage.txt</code>。</li>
+<li><strong><code>rigor</code> 展开</strong>：把 <code>modes.rigor</code> 映射成 6 个子开关。</li>
+<li><strong>末端默认值</strong>：什么都没配时的保底值（比如 <code>rigor=minimal</code>、<code>automation=collaborative</code>）。</li>
+</ol>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 350" width="420" height="350" role="img" aria-label="配置解析链">
+<title>配置解析链</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="10" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">第一个合法值胜出；非法枚举继续下落</text><rect x="8" y="22" width="404" height="44" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.4"/><text x="17" y="39" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">project.local.yaml</text><text x="17" y="54" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">15 键个人体验白名单（rigor 族仅 review_mode / team.size）</text><line x1="210" y1="66" x2="210" y2="78" stroke="var(--line)" stroke-width="1.1" marker-end="url(#arrow)"/><rect x="8" y="78" width="404" height="44" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="17" y="95" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">project.yaml</text><text x="17" y="110" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">显式值优先于落盘镜像</text><line x1="210" y1="122" x2="210" y2="134" stroke="var(--line)" stroke-width="1.1" marker-end="url(#arrow)"/><rect x="8" y="134" width="404" height="44" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="17" y="151" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">legacy 镜像</text><text x="17" y="166" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">review-mode.txt / production/stage.txt</text><line x1="210" y1="178" x2="210" y2="190" stroke="var(--line)" stroke-width="1.1" marker-end="url(#arrow)"/><rect x="8" y="190" width="404" height="44" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="17" y="207" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">rigor 展开</text><text x="17" y="222" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">六个子设置；显式值继续压过展开</text><line x1="210" y1="234" x2="210" y2="246" stroke="var(--line)" stroke-width="1.1" marker-end="url(#arrow)"/><rect x="8" y="246" width="404" height="44" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.8"/><text x="17" y="263" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">末端默认</text><text x="17" y="278" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">minimal / collaborative</text><text x="8" y="322" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">输出值和来源：project.yaml / rigor:standard / default</text><text x="8" y="338" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--amber)" text-anchor="start" opacity="1">读白名单必须等于 /project-settings --local 的写白名单</text>
+</svg><figcaption>配置解析链：第一个合法值胜出，非法枚举继续下落</figcaption></figure>
+<p>每经过一级，脚本都要把读到的值拿去核对 <code>_yaml_helper_enums</code>（v1.3.0 共收了 <strong>26 个</strong> 枚举与布尔键，包含新增的 <code>engine.name::Godot|Unity|Unreal|Web</code> 和 <code>project.goal</code> 的 9 个合法目标）。<strong>如果值非法，直接丢弃并记进备注，继续往下跌落</strong>——绝不拿一个拼错的值污染全仓技能，也绝不因为一个拼写错误直接把会话崩掉。</p>
+<p>在刚克隆的空仓库上跑 <code>bash .claude/hooks/yaml-helper.sh resolve_config</code>，你会看到类似这样的输出：</p>
+<pre><code class="language-text">=== CCGS Resolved Config ===
+rigor: minimal (default)
+review_mode: solo (rigor:minimal)
+automation: collaborative (default)
+workflow: minimal (rigor:minimal)
+docs.density: terse (rigor:minimal)
+story_granularity: coarse (rigor:minimal)
+qa.level: minimal (rigor:minimal)
+team.size: individual (rigor:minimal)
+project.stage: not set (unset)
+automation_always_ask: scope_changes, file_deletions, schema_changes (default)
+engine: unset (fall back to .claude/docs/technical-preferences.md)
+testing.strict: logic=unset integration=unset visual=unset ui=unset config=unset ...
+performance.enforce: warn (default)
+platform.cert_tier: (unset -- ask which platforms are in scope)
+system_overrides: none
+notes: none
+</code></pre>
+<p>排查“技能怎么没按我想的跑”时，<strong>括号里的来源比前面的值更有用</strong>。看到 <code>(default)</code> 说明没配过，看到 <code>(rigor:minimal)</code> 说明是被总档位展开的，看到 <code>(project.yaml)</code> 说明被显式钉死了。</p>
+<h2 id="rigor-展开表与-显式值压过展开"><code>rigor</code> 展开表与“显式值压过展开”<a class="anchor" href="#rigor-展开表与-显式值压过展开" aria-label="链接到本节">#</a></h2>
+<p><code>yaml-helper.sh</code> 里写死的三行展开表很直白：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th><code>modes.rigor</code></th>
+<th><code>workflow</code></th>
+<th><code>docs.density</code></th>
+<th><code>qa.level</code></th>
+<th><code>story_granularity</code></th>
+<th><code>review_mode</code></th>
+<th><code>team.size</code></th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>minimal</code></td>
+<td><code>minimal</code></td>
+<td><code>terse</code></td>
+<td><code>minimal</code></td>
+<td><code>coarse</code></td>
+<td><code>solo</code></td>
+<td><code>individual</code></td>
+</tr>
+<tr>
+<td><code>standard</code></td>
+<td><code>standard</code></td>
+<td><code>balanced</code></td>
+<td><code>standard</code></td>
+<td><code>balanced</code></td>
+<td><code>lean</code></td>
+<td><code>individual</code></td>
+</tr>
+<tr>
+<td><code>full</code></td>
+<td><code>full</code></td>
+<td><code>thorough</code></td>
+<td><code>full</code></td>
+<td><code>fine</code></td>
+<td><code>full</code></td>
+<td><code>studio</code></td>
+</tr>
+</tbody></table></div>
+<p>因为展开排在第 4 级（在显式配置之后、默认值之前），你可以非常灵活地做混搭：比如整仓 <code>rigor: full</code>，但单独在 <code>project.yaml</code> 里把 <code>docs.density: terse</code> 钉死，就能拿到“严谨验收但文档精简”的组合。</p>
+<p>另外 <code>modes.workflow</code> 还挂了一个单系统逃生口：<code>workflow_overrides.system_overrides</code>。整个项目都可以跑 <code>minimal</code>，只把战斗系统拉到 <code>full</code>。解析单个故事时，先看它所属系统有没有覆盖，没有再退回项目级 <code>workflow</code>。</p>
+<p>这也反过来解释了第 03 章的坑：<strong>如果手痒把 6 个子开关的默认值抄进了 <code>project.yaml</code>，以后再改 <code>modes.rigor</code> 就全白搭</strong>，因为第 2 级显式值永远压在第 4 级展开头顶上。</p>
+<h2 id="个人白名单-哪些能本地改-哪些被锁死">个人白名单：哪些能本地改，哪些被锁死<a class="anchor" href="#个人白名单-哪些能本地改-哪些被锁死" aria-label="链接到本节">#</a></h2>
+<p>团队一起开发时，有两类配置不能混：</p>
+<ul>
+<li><strong>影响磁盘产物的配置必须锁在 <code>project.yaml</code></strong>（比如 <code>engine.name</code>、<code>engine.code_root</code>、<code>modes.rigor</code>、<code>modes.workflow</code>、<code>qa.level</code>、<code>project.goal</code>）。不然张三按 <code>full</code> 建了一堆 ADR，李四本地切 <code>minimal</code> 跳过了，仓库产物立马分裂。</li>
+<li><strong>只影响个人体验的偏好允许放 <code>project.local.yaml</code></strong>。</li>
+</ul>
+<p>翻开 <code>.claude/hooks/yaml-helper.sh</code> 第 596 行，<code>_yaml_helper_locally_overridable</code> 白名单里一共列了 <strong>15 个键</strong>：</p>
+<ul>
+<li><code>rigor</code> 展开族里的 2 个：<code>modes.review_mode</code>、<code>team.size</code>；</li>
+<li>交互与严格度开关：<code>modes.automation</code>、<code>modes.automation_always_ask</code>、<code>testing.strict.{logic,integration,visual,ui,config}</code>、<code>performance.enforce</code>；</li>
+<li>功能与提醒开关：<code>features.session_state</code>、<code>features.token_budget_warn_at</code>、<code>features.read_guard</code>、<code>features.read_guard_kb</code>、<code>updates.check</code>。</li>
+</ul>
+<p>这里藏着配置系统最常犯的一类 bug：<strong>写校验的白名单和读解析的白名单分家</strong>。要是 <code>/project-settings --local</code> 允许你把一个键写进 <code>project.local.yaml</code>，而 <code>resolve_setting</code> 读的时候压根不查它，就会出现“写入成功、查询显示、实际全仓无视”的灵异事件。</p>
+<p>CCGS 的处理很干脆：把白名单集中放在 <code>yaml-helper.sh</code> 这一处，<code>/project-settings</code> 直接调它的 <code>is_locally_overridable</code>；针对手改 <code>project.local.yaml</code> 的情况，还专门补了 <code>validate_local_scope</code> 函数——只要你在本地文件里手写了锁死键（比如把 <code>modes.rigor</code> 塞进本地文件），开会话时立刻点名警告“这个键不能本地覆盖，已被忽略，请挪去 <code>project.yaml</code>”，绝不静默吞掉。</p>
+<p>还有一个很细的防呆设计：<code>/project-settings</code> 在写入前还会做两道额外检查：</p>
+<ol>
+<li><strong>拼写检查（<code>config-set.sh --dry-run</code>）</strong>：如果你打了个框架压根不认的键名，它会拦下来并给出拼写最接近的合法键名让你确认。</li>
+<li><strong>保留键警告（Reserved-setting detection）</strong>：文档里有些已经占位但目前还没任何技能去读的键，<code>/project-settings</code> 不硬写死名单，而是动态 <code>grep</code> 查 <code>.claude/docs/effects-map.md</code> 里的 <code>&gt; ### RESERVED</code> 标题。无论你是查全部、查单个还是写配置，撞上了都会明明白白告诉你“这个值我帮你存下来了，但目前没有任何技能读它，改了也不生效”。</li>
+</ol>
+<h2 id="脏数据兜底-生产级-bash-python-解析器踩过的坑">脏数据兜底：生产级 Bash/Python 解析器踩过的坑<a class="anchor" href="#脏数据兜底-生产级-bash-python-解析器踩过的坑" aria-label="链接到本节">#</a></h2>
+<p><code>yaml-helper.sh</code> 里藏着大量一看就知道踩过真坑的防御代码，值得自己写配置解析器时照着检查一遍：</p>
+<ul>
+<li><strong>布尔值也必须放进枚举表</strong>：以前 <code>testing.strict.logic</code> 没进枚举表，有人在本地误写成 <code>maybe</code>，结果把 <code>project.yaml</code> 里的 <code>true</code> 给盖掉了，而 <code>/story-done</code> 只认字面量 <code>true</code> 才阻断，一个拼写错误悄悄把硬门禁降级成了口头提醒。所以现在所有布尔键全进了 <code>_yaml_helper_enums</code>；而且 <code>features.session_state</code> 专门枚举成 <code>on|off</code>（不是 <code>true|false</code>），因为写 <code>false</code> 会被当成非 <code>off</code> 从而继续开启！</li>
+<li><strong>多行文本块（<code>|</code> / <code>&gt;</code>）绝不当成配置键</strong>：有人在 <code>notes: |</code> 里写了一行注释 <code>review_mode: full</code>，旧解析器真把它当配置读进去了。v1.2.0 之后专门加了 <code>block_indent</code> 跳过块标量内部所有缩进行。</li>
+<li><strong>Tab 缩进报错带行号</strong>：YAML 规范本来就禁 Tab，以前只剥空格导致 Tab 缩进行直接隐身，所有枚举校验还绿灯通过——等于拿一份全空配置冒充校验合格。现在专门扫描并报出 Tab 所在行号。</li>
+<li><strong>重复块合并并点名</strong>：如果文件里不小心出现了两个 <code>modes:</code> 块，普通 YAML 库往往直接用后一个盖死前一个；这里选择把两个块合并（同名叶子取后者），同时在 <code>validate_yaml_enum</code> 里报出重复键的行号提醒你清理。</li>
+<li><strong>一次启动 Python 解析全表</strong>：早期 <code>validate_yaml_enum</code> 为 23 个枚举键各起一次 Python，在 Windows 上每次冷启动 200 多毫秒，两个文件一跑就是将近 10 秒，直接把 <code>session-start.sh</code> 干超时了。后来改成只起一次 Python 读完文件回答所有枚举，耗时变成常数。</li>
+<li><strong>不往上爬父目录找 <code>project.yaml</code></strong>：曾经实现过“当前目录没有就往上找父目录”，结果删掉了。因为如果你的小项目嵌套在另一个带 <code>project.yaml</code> 的大仓库下面，往上爬会悄悄吃到外层项目的配置，还把“有 <code>project.local.yaml</code> 却缺 <code>project.yaml</code> 必须报错”的规则给搞哑火了。现在只认当前目录和 <code>CLAUDE_PROJECT_DIR</code>。</li>
+<li><strong>已知盲区</strong>：如果你把一个标量键写成了列表（比如 <code>rigor:</code> 下面跟 <code>- full</code>），解析器拿不到标量就会当成空值回落到默认，且不会吐备注。碰到配置神秘失效时，第一反应是检查它的值是不是一行标量。</li>
+</ul>
+<h2 id="技能里的-注入-别让模型自己算配置">技能里的 <code>!</code> 注入：别让模型自己算配置<a class="anchor" href="#技能里的-注入-别让模型自己算配置" aria-label="链接到本节">#</a></h2>
+<p>打开几乎任何一条 <code>SKILL.md</code>，正文第一行都是这样：</p>
+<pre><code class="language-bash">!`bash &quot;${CLAUDE_SKILL_DIR}/../../hooks/yaml-helper.sh&quot; resolve_config --keys automation,workflow,qa.level,...`
+</code></pre>
+<p>这个感叹号让 Claude Code 在把提示词交给模型<strong>之前</strong>，先在 shell 里把脚本跑完，把算好的结果直接贴在正文最上面。紧接着一句“Resolved above — use as-is”，模型彻底不用自己找文件、算优先级、猜默认值。</p>
+<p>不过这招有个前提：命令必须跟 <code>allowed-tools</code>（或 v1.3.0 放进 <code>settings.json</code> 的全局 <code>allow</code>）严丝合缝匹配，哪怕多包一层 <code>cd ... &amp;&amp;</code> 都可能因为没命中白名单直接卡住。所以 <code>/project-settings</code> 里反复叮嘱模型：跑 <code>yaml-helper.sh</code> 时老老实实敲单条裸命令，别画蛇添足。</p>
+<h2 id="常见误解">常见误解<a class="anchor" href="#常见误解" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>误解一：<code>project.yaml</code> 里写什么，技能就一定按什么跑。</strong> 错。本地覆盖、旧版 txt 镜像、非法枚举下落、单系统覆盖都可能改写结果。以 <code>resolve_config</code> 或 <code>/project-settings</code> 打出来的最终值和来源为准。</li>
+<li><strong>误解二：<code>project.local.yaml</code> 只能覆盖 <code>review_mode</code> 和 <code>team.size</code>。</strong> 那只是 <code>rigor</code> 展开族里的 2 个；完整白名单其实有 15 个个人体验键（包括 <code>modes.automation</code>、<code>testing.strict.*</code>、<code>features.read_guard</code>、<code>updates.check</code> 等）。</li>
+<li><strong>误解三：<code>locked</code> 意思是这辈子都改不了。</strong> 不是。<code>/project-settings</code> 里标 <code>locked</code> 只代表“不能在 <code>project.local.yaml</code> 里个人覆盖”，团队依然可以用 <code>/project-settings &lt;key&gt;=&lt;value&gt;</code> 写进 <code>project.yaml</code> 覆盖 <code>rigor</code> 展开。</li>
+</ul>
+<h2 id="练习">练习<a class="anchor" href="#练习" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>如果你在 <code>project.yaml</code> 里同时写了 <code>modes.rigor: full</code> 和 <code>docs.density: terse</code>，再用 <code>/project-settings modes.rigor=minimal</code> 把档位降下来，<code>docs.density</code> 和 <code>qa.level</code> 分别会变成什么值？来源分别显示什么？</li>
+<li>为什么 <code>yaml-helper.sh</code> 专门把 <code>testing.strict.logic</code> 这类布尔开关也放进枚举校验表，而不放行任意字符串？</li>
+<li>假设你手里有两个嵌套仓库：外层 <code>/work/project.yaml</code> 写了 <code>rigor: full</code>，内层 <code>/work/mini-game/</code> 只有老版本的 <code>production/review-mode.txt</code>。如果在内层目录跑配置解析，为什么绝不能“向上递归寻找 <code>project.yaml</code>”？</li>
+</ol>
+<h2 id="答案提示">答案提示<a class="anchor" href="#答案提示" aria-label="链接到本节">#</a></h2>
+<ol>
+<li><code>docs.density</code> 保持 <code>terse</code>（来源 <code>project.yaml</code>，显式钉住的值压过 <code>rigor</code> 展开）；<code>qa.level</code> 跟着降成 <code>minimal</code>（来源 <code>rigor:minimal</code>）。</li>
+<li>因为下游技能（如 <code>/story-done</code>）通常按字面量 <code>true</code> 判断是否阻断；如果不校验枚举，本地误填一个 <code>maybe</code> 就会压过项目里的 <code>true</code>，在零报错的情况下把硬门禁悄悄降成建议级。</li>
+<li>一旦向上递归，内层目录会偷偷读到外层的 <code>project.yaml</code>（甚至外层的 <code>project.local.yaml</code>），直接把内层自己的遗留配置和默认行为顶掉，属于最难查的静默串味故障。</li>
+</ol>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="03-onboarding.html"><small>上一章</small><strong>入门：先玩一把（/prototype）与 Studio Mode（/start）双轨入口</strong></a><a class="next" href="05-agents.html"><small>下一章</small><strong>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：先看清这东西到底是怎么跑起来的</a><a href="../chapters/01-requirements.html"><span>01</span>需求：一个人写游戏，为什么还要套规矩</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：一个会话，四种约束</a><a href="../chapters/03-onboarding.html"><span>03</span>入门：先玩一把（<code>/prototype</code>）与 Studio Mode（<code>/start</code>）双轨入口</a><a href="../chapters/04-config.html"><span>04</span>配置求值：一个 <code>rigor</code> 如何长出六个设置</a><a href="../chapters/05-agents.html"><span>05</span>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</a><a href="../chapters/06-skill-protocol.html"><span>06</span>Skill 协议：一条斜杠命令怎么从解析走到交接</a><a href="../chapters/07-artifacts.html"><span>07</span>产物模型：一页简报与故事、需求、ADR 三张网</a><a href="../chapters/08-dev-story.html"><span>08</span>实施链路：<code>/dev-story</code> 怎么把故事变成代码</a><a href="../chapters/09-story-done.html"><span>09</span>验收：<code>/story-done</code> 如何堵死“基本完成”</a><a href="../chapters/10-hooks.html"><span>10</span>Hook：十五个检查点里，到底谁真的能拦住</a><a href="../chapters/11-registries.html"><span>11</span>注册表：跨文档事实怎么管才不漂移</a><a href="../chapters/12-teams.html"><span>12</span>协作：团队流水线、默认塌缩与“透镜折叠”</a><a href="../chapters/13-engine.html"><span>13</span>引擎与品类适配：统一引擎表、Web 一等公民与品类库</a><a href="../chapters/14-context.html"><span>14</span>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</a><a href="../chapters/15-security.html"><span>15</span>安全边界：能聊天、有 Hook，不等于有沙箱</a><a href="../chapters/16-verification.html"><span>16</span>验证与演进：Markdown 写的框架，怎么证明自己没改坏</a><a href="../chapters/17-mini-studio.html"><span>17</span>最小实验：用两百行 Python 亲手跑通四条核心约束</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.3.0 源码索引、实测数据、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · CCGS v1.3.0 · 快照 abc0de79d6ce · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

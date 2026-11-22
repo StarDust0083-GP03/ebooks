@@ -1,0 +1,71 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>运维与失败：升级顺序、单活红线与真实边界 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="17-operations"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#集群基线与不可颠倒的安装顺序">集群基线与不可颠倒的安装顺序</a></li><li><a href="#升级至-v1-3-0-的七条必查清单">升级至 v1.3.0 的七条必查清单</a></li><li><a href="#单活红线-故障矩阵与三笔容量账">单活红线、故障矩阵与三笔容量账</a></li><li><a href="#排障顺序">排障顺序</a></li><li><a href="#源码入口">源码入口</a></li></ol></details><article class="content"><h1 id="运维与失败-升级顺序-单活红线与真实边界">运维与失败：升级顺序、单活红线与真实边界</h1><p>评估一个基础设施项目能不能进生产，看功能列表用处不大，真正管用的是看它把哪些升级顺序、中断窗口和未收口限制提前写清楚了。OpenSandbox 的部署与发布文档在这方面非常直白，这一篇把最容易在上线和升级时翻车的约束集中理一遍。</p>
+<h2 id="集群基线与不可颠倒的安装顺序">集群基线与不可颠倒的安装顺序</h2><p>从 <code>release-1.3.0-rc.2</code> 起，所有子 Chart（<code>base</code>、<code>controller</code>、<code>fast-sandbox</code> 等）把 Kubernetes 最低版本门槛统一上调至 <strong><code>&gt;=1.22.0-0</code></strong>（官方支持范围 <code>v1.22</code> 至 <code>v1.34</code>），Helm 会直接拒绝在 1.21 集群上安装。</p>
+<p>手工分步安装必须遵守依赖顺序：</p>
+<div class="table-wrap"><pre tabindex="0"><code class="hljs">base -&gt; opensandbox-controller -&gt; fast-sandbox（可选） -&gt; ingress-gateway -&gt; opensandbox-server -&gt; 可选组件（node-agent / console）</code></pre></div><ol>
+<li><strong><code>base</code></strong>：安装 <code>sandbox.opensandbox.io</code> 与 <code>sandbox.fast.io</code> 的 CRD 与基础 RBAC（含 <code>1.3.0-rc.2</code> 为 FSEP-0003 Fastlet 控制面鉴权新增的 token-minting Role 与匿名 issuer 发现权限），每集群装一次。</li>
+<li><strong><code>opensandbox-controller</code></strong>：运行 <code>BatchSandbox</code>、<code>Pool</code>、<code>SandboxSnapshot</code> 三个 reconciler，默认开启 leader election（<code>1.2.1</code> 起支持自定义选举时长且强制 <code>lease &gt; renew &gt; 1.2 * retry</code>，并支持命名空间级缓存与 <code>controller.extraArgs</code>）。</li>
+<li><strong><code>fast-sandbox</code>（可选）</strong>：必须在 server 之前就位，因为 server 启动时就要连向 FastPath gRPC（<code>:9090</code>）并 watch <code>sandbox.fast.io</code> 对象。</li>
+<li><strong><code>ingress-gateway</code></strong>：Kubernetes 生产部署的<strong>必需组件</strong>。沙箱 Pod 只有内网 ClusterIP，跳过网关会导致沙箱能建起来却谁也访问不到。</li>
+<li><strong><code>opensandbox-server</code></strong>：生命周期控制面，最后启动确保依赖的 CRD、网关地址与 FastPath 均已可达。</li>
+</ol>
+<p>使用顶层 umbrella chart（<code>manifests/charts/opensandbox</code>）时，子 chart 打包目录被 git 忽略，每次渲染前需先执行 <code>helm dependency build manifests/charts/opensandbox</code>。发布镜像同步推送至 Docker Hub、GHCR 与阿里云 ACR，均带 Cosign 无密钥签名与 provenance 证明；生产环境应按镜像 digest 固定，不要依赖早已冻结的旧 <code>server/v*</code> 标签。</p>
+<h2 id="升级至-v1-3-0-的七条必查清单">升级至 v1.3.0 的七条必查清单</h2><p>从 <code>1.2.x</code> 滚动到 <code>1.3.0</code> 系列，下面几处兼容性与顺序约束一旦踩空就会直接报错或触发异常行为：</p>
+<ol>
+<li><strong>BatchSandbox <code>Completed</code> 升级顺序</strong>：必须先应用新 CRD 再升级控制器，否则旧 CRD 会以校验错误拒绝控制器写入 <code>Completed</code> 相位（Helm 一体安装已自动处理）。</li>
+<li><strong><code>execd-as-init</code> 成为默认</strong>：<code>runtime.execd_run_as_init</code> 现默认为 <code>true</code>。依赖经典后台拓扑的存量容器需显式改回 <code>false</code>；Fast Sandbox 黄金镜像保留构建时烘进去的拓扑直到重建。</li>
+<li><strong>旧 DevOps 路由与 CLI 移除</strong>：<code>diagnostics/inspect</code>、<code>diagnostics/summary</code>、无 <code>scope</code> 参数调用以及 <code>osb devops</code> 全部下线，遗漏 <code>scope</code> 现在返回 <code>422</code>；调用脚本需切换至 <code>osb diagnostics</code> 与 <code>osb sandbox get</code>。</li>
+<li><strong>原生 S3 与 OCI 模板须重建才能做 <code>rootfsOnly</code> 快照</strong>：新版构建器强制注入 guest-control 并校验 freeze/thaw，旧模板捕获 <code>rootfsOnly</code> 会 fail-closed 失败。</li>
+<li><strong>Fast Sandbox Chart 与伴随镜像同步升级</strong>：FSEP-0003 鉴权下，缺基础 Chart 新 RBAC 的 Fastlet 会拒连控制面；同时全功能 <code>--role=all</code> 控制器在 <code>1.3.0-rc.2</code> 被 Chart 强制单副本并改用 <code>Recreate</code> 升级策略（<code>replicaCount &gt; 1</code> 直接渲染报错），升级时会有短暂 FastPath 变更中断；如需为 Fastlet Proxy 调优资源，可通过 <code>controller.fastletProxy.resources</code> 配置并同步计入 <code>ResourceAware</code> 内存预算。</li>
+<li><strong>保留旧版托管 Firecracker 二进制</strong>：托管 VMM 目录升级到 1.17.0 后，不要删除或改名 1.16.1 二进制；已有检查点与快照恢复时严格按 manifest 记录的精确版本拉起，缺版本直接失败。</li>
+<li><strong>规则与错误名变化</strong>：egress 带根尾点的规则（如 <code>pypi.org.</code>）现在真正生效，升级前需复核默认放行策略下的尾点拒绝规则；<code>execd</code> 前台超时错误名从 <code>CommandExecError</code> 改为 <code>CommandTimeout</code>；空字符串重命名返回 <code>400</code>。</li>
+</ol>
+<h2 id="单活红线-故障矩阵与三笔容量账">单活红线、故障矩阵与三笔容量账</h2><p>生命周期服务器默认 <code>replicaCount: 1</code> 加 <code>Recreate</code> 升级策略。多副本唯一受支持的拓扑是 <strong>PostgreSQL + Kubernetes 运行时</strong>，且仅用于协调公开快照创建，不等于通用控制面高可用；SQLite 和 Docker 快照执行不支持多活。</p>
+<p>Fast Sandbox 控制面（FastPath + Reconcilers）同样坚持单副本无 leader election：控制面或服务器重启时，运行中的 microVM 与数据面流量不受影响，未完成意图由 CR 重放补齐；唯一会造成运行现场丢失的场景是 Fastlet Pod 意外消失，默认在 <code>recoveryTimeoutSeconds</code>（60 秒）后交由人工按 <code>failurePolicy</code> 处置，不做自动跨机盲目迁移。</p>
+<p>运维预算里有三笔容易漏算的账：</p>
+<ul>
+<li><strong>Kubernetes 快照仓库凭据配在控制器侧</strong>：镜像仓库地址模板与推仓 Secret 配置在 <code>opensandbox-controller</code> 启动参数里，不在服务器 <code>~/.sandbox.toml</code> 中；而且删除快照记录绝不删除远端镜像或对象存储文件，必须外挂独立的生命周期清理策略。</li>
+<li><strong>Fast Sandbox 节点 XFS reflink 状态盘</strong>：状态根必须落在 <code>mkfs.xfs -m reflink=1</code> 分区上，按「已缓存模板 rootfs + guest 内存快照 + 活跃沙箱可写层」核算后起步留 50% 余量，并维持高于 10 GiB 的空闲磁盘地板。给已跑沙箱的节点新挂状态盘前，必须先排空该节点并重启 runtime Pod。</li>
+<li><strong>日志轮转与观测资源基线</strong>：Fast Sandbox 后端组件日志自 <code>1.2.1</code> 起默认写 <code>/var/log/fast-sandbox</code> 轮转文件，不再直接吐到 <code>kubectl logs</code>（除非显式开启 stderr 镜像）；Node Agent 的 Chart 资源值目前仍是起点，尚未完成大规模 soak 定型。</li>
+</ul>
+<h2 id="排障顺序">排障顺序</h2><p>线上一旦告警，按证据成本从低到高走六步最快定位现场：</p>
+<ol>
+<li>查 <code>GET /v1/sandboxes/{id}</code> 的 <code>state</code>、<code>reason</code>、<code>message</code>，先分清没建起、已正常完成（<code>SANDBOX_COMPLETED</code>）还是异常失败；</li>
+<li>查底层对象状态：Kubernetes 看 <code>kubectl describe batchsandbox</code> 的 Conditions（尤其 <code>PoolAllocationPending</code>、<code>PauseFailed</code>、<code>ResumeFailed</code>）并核对 <code>observedGeneration</code>；Fast Sandbox 看 <code>sandbox.fast.io</code> CR 的 <code>status.runtime</code>；</li>
+<li>查 <code>GET /v1/sandboxes/{id}/endpoints/{port}</code> 返回的地址形态与请求头，确认恢复后是否重新解析；</li>
+<li>调数据面 <code>/ping</code> 验证连通性，不行再拉取 <code>diagnostics/logs?scope=container</code> 和 <code>diagnostics/events?scope=runtime</code>，先核对 <code>truncated</code> 与 <code>warnings</code>；</li>
+<li>看指标与结构化日志：egress 区分策略拒绝与解析器故障，上游 TLS 失败看固定原因码（如 <code>self_signed</code>）；ingress 看 <code>/status.ok/network-readiness</code> 影子信号；</li>
+<li>对照已知边界清单：池满 <code>429</code>、并发 20 过载、K8s 恢复后 Vault 需重注、<code>DELETE 204</code> 与 <code>404</code> 不代表进程已终止。</li>
+</ol>
+<h2 id="源码入口">源码入口</h2><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>docs/deployment/index.md</code></td>
+<td>组件安装依赖顺序、单副本声明与 PostgreSQL 快照拓扑</td>
+</tr>
+<tr>
+<td><code>manifests/charts/base/Chart.yaml</code></td>
+<td><code>kubeVersion: &quot;&gt;=1.22.0-0&quot;</code> 与基础 CRD/RBAC 定义</td>
+</tr>
+<tr>
+<td><code>manifests/charts/controller/values.yaml</code></td>
+<td>leader election、Pod 恢复与快照仓库参数</td>
+</tr>
+<tr>
+<td><code>manifests/charts/server/values.yaml</code></td>
+<td>单副本 <code>Recreate</code> 默认策略</td>
+</tr>
+<tr>
+<td><code>manifests/charts/fast-sandbox/templates/controller-deployment.yaml</code></td>
+<td>单副本校验、<code>fastletProxy.resources</code> 与 <code>fastpathHTTPPort</code> 参数装配</td>
+</tr>
+<tr>
+<td><code>docs/community/release-verification.md</code></td>
+<td>Cosign 无密钥签名与发布镜像校验步骤</td>
+</tr>
+</tbody></table>
+</article><nav class="pager" aria-label="篇章导航"><a href="16-observability.html"><small>上一篇</small>可观测性与诊断：让短命沙箱留下可核验的证据</a><a href="18-tradeoffs.html"><small>下一篇</small>权衡：这套架构主动放弃了什么</a></nav></main><script src="../assets/wiki.js"></script></body></html>

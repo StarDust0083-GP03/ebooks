@@ -1,0 +1,199 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Agent Memory from Scratch 中文电子书"><title>怎样读懂一个记忆项目 · Agent Memory from Scratch</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><div class="shell"><header class="topbar"><a class="brand" href="../index.html">Agent Memory</a><span class="spacer"></span><a class="control hide-mobile" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="09-landscape"><div class="eyebrow">第 9 章</div><details class="toc"><summary>本章目录</summary><ol><li><a href="#打开-github-之前-先用-四问契约-给项目卸妆">打开 GitHub 之前，先用“四问契约”给项目卸妆</a></li><li><a href="#先找对今天的主仓库-别对着归档墓碑学框架">先找对今天的主仓库，别对着归档墓碑学框架</a></li><li><a href="#把-维护活跃度-翻译成真正会砸到你头上的日常问题">把“维护活跃度”翻译成真正会砸到你头上的日常问题</a></li><li><a href="#把宣传词拆成源码里可验证的动作">把宣传词拆成源码里可验证的动作</a></li><li><a href="#动手检查">动手检查</a></li><li><a href="#本章对照结论">本章对照结论</a></li></ol></details><article class="content"><h1 id="怎样读懂一个记忆项目">怎样读懂一个记忆项目</h1><h2 id="打开-github-之前-先用-四问契约-给项目卸妆">打开 GitHub 之前，先用“四问契约”给项目卸妆</h2><p>GitHub 上打着 “Agent Memory” 旗号的项目动辄几万 Star，首页宣传词一个比一个玄乎：“自我演化”“无限长期记忆”“类人脑海马体”“一行代码接入”。</p>
+<p>真要给团队的研发助手选型，别先看宣传图和跑分表，拿一张白纸对着目标项目问清楚四句话：</p>
+<ol>
+<li><strong>它吃什么进去？</strong> 是吃原始聊天消息、工具执行日志（Trace），还是吃人类手写的 Markdown？</li>
+<li><strong>它落盘存成什么？</strong> 是独立短事实卡片、结构化用户画像、双时间知识图谱，还是本地文件树？</li>
+<li><strong>查询时它吐什么出来？</strong> 吐回原始候选文本让宿主拼装、吐文件路径让模型自己读，还是直接调内部模型把最终答案生成好了？</li>
+<li><strong>剩下的脏活累活谁干？</strong> 身份鉴权、多租户隔离、Token 预算、原始日志留底、合规删除、工具执行授权——哪些是库自带的，哪些得你自己写代码补？</li>
+</ol>
+<p>拿三个经常被放在同一张对比表里的项目一验就现原形：</p>
+<ul>
+<li><strong>Mem0</strong> 吃聊天消息，落盘短事实卡片，吐候选事实文本；</li>
+<li><strong>Agent Beacon</strong> 吃 Claude Code / Cursor / Codex 等 20+ 宿主的钩子和遥测，落盘标准化动作事件流（<code>runtime.jsonl</code>）；</li>
+<li><strong>Hermes Jev Skills</strong> 根本不存库！它吃检索出来的候选片段，帮你做相关性、防注入和充分性判别，吐安全 ID 列表。</li>
+</ul>
+<p>三者压根就不在同一层，谁也不是谁的替代品。先把交付契约划清楚，选型范围立刻缩小一半。</p>
+<details class="source-example">
+<summary>源码与边界：先划清开源库、托管云和业务宿主的边界（选读）</summary>
+
+<p><img src="../assets/rewrite-memory-b/09-01.svg" alt="拆穿记忆项目宣传词的四问契约"></p>
+<h3 id="mem0-装个-python-包-拿到了官网全套托管能力">Mem0：装个 Python 包 ≠ 拿到了官网全套托管能力</h3><p><code>pip install mem0ai</code> 给你的是本地 SDK 入口，底层的抽取模型、Embedding 服务和向量数据库都得你自己配，登录态鉴权和最终 Prompt 组装更得宿主自己写。</p>
+<p>特别容易踩的坑是<strong>把官网托管云的能力算在开源版头上</strong>：比如 2026 年底上线的后台巩固引擎 <strong>Mem0 Dream</strong>、托管平台的企业级权限面板、以及官网挂出来的某些 Benchmark 优化分数，都属于托管云交付物。本地开源核心（<code>fff8a6472512</code>）跑的是同步 ADD-only 追加和语义池内加分——而且异步 <code>AsyncMemory</code> 和同步 <code>Memory</code> 是独立实现，核对代码时要按你实际调用的入口看函数体，别信早就过时的老 docstring！</p>
+<h3 id="graphiti-图引擎框架-完整托管服务-zep">Graphiti：图引擎框架 ≠ 完整托管服务 Zep</h3><p>Graphiti 开源库负责把 Episode 抽成规范实体和双时间边并提供混合搜索，但图数据库（Neo4j / FalkorDB 等）运维、用户鉴权网关、异步任务队列和失败重试都落在你这边。开源 Graphiti 和商业托管平台 Zep 之间隔着一整层平台工程，千万别拿一方的运维或延迟体验去推断另一方。</p>
+</details>
+
+<h2 id="先找对今天的主仓库-别对着归档墓碑学框架">先找对今天的主仓库，别对着归档墓碑学框架</h2><p>AI 生态半年换一轮天，仓库名字还在，主战场可能早就搬家了。最典型的就是 <strong>Letta</strong>：如果你跟着一年前的老文章跑去翻 <code>letta-ai/letta</code>，会发现 V1 服务端已经退役归档，真正日更迭代的现役主仓是 <strong><code>letta-ai/letta-code</code></strong>（MemFS 架构）。</p>
+<p>所以团队做技术预研时，必须留一份精确的<strong>依赖锁定清单</strong>：写清楚仓库 URL、具体 commit hash、安装包版本号以及对照的文档日期。出了问题才知道是装错旧版本、看了过时教程，还是框架真有 Bug。</p>
+<h2 id="把-维护活跃度-翻译成真正会砸到你头上的日常问题">把“维护活跃度”翻译成真正会砸到你头上的日常问题</h2><p>看一个项目能不能上生产，别只盯着 GitHub Star 数和总 Commit 数，问三个非常接地气的运维问题：</p>
+<ol>
+<li><strong>换 Embedding 模型或升级大版本时，有没有迁移文档、回归测试和真实修复记录？</strong></li>
+<li><strong>核心代码是不是只有单维护者，或者大量提交其实是机器人刷文档？</strong>（单作者项目如 Hippo Memory 迭代极快、思想扎实，但上生产前你得评估万一作者停更，团队能不能自己接管维护。）</li>
+<li><strong>依赖链有没有安全审计和发布纪律？</strong>（比如 2026 年 9 月底 MemOS 遭遇过的 PyPI / npm 供应链投毒事故，就在提醒所有人：拉包前核对官方发布渠道和洁净版本。）</li>
+</ol>
+<h2 id="把宣传词拆成源码里可验证的动作">把宣传词拆成源码里可验证的动作</h2><p>看到文档写“自动更新矛盾事实”“支持混合检索”“自动遗忘”，别信广告词，直接用最小反例追进源码验证：</p>
+<ul>
+<li><strong>测“混合检索”</strong>：造一条带精确报错码 <code>PAY-409</code> 的记录，确保它掉在向量初选池外，看全文命中能不能把它救回最终名单（直奔构造最终 <code>candidates</code> 的那个循环，别看到有 <code>keyword_search()</code> 函数就以为赢了！）；</li>
+<li><strong>测“自动更新”</strong>：先写“老张负责审批”，再写“11 月 1 日起换老李”，查旧记录到底有没有被关闭、10 月 20 日的历史查询还对不对；</li>
+<li><strong>测“故障接管”</strong>：在测试环境直接把抽取 LLM 的 API Key 拔掉或让它超时，塞进一条新通知，看三件事——<strong>原话丢没丢？接口是明确报错还是悄悄返回空列表假装成功？网络恢复后重放会不会造出双份重复卡片？</strong></li>
+</ul>
+<details class="implementation-notes">
+<summary>实现细节：16 个项目截至 2026-11-21 的维护快照与试读分级（选读）</summary>
+
+<p>下面这张表基于仓库最新的 <code>sources/maintenance.json</code>（11 个活跃项目已同步至 <strong>2026-11-09 ~ 2026-11-21</strong> 最新提交，5 个静态/归档项目保留原快照），按“工程接管成熟度与优先投入顺序”分成 A / B / C 三档，供安排源码试读与预研排期（绝不是算法跑分排行榜）：</p>
+<table>
+<thead>
+<tr>
+<th>试读层级</th>
+<th>项目</th>
+<th>最新锁定提交日期</th>
+<th>2026-11 关键动态与必查问题</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>A</strong></td>
+<td><strong>Cognee</strong></td>
+<td>2026-11-20</td>
+<td>极活跃；v1.6.8 强化 SSRF 与服务器路径拦截，重点查跨存储失败恢复</td>
+</tr>
+<tr>
+<td><strong>A</strong></td>
+<td><strong>Letta Code</strong></td>
+<td>2026-11-21</td>
+<td>极活跃；唯一 Letta 主线，v0.34 补齐 worktree 隔离，查 MemFS 提交与编译生效</td>
+</tr>
+<tr>
+<td><strong>A</strong></td>
+<td><strong>MCP Memory Service</strong></td>
+<td>2026-11-20</td>
+<td>极活跃；v13.0.0 强化每 store 凭据隔离与 <code>as_of</code>，查每条远程出口鉴权</td>
+</tr>
+<tr>
+<td><strong>A</strong></td>
+<td><strong>Mem0</strong></td>
+<td>2026-11-18</td>
+<td>活跃；托管推 Dream 与 User Profiles，查清 OSS 同步 ADD-only 与语义池边界</td>
+</tr>
+<tr>
+<td><strong>A</strong></td>
+<td><strong>Graphiti</strong></td>
+<td>2026-11-20</td>
+<td>活跃；v0.31.2+ 新增 <code>SagaNode</code>、删源摘要重建、默认仅绑 localhost</td>
+</tr>
+<tr>
+<td><strong>A</strong></td>
+<td><strong>MemOS</strong></td>
+<td>2026-11-09</td>
+<td>活跃；经历供应链告警后加固至 v2.0.36，重点核验洁净版本与实际启用模块</td>
+</tr>
+<tr>
+<td><strong>A</strong></td>
+<td><strong>TencentDB Agent Memory</strong></td>
+<td>2026-11-19</td>
+<td>活跃；聚焦团队 ACL/Loadout/Proxy，查撤权后代理缓存与内容服务一致性</td>
+</tr>
+<tr>
+<td><strong>B</strong></td>
+<td><strong>Basic Memory</strong></td>
+<td>2026-11-20</td>
+<td>活跃；Markdown 真相源，重点评估文件并发冲突与 AGPL-3.0 协议义务</td>
+</tr>
+<tr>
+<td><strong>B</strong></td>
+<td><strong>Agent Beacon</strong></td>
+<td>2026-11-20</td>
+<td>活跃；覆盖 20+ 宿主动作 Trace 采集，核对目标宿主实际 <code>fidelity</code> 与脱敏</td>
+</tr>
+<tr>
+<td><strong>B</strong></td>
+<td><strong>Hippo Memory</strong></td>
+<td>2026-11-21</td>
+<td>个人极活跃；v3.12.0 重构 <code>src/entry/</code> 与带 <code>asOf</code> 图召回，评估单维护者接管风险</td>
+</tr>
+<tr>
+<td><strong>B</strong></td>
+<td><strong>Hermes Jev Skills</strong></td>
+<td>2026-11-12</td>
+<td>活跃；0.25.3 扩展至 13 项轻量判别，评估数据外发政策与 <code>unjudged</code> 回退</td>
+</tr>
+<tr>
+<td><strong>B</strong></td>
+<td><strong>HippoRAG</strong></td>
+<td>2026-09-03</td>
+<td>研究型低频；PPR 多跳思想极佳，上生产需自行补齐租户、服务与删除治理</td>
+</tr>
+<tr>
+<td><strong>C</strong></td>
+<td><strong>MemoryOS</strong></td>
+<td>2026-07-07</td>
+<td>长期低频/停滞；学短中长期页搬运状态机，谨慎直接作生产依赖</td>
+</tr>
+<tr>
+<td><strong>C</strong></td>
+<td><strong>Memobase</strong></td>
+<td>2026-01-11</td>
+<td>停滞；学 buffer/flush 画像热读取设计，生产使用需自担 fork 与并发修复</td>
+</tr>
+<tr>
+<td><strong>C</strong></td>
+<td><strong>A-MEM</strong></td>
+<td>2025-12-12</td>
+<td>停滞；研究笔记邻居演化思想，不建议直接上生产</td>
+</tr>
+</tbody></table>
+<p><em>注：旧 <code>letta-ai/letta</code>（2026-09-10 归档）仅留作历史与迁移对照，不纳入现役排序。</em></p>
+<h3 id="为什么绝不能把各家-readme-的-benchmark-分数拼成榜单">为什么绝不能把各家 README 的 Benchmark 分数拼成榜单</h3><p>不同项目的自报分数根本没有共同分母：有的报检索 <code>Recall@5</code>，有的报生成 <code>F1</code>，有的拿 LLM-as-a-Judge 打分；有的在每题预先切好的 10 个会话里搜（Haystack 极小），有的在全局长期库里搜；有的还混入了开源版没有的托管专有优化。唯一靠谱的比较，是在<strong>同一批研发语料、同一个回答模型、同一个 Token 预算</strong>下跑你自己的真题对照。</p>
+</details>
+
+<h2 id="动手检查">动手检查</h2><p>现在让你为研发助手挑两个处在不同层级的开源项目（例如 <strong>Agent Beacon</strong> 和 <strong>Mem0</strong>），请分别写出它们的“四问契约”：吃什么、存什么、吐什么、应用层要补什么？再设计一个“抽取模型 504 超时”的断网演练，说明谁保住原文、谁报告未完成、谁负责重试。</p>
+<p>答案提示：Beacon 吃宿主的钩子/遥测活动，落盘标准化工具 Trace（<code>runtime.jsonl</code>），吐出可回放的时间线，它不负责提炼长期规程；Mem0 吃清洗后的对话或文本，落盘短事实与向量/历史，吐出候选事实列表，鉴权、版本裁决和最终 Prompt 组装由宿主补齐。当抽取模型超时时，宿主事件表负责保住原文并标记 <code>retryable</code>，监控必须把它和“合法提取到 0 条新事实”区分开，等依赖恢复后按稳定事件 ID 幂等重试。</p>
+<figure class="concept-diagram" tabindex="0"><img src="../assets/rewrite-memory-b/09-overview.svg" alt="用故障演练检验记忆项目的可接管度：查活跃迁移、断网测试、划清开源与托管" loading="lazy"><figcaption>图：看懂一个记忆项目最好的办法不是背宣传页，而是核对契约再拔一次网线做故障演练。</figcaption></figure>
+
+<details class="comparison-reference">
+<summary>横向查阅表（选读）</summary>
+
+<h2 id="本章对照结论">本章对照结论</h2><table>
+<thead>
+<tr>
+<th>候选路线</th>
+<th>源码与维护审查重点</th>
+<th>团队上线前必须自己验完的硬指标</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Mem0 / Memobase</td>
+<td>真实提取分支、异步与同步差异、后端兼容性</td>
+<td>开源与托管能力边界、偏好更新与原文留存</td>
+</tr>
+<tr>
+<td>Graphiti / Cognee</td>
+<td>实体消歧、Schema 迁移、安全路径防护、跨库恢复</td>
+<td>审批链正确率、历史双时间查询与删源重建</td>
+</tr>
+<tr>
+<td>HippoRAG / A-MEM / MemoryOS</td>
+<td>论文机制与本地代码的实际差异</td>
+<td>固定预算下的净收益复现，补齐外围权限与并发</td>
+</tr>
+<tr>
+<td>MemOS / Hippo</td>
+<td>实际启用的模块、依赖链安全与衰减反馈</td>
+<td>官方洁净版本核验、低频高危规则保护</td>
+</tr>
+<tr>
+<td>Letta Code</td>
+<td>主仓迁移后的最新 MemFS 协议与 worktree</td>
+<td>自编辑提交后是否真的在下一轮编译生效</td>
+</tr>
+<tr>
+<td>Basic / MCP / TencentDB</td>
+<td>同步窗口、传输认证、每 store 隔离与撤权</td>
+<td>撤权后所有搜索、直读和缓存出口一致拒绝</td>
+</tr>
+<tr>
+<td>Beacon / Hermes</td>
+<td>宿主采集覆盖率、数据外发脱敏与降级回退</td>
+<td>原始动作保真、<code>unjudged</code> 状态可见、零越权</td>
+</tr>
+</tbody></table>
+</details>
+</article><nav class="pager" aria-label="章节导航"><a href="08-agent-native.html"><small>上一章</small>Agent 原生记忆与技能</a><a href="10-fact-profile.html"><small>下一章</small>事实与画像路线：Mem0 / Memobase</a></nav></main><div class="toolbar" role="group" aria-label="阅读工具"><a class="control" href="../index.html" aria-label="返回目录">目录</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></div></div><script src="../assets/wiki.js"></script></body></html>

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从无阻塞执行切片、RAP 响应式工具协议到堆叠沙箱与跨主机热迁移，解剖 hydro-project/infinity 的 Rust Agent 运行时架构"><meta name="author" content="独立源码研究">
+<title>本地守护进程、SSH 远程代理与跨主机热迁移 · Infinity 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">∞</span><span>Infinity 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 09</div><div class="rail-title">本地守护进程、SSH 远程代理与跨主机热迁移</div><ol><li><a href="#常驻守护进程与-256-mib-帧边界">常驻守护进程与 256 MiB 帧边界</a></li><li><a href="#懒加载-json-持久化与历史格式兼容">懒加载 JSON 持久化与历史格式兼容</a></li><li><a href="#ssh-远程代理-透明拼装-threadref">SSH 远程代理：透明拼装 ThreadRef</a></li><li><a href="#跨主机热迁移-把活会话与沙箱一起搬走">跨主机热迁移：把活会话与沙箱一起搬走</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 09 章</div><h1>本地守护进程、SSH 远程代理与跨主机热迁移</h1><div class="chapter-meta">hydro-project/infinity 快照 e1a3e4b36e5f · 约 18 分钟</div></header><div class="prose"><p>写代码时经常会遇到两种场景：第一种，在笔记本终端里让 Agent 跑一轮大重构，跑了一半想合上终端窗口切去干别的，甚至改用浏览器里的桌面 UI 查看 Diff，回来再接着聊，不能一关终端就把 Agent 和后台构建全杀掉；第二种，起初在笔记本本地开了个会话分析了半天需求，真到要编译庞大 Rust 工作区或者跑 GPU 测试时发现本机算力吃紧，想把整个活生生的会话连同对话历史树、子线程和沙箱里改到一半的代码，原封不动搬到云端那台 64 核开发机上继续跑。</p>
+<p><code>crates/infinity-daemon/</code>（9,215 行）就是为这两个场景设计的控制枢纽。CLI 终端、桌面 Web 界面、Zed 编辑器（ACP）和 Slack 机器人，本质上都是连向同一个守护进程的客户端。</p>
+<h2 id="常驻守护进程与-256-mib-帧边界">常驻守护进程与 256 MiB 帧边界<a class="anchor" href="#常驻守护进程与-256-mib-帧边界" aria-label="链接到本节">#</a></h2>
+<p>守护进程在首次运行 <code>infinity</code> 时自动拉起，把全部本地状态收纳在 <code>~/.infinity/</code> 下：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>~/.infinity/daemon.sock</code></td>
+<td>客户端与守护进程通信的 Unix Domain Socket</td>
+</tr>
+<tr>
+<td><code>~/.infinity/daemon.pid</code></td>
+<td>守护进程 PID 文件</td>
+</tr>
+<tr>
+<td><code>~/.infinity/providers.json</code></td>
+<td>已安装的外部模型供应器二进制注册表</td>
+</tr>
+<tr>
+<td><code>~/.infinity/remotes.json</code></td>
+<td>配置好的 SSH 远程守护进程列表</td>
+</tr>
+<tr>
+<td><code>~/.infinity/sessions.json</code></td>
+<td>会话索引元数据（工作目录、关闭与归档状态）</td>
+</tr>
+<tr>
+<td><code>~/.infinity/.../{thread_id}*.json</code></td>
+<td>按线程拆分的懒加载历史、元数据与视图快照</td>
+</tr>
+</tbody></table></div>
+<p>这里有一个很容易被忽略的传输层细节（<code>crates/infinity-protocol/src/lib.rs</code> 第 175 至 190 行）：tokio 默认的 <code>LengthDelimitedCodec</code> 单帧上限只有 8 MiB。但在 Coding Agent 场景里，一次重放长对话历史或者回传大文件 Diff 很容易冲破 8 MiB，导致客户端莫名断连。<code>infinity-protocol</code> 统一提供了 <code>length_delimited_codec()</code> 工厂函数，把 <code>MAX_FRAME_LENGTH</code> 调到 <strong>256 MiB</strong>，客户端和守护进程两端强制复用，保证帧长上限不会漂移。</p>
+<p>面向浏览器桌面端（<code>infinity-web</code> + <code>infinity-ui</code>），守护进程通过 <code>ws_handler.rs</code> 暴露 WebSocket 接口，默认监听 <code>127.0.0.1:8080</code>（可通过 <code>INFINITY_WS_BIND</code> 与 <code>INFINITY_WS_PORT</code> 调整）；如果编译 CLI 时启用了 <code>--features bundled-web</code>，<code>web_assets.rs</code> 会把静态构建产物直接打包进二进制，开箱即访问，和终端 TUI 共享同一批在线会话。</p>
+<h2 id="懒加载-json-持久化与历史格式兼容">懒加载 JSON 持久化与历史格式兼容<a class="anchor" href="#懒加载-json-持久化与历史格式兼容" aria-label="链接到本节">#</a></h2>
+<p><code>crates/infinity-daemon/src/memory_store.rs</code> 的 <code>PersistentConversationStore</code> 展示了非常克制的组合设计：它内部直接包着核心库的 <code>InMemoryConversationStore</code>，把所有复杂的祖先链、派生截断、压缩游标逻辑全部委托给核心实现，自己在外面只叠了一层<strong>按线程懒加载的 JSON 文件持久化</strong>。</p>
+<p>每个线程在磁盘上拆成三份文件：<code>{thread_id}.json</code> 存消息列表与压缩摘要，<code>{thread_id}.meta.json</code> 存核心 <code>ThreadInfo</code> 与守护进程专用的 <code>ThreadExtras</code>（标题、子线程列表、累计 token、最后更新时间以及该线程独立选中的 <code>selected_model</code>），<code>{thread_id}.views.json</code> 存前端旁路视图（例如沙箱实时推送的 Diff 面板内容）。两张内存标记集合 <code>loaded</code> 和 <code>metadata_loaded</code> 保证打开会话列表时只读轻量的 <code>.meta.json</code>，真正点进某条会话才把完整消息读进内存。</p>
+<p>源码里还保留了干净的向后兼容层：反序列化 <code>ThreadSnapshot</code> 时先尝试新格式（带展示元数据的 <code>InfinityMessage</code>），失败则回退解析旧版的 <code>OldThreadSnapshot</code>（裸 <code>Message</code> 加独立的 <code>display_as</code> 旁路表）并在内存里无损升级；如果老元数据里没有按线程记录的 <code>selected_model</code>，加载时自动用哨兵值识别并回填全局默认模型。</p>
+<h2 id="ssh-远程代理-透明拼装-threadref">SSH 远程代理：透明拼装 ThreadRef<a class="anchor" href="#ssh-远程代理-透明拼装-threadref" aria-label="链接到本节">#</a></h2>
+<p>开发者在 <code>~/.infinity/remotes.json</code> 里登记远程开发机（或者执行 <code>infinity remote add devbox -- ssh -J bastion devbox</code>）。守护进程启动时，<code>crates/infinity-daemon/src/remote.rs</code> 读取 <code>ssh_args</code>，为每台远端建立一条直连远端 <code>~/.infinity/daemon.sock</code> 的 SSH 转发隧道，并在断线时每隔 5 秒自动重连，同时把 <code>connecting</code> / <code>connected</code> / <code>disconnected</code> 状态实时广播给前端 UI。</p>
+<p>多主机代理最巧妙的地方在于客户端几乎零感知：</p>
+<ul>
+<li>远端会话在列表里通过 <code>ThreadRef::prefixed(&amp;remote)</code> 染上前缀（如 <code>devbox/a1b2c3d4</code>），本地会话保持裸 UUID。</li>
+<li>客户端发来针对 <code>devbox/a1b2c3d4</code> 的 <code>Connect</code>、<code>UserInput</code> 或 <code>SwitchModel</code> 时，本地守护进程识别出 <code>remote == Some(&quot;devbox&quot;)</code>，调用 <code>strip(&amp;remote)</code> 剥掉前缀，原样沿 SSH 隧道转发给远端守护进程。</li>
+<li>远端返回的事件流再经由本地守护进程重新打上 <code>devbox/</code> 前缀推回前端。整个过程不需要在远端开放任何公网 HTTP 端口，完全复用开发者已有的 <code>~/.ssh/config</code>、跳板机与密钥认证体系。</li>
+</ul>
+<h2 id="跨主机热迁移-把活会话与沙箱一起搬走">跨主机热迁移：把活会话与沙箱一起搬走<a class="anchor" href="#跨主机热迁移-把活会话与沙箱一起搬走" aria-label="链接到本节">#</a></h2>
+<p>热迁移是 <code>infinity-daemon</code> 里最见分布式系统功底的一块代码，编排逻辑集中在 <code>crates/infinity-daemon/src/migrate.rs</code>（428 行），配合 <code>sandbox-core/src/server.rs</code>（第 1994 至 2250 行）的 <code>/migrate</code> 与 <code>/migrate/import</code> 两个接口完成。</p>
+<p>无论用户是把本地会话搬到远端 <code>devbox</code>、把远端 <code>devbox</code> 搬回本地，还是把一台远端 <code>devbox</code> 直接搬到另一台远端 <code>gpu-server</code>，<strong>永远由本地守护进程充当总编排器</strong>。整个搬迁严格按六个阶段推进：</p>
+<ol>
+<li><strong>停机定格源会话</strong>，先在源主机调用 <code>cleanup_session</code> 停掉正在跑的 Agent 驱动和原会话附属的 RAP 服务，确保对话历史与沙箱文件在打包期间不再发生变化。</li>
+<li><strong>拉起目标端迁移 RAP 服务并打通 SSH 隧道</strong>，<code>boot_dest_and_tunnel</code> 在目标主机的 <code>dest_cwd</code> 下拉起那些在清单里声明了 <code>needsMigration: true</code> 的 RAP 服务（主要是 <code>sandbox-local</code>），拿到监听端口后按源与目标的拓扑动态建转发隧道：<ul>
+<li>本地搬到远端：通过 <code>ssh_forward_port</code> 把远端目标端口正向转发到本机。</li>
+<li>远端搬到本地：通过 <code>ssh_reverse_forward_port</code> 把本机目标端口反向转发到源远端。</li>
+<li>远端 A 搬到远端 B：本地编排器充当中继，先把远端 B 的端口正向转到本机，再从本机反向转到远端 A，形成一条无需 A/B 互通直连的级联隧道。</li>
+</ul>
+</li>
+<li><strong>沙箱打包与 multipart 传输</strong>，源端拉起临时迁移 RAP 服务，通过 <code>RapNotifier::request_migration</code> 通知源端 <code>sandbox-local</code> 向目标 URL 迁移。<code>sandbox-core</code> 的 <code>migrate_inner</code> 收集属于该 <code>root_thread_id</code> 的所有线程沙箱状态：如果是 Jujutsu 仓库，先确保所有工作区都已加载并跑一次 <code>jj git export</code> 把书签全部导出到 Git 引用里；接着调用 <code>git bundle create</code> 把该会话全部线程的 <code>sandbox-{thread_id}</code> 书签打成一个自包含的二进制 bundle 文件；最后连同序列化后的元数据 JSON 通过 HTTP multipart POST 发往目标端的 <code>/migrate/import</code>（目标端路由特意加了 <code>DefaultBodyLimit::disable()</code> 放开请求体限制，源端遇到连接拒绝最多间隔 5 秒重试 5 次）。目标端收到后解包 bundle、还原书签并改写 <code>remote_uri</code> 指向目标仓库路径。</li>
+<li><strong>序列化迁移对话树</strong>，沙箱搬迁成功后，源端调用 <code>serialize_session</code>（远端则通过点对点 <code>ClientMessage::Emigrate</code> 指令）把根线程及所有子线程的完整消息、压缩摘要和元数据打包传回编排器。</li>
+<li><strong>目标端导入并清理临时服务</strong>，销毁刚才拉起的临时目标 RAP 服务，在目标端调用 <code>import_session</code>（或发 <code>ClientMessage::ImportSession</code>）把整棵对话树导入存储，并在 <code>SessionStore</code> 中建好记录、标记为已停机等待下次唤醒。</li>
+<li><strong>归档源会话并拆除隧道</strong>，源端把旧会话标记为已归档（远端通过 <code>EmigrateDone</code> 通知），离开函数作用域时 <code>_tunnel_guards</code> 自动 <code>drop</code>，所有临时 SSH 端口转发全部干净回收，前端收到 <code>DaemonMessage::MigrateComplete { root_thread_id, new_root_thread_id }</code> 切到新坐标。</li>
+</ol>
+<p>这套流程对失败边界也守得很严：<code>migrate_inner</code> 开头就会直接拒绝迁移 <code>SandboxMode::Direct</code>、<code>SandboxMode::Custom</code> 以及横跨多个不同 Git 仓库的会话，避免搬到一半留下残缺状态。</p>
+<p>到这里，本地与跨机私有开发机的完整运行体系已经拆解完毕。下一章把视角切到公有云，看同一份 <code>infinity-agent-core</code> 在完全没有常驻进程、没有本地磁盘、也没有 SSH 隧道的 AWS 无服务器平台上怎么落地。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="08-stacked-sandboxes.html"><small>上一章</small><strong>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</strong></a><a class="next" href="10-serverless-aws.html"><small>下一章</small><strong>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：为什么一台树莓派能装下七万五千个 Agent</a><a href="../chapters/01-blocking-trap.html"><span>01</span>阻塞式 Agent 的死结与无阻塞切片不变量</a><a href="../chapters/02-workspace-topology.html"><span>02</span>21 个 Crate 的分层版图与类型化 ID 体系</a><a href="../chapters/03-slice-and-history.html"><span>03</span>切片执行循环与三阶段 HistoryManager</a><a href="../chapters/04-rap-protocol.html"><span>04</span>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</a><a href="../chapters/05-threading-compaction.html"><span>05</span>线程树、上下文继承与位置索引压缩</a><a href="../chapters/06-local-actor-deferral.html"><span>06</span>单线程本地调度器、延迟队列与抢占打断</a><a href="../chapters/07-provider-error-boundary.html"><span>07</span>模型供应协议、跨进程隔离与错误分类契约</a><a href="../chapters/08-stacked-sandboxes.html"><span>08</span>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</a><a href="../chapters/09-daemon-remote-migration.html"><span>09</span>本地守护进程、SSH 远程代理与跨主机热迁移</a><a href="../chapters/10-serverless-aws.html"><span>10</span>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</a><a href="../chapters/11-clients-and-hydro-dataflow.html"><span>11</span>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</a><a href="../chapters/12-tradeoffs-and-limits.html"><span>12</span>失败模式、安全边界与架构取舍</a><a href="../chapters/13-mini-infinity.html"><span>13</span>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：源码索引、实测统计与核心术语对照</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · hydro-project/infinity · 快照 e1a3e4b36e5f · 2026-11-05</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

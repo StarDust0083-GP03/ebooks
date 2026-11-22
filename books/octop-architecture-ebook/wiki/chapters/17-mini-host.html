@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 Octop v1.0.3b7 源码的架构解剖：单进程宿主、托管专家、多层存储、多副本租约与安全边界"><meta name="author" content="独立源码研究">
+<title>代码实战：用两百行标准库模型验证六条边界 · Octop 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">O</span><span>Octop 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 17</div><div class="rail-title">代码实战：用两百行标准库模型验证六条边界</div><ol><li><a href="#六张表先钉住数据边界">六张表先钉住数据边界</a></li><li><a href="#边界一与二-专家分享-私有线程与显式贡献">边界一与二：专家分享、私有线程与显式贡献</a></li><li><a href="#边界三-审批绑定载荷与本地幂等">边界三：审批绑定载荷与本地幂等</a></li><li><a href="#边界四与五-托管会话模式与连续调用熔断">边界四与五：托管会话模式与连续调用熔断</a></li><li><a href="#边界六-sqlite-可删-postgresql-只统计的孤儿扫描">边界六：SQLite 可删、PostgreSQL 只统计的孤儿扫描</a></li><li><a href="#运行与实验">运行与实验</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 17 章</div><h1>代码实战：用两百行标准库模型验证六条边界</h1><div class="chapter-meta">Octop v1.0.3b7 快照 2026-11-18 · 约 16 分钟</div></header><div class="prose"><p>前面十六章讲的边界分散在宿主、中间件、数据库和 ACP 适配器几十个文件里。光读源码容易只记住函数名，动手把最关键的几条不变量压成一个零依赖可运行程序，再用单元测试把每条边界的正反用例跑一遍，手感会立刻扎实起来。</p>
+<p>配套代码放在本仓库的 <code>examples/mini_host.py</code>，测试放在 <code>examples/test_mini_host.py</code>。它只依赖 Python 3.10+ 标准库与内置 SQLite，不调真实 LLM，不启 WebSocket，也不发外部邮件，专门用来验证 Octop <code>v1.0.3b7</code> 的六条核心架构边界：</p>
+<ol>
+<li>共享专家不共享私人线程，显式 <code>contributed</code> 标记才允许同专家成员查看单条对话。</li>
+<li><code>session_key</code> 改绑新线程时，旧线程完好保留且仍按身份受控访问。</li>
+<li>HITL 审批绑定预先落库的 <code>payload</code>，条件更新保证重复批准幂等、取消后不可再批准。</li>
+<li>托管专家的 ACP 会话模式解析自动忽略原生 <code>ask</code>/<code>craft</code>、保留 <code>plan</code>，并按无人值守标记决定 <code>ask</code>/<code>yolo</code> 审批门。</li>
+<li>连续相同工具调用熔断器只在 <code>(tool_name, sorted_args)</code> 连续超过上限时 <code>jump_to=&quot;end&quot;</code>，换工具、换参数或纯文本回复立刻重置。</li>
+<li>孤儿 checkpoint 清理对 SQLite 仅在 <code>apply=True</code> 时删除，对共享 PostgreSQL 永远只统计不删除（且跨全部专家汇总活跃线程），外部独立数据库直接跳过扫描。</li>
+</ol>
+<h2 id="六张表先钉住数据边界">六张表先钉住数据边界<a class="anchor" href="#六张表先钉住数据边界" aria-label="链接到本节">#</a></h2>
+<p><code>MiniHost</code> 用六张极简 SQLite 表把状态关系立起来：<code>agents</code> 存专家归属、分享标志和记忆后端类型；<code>threads</code> 存对话归属与 <code>contributed</code> 共享标记；<code>sessions</code> 存入口键到当前线程的可变指针；<code>actions</code> 存待审批动作的固定载荷和三态流转（<code>pending</code> / <code>approved</code> / <code>cancelled</code>）；<code>outbox</code> 以 <code>action</code> 为主键存待投递记录；<code>checkpoints</code> 模拟 SQLite、共享 PostgreSQL 和外部 PostgreSQL 三类存储中的图状态字节数。</p>
+<p>这里刻意把所有表放进同一个 SQLite 库，方便在一个本地事务里把状态机演清楚。真实 Octop 里这些表横跨控制面、checkpoint 和外部连接器，跨库并没有天然全局原子事务。</p>
+<h2 id="边界一与二-专家分享-私有线程与显式贡献">边界一与二：专家分享、私有线程与显式贡献<a class="anchor" href="#边界一与二-专家分享-私有线程与显式贡献" aria-label="链接到本节">#</a></h2>
+<p>对照第 5 章的 <code>resolve_thread_id()</code> 与 <code>thread_visible_to()</code>，<code>MiniHost.assert_thread()</code> 严格执行先查专家访问、再查线程归属两步检查：</p>
+<pre><code class="language-python">def assert_thread(self, user: int, agent: str, thread: str) -&gt; None:
+    self._agent_access(user, agent)
+    row = self.db.execute(&quot;SELECT * FROM threads WHERE id=?&quot;, (thread,)).fetchone()
+    if row is None or row[&quot;agent&quot;] != agent:
+        raise PermissionError(&quot;thread inaccessible&quot;)
+    if not (row[&quot;user&quot;] == user or bool(row[&quot;contributed&quot;])):
+        raise PermissionError(&quot;thread inaccessible&quot;)
+</code></pre>
+<p>当 <code>research</code> 设为 <code>shared=True</code> 时，用户 9 可以调用 <code>open_thread(9, &quot;research&quot;)</code> 开启自己的独立会话，但拿用户 7 的 <code>thread_id</code> 调用 <code>assert_thread()</code> 会直接抛 <code>PermissionError</code>，调用 <code>assert_agent_owner(9, &quot;research&quot;)</code> 同样被拒。只有当用户 7 显式调用 <code>contribute_thread(7, &quot;research&quot;, thread)</code>（且前提是该专家本身已共享，私有专家直接拒绝共享对话）之后，用户 9 才获得读取权限。</p>
+<p>而调用 <code>open_thread(7, &quot;research&quot;, fresh=True)</code> 只更新 <code>sessions</code> 表里 <code>research:dashboard:7:dm</code> 指向的新线程，原来的旧线程行纹丝不动，随时可以切回。</p>
+<h2 id="边界三-审批绑定载荷与本地幂等">边界三：审批绑定载荷与本地幂等<a class="anchor" href="#边界三-审批绑定载荷与本地幂等" aria-label="链接到本节">#</a></h2>
+<p><code>propose()</code> 先校验参数非空、把收件人和正文序列化为 <code>payload</code> 落库，返回 <code>action_id</code>。随后的 <code>approve()</code> 不允许调用方重新传入收件人或正文，并用一条带状态前提的条件更新完成状态流转：</p>
+<pre><code class="language-sql">UPDATE actions SET state=&#39;approved&#39; WHERE id=? AND state=&#39;pending&#39;
+</code></pre>
+<p>只有 <code>rowcount == 1</code> 的首次批准才在同一事务里把载荷写入 <code>outbox</code>。用户连点两次批准，第二次影响 0 行、返回 <code>False</code>，<code>outbox</code> 依然只有一条记录；一旦先执行了 <code>cancel()</code> 把状态置为 <code>cancelled</code>，后续任何 <code>approve()</code> 同样影响 0 行。持久化测试把 SQLite 落到临时目录关闭再重开，验证挂起的审批动作跨越重启后依然有效。</p>
+<p>当然，本地 <code>outbox</code> 只有一行，解决的是审批层面的重复触发，不等于外部发邮件具备跨网络精确一次语义。如果后台投递器把邮件发出去之后、写回本地已发送标记之前崩溃，重启重投依然会发第二封，那一层的去重必须靠对端供应商的幂等键或状态反查来兜底。</p>
+<h2 id="边界四与五-托管会话模式与连续调用熔断">边界四与五：托管会话模式与连续调用熔断<a class="anchor" href="#边界四与五-托管会话模式与连续调用熔断" aria-label="链接到本节">#</a></h2>
+<p>这两个纯逻辑组件直接复刻了 <code>v1.0.3b7</code> 的核心算法：</p>
+<ul>
+<li><code>resolve_managed_session_mode()</code> 与 <code>approval_for_session()</code> 对照 <code>src/octop/infra/agents/acp/session_modes.py</code>：传入 Octop 原生的 <code>ask</code> 或 <code>craft</code> 会被忽略并继续往下取固定模式；传入 <code>plan</code> 会保留；当模式命中 <code>bypassPermissions</code>、<code>full-access</code>、<code>yolo</code> 等无人值守标记时返回 <code>yolo</code>，而当 Runner（如 <code>claude_code</code>）发布过无人值守模式但当前处于 <code>acceptEdits</code> 时，即使聊天曾设过 <code>yolo</code> 也会收紧回 <code>ask</code>；像 <code>opencode</code> 这样未发布无人值守模式的 Runner，则尊重聊天本身的 <code>yolo</code> 设置。</li>
+<li><code>ConsecutiveToolCallGuard</code> 对照 <code>src/octop/infra/agents/middleware/consecutive_tool_call.py</code>：先把参数 dict 按 <code>sort_keys=True</code> 序列化，确保 <code>{&quot;q&quot;: &quot;TODO&quot;, &quot;dir&quot;: &quot;src&quot;}</code> 和 <code>{&quot;dir&quot;: &quot;src&quot;, &quot;q&quot;: &quot;TODO&quot;}</code> 算出同一个签名。连调次数超过 <code>limit</code> 立刻返回 <code>blocked=True, jump_to=&quot;end&quot;</code>；只要参数变了、换了工具，或者调用 <code>observe_text_reply()</code> 模拟纯文本回复，连击计数马上重置。</li>
+</ul>
+<h2 id="边界六-sqlite-可删-postgresql-只统计的孤儿扫描">边界六：SQLite 可删、PostgreSQL 只统计的孤儿扫描<a class="anchor" href="#边界六-sqlite-可删-postgresql-只统计的孤儿扫描" aria-label="链接到本节">#</a></h2>
+<p><code>scan_orphan_checkpoints(agent_id=..., apply=...)</code> 精确建模了 <code>v1.0.3b7</code> PR #2960 修复后的 <code>gc_orphan_checkpoints()</code>：</p>
+<ul>
+<li>面对 <code>sqlite</code> 后端的专家，拿该专家的活跃线程集合做差集；<code>apply=False</code> 仅汇报 <code>found_sqlite</code>，<code>apply=True</code> 才执行删除。</li>
+<li>面对 <code>postgres</code> 后端的专家，先汇总<strong>全库所有专家</strong>的 <code>all_live_threads</code>（避免单查 <code>pg-a</code> 时把同表里 <code>pg-b</code> 的活跃线程错算成孤儿），而且就算传入 <code>apply=True</code>，也只往 <code>skipped_postgres</code> 里追加 <code>(&quot;pg-a&quot;, &quot;postgres_report_only&quot;, count, total_bytes)</code>，一行都不删。</li>
+<li>面对 <code>external_postgres</code> 后端，直接登记 <code>(&quot;pg-ext&quot;, &quot;external_database&quot;, None, 0)</code> 跳过扫描。</li>
+</ul>
+<h2 id="运行与实验">运行与实验<a class="anchor" href="#运行与实验" aria-label="链接到本节">#</a></h2>
+<p>在电子书仓库根目录执行下面两条命令，即可运行演示和全部 18 个单元测试：</p>
+<pre><code class="language-bash">python3 examples/mini_host.py
+python3 -m unittest discover -s examples -v
+</code></pre>
+<p>如果拿这份模型做练手，可以试着在临时副本里故意破坏三条规则观察测试如何报警：把 <code>approve()</code> 里的 <code>AND state=&#39;pending&#39;</code> 删掉，看重复批准如何把 <code>outbox</code> 撞出主键冲突；把 <code>scan_orphan_checkpoints()</code> 里的 <code>all_live_threads</code> 改成只查当前专家的线程，看共享 PostgreSQL 场景如何把另一位专家的正常对话错判成孤儿；把 <code>tool_call_signature()</code> 里的 <code>sort_keys=True</code> 去掉，看键序不同的重复参数如何绕过熔断器。</p>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/api/routers/chat/turn.py"><code>src/octop/api/routers/chat/turn.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/gateway/threads.py"><code>src/octop/infra/gateway/threads.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/acp/session_modes.py"><code>src/octop/infra/agents/acp/session_modes.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/middleware/consecutive_tool_call.py"><code>src/octop/infra/agents/middleware/consecutive_tool_call.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/memory/thread_cleanup.py"><code>src/octop/infra/agents/memory/thread_cleanup.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/teams/jobs.py"><code>src/octop/infra/agents/teams/jobs.py</code></a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="16-tradeoffs.html"><small>上一章</small><strong>架构取舍：单机够用到何时，复杂度卡在哪里</strong></a><a class="next" href="appendix-sources.html"><small>下一章</small><strong>附录：v1.0.3b7 源码索引、术语与核验命令</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：看懂一个 Agent 宿主如何拼起来</a><a href="../chapters/01-requirements.html"><span>01</span>需求推导：脱离模型 SDK 之后要守住什么</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：单进程宿主与四套可复用运行库</a><a href="../chapters/03-lifecycle.html"><span>03</span>启动与退出：装配顺序、延迟绑库与有序收尾</a><a href="../chapters/04-agent-runtime.html"><span>04</span>Agent 装配：原生专家、托管专家与中间件顺序</a><a href="../chapters/05-identity.html"><span>05</span>身份与会话：四种标识与共享专家的线程隔离</a><a href="../chapters/06-storage.html"><span>06</span>存储与历史：六类数据平面、下线归档与安全清理</a><a href="../chapters/07-workspace.html"><span>07</span>工作区后端：内容访问、对象存储与容器挂载边界</a><a href="../chapters/08-turn-path.html"><span>08</span>一次对话：从 WebSocket 入队到工具熔断与推送</a><a href="../chapters/09-memory-rag.html"><span>09</span>记忆与知识库：命名空间维护、图谱扩展与重排序</a><a href="../chapters/10-extensions.html"><span>10</span>工具与扩展：Skill、Plugin、Connector 与 MCP OAuth</a><a href="../chapters/11-teams.html"><span>11</span>多 Agent 团队：共享展示时间线，隔离执行状态</a><a href="../chapters/12-security.html"><span>12</span>安全边界：MFA、权限分离、审批串行与云凭证隔离</a><a href="../chapters/13-dashboard.html"><span>13</span>前端状态机：离线订阅、五道恢复门与历史竞态</a><a href="../chapters/14-interop.html"><span>14</span>跨端协作：托管 ACP 回环与 Bridge 实例隧道</a><a href="../chapters/15-operations.html"><span>15</span>部署与运维：Electron 壳、镜像分层与多副本租约</a><a href="../chapters/16-tradeoffs.html"><span>16</span>架构取舍：单机够用到何时，复杂度卡在哪里</a><a href="../chapters/17-mini-host.html"><span>17</span>代码实战：用两百行标准库模型验证六条边界</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.0.3b7 源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Octop v1.0.3b7 · 快照 ecd2cdbce3a5 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

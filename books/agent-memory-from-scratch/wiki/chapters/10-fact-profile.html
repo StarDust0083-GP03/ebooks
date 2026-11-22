@@ -1,0 +1,137 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Agent Memory from Scratch 中文电子书"><title>事实与画像路线：Mem0 / Memobase · Agent Memory from Scratch</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><div class="shell"><header class="topbar"><a class="brand" href="../index.html">Agent Memory</a><span class="spacer"></span><a class="control hide-mobile" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="10-fact-profile"><div class="eyebrow">第 10 章</div><details class="toc"><summary>本章目录</summary><ol><li><a href="#同一个开发者-藏着两种截然不同的读取需求">同一个开发者，藏着两种截然不同的读取需求</a></li><li><a href="#mem0-把对话拆成短事实卡片-再按问题捞回">Mem0：把对话拆成短事实卡片，再按问题捞回</a></li><li><a href="#memobase-把写入推到后台-buffer-换来读取热路径零检索">Memobase：把写入推到后台 buffer，换来读取热路径零检索</a></li><li><a href="#面对-单次例外-与-正式变更-两条路线怎么才不翻车">面对“单次例外”与“正式变更”，两条路线怎么才不翻车？</a></li><li><a href="#动手检查">动手检查</a></li><li><a href="#本章对照结论">本章对照结论</a></li></ol></details><article class="content"><h1 id="事实与画像路线-mem0-memobase">事实与画像路线：Mem0 / Memobase</h1><h2 id="同一个开发者-藏着两种截然不同的读取需求">同一个开发者，藏着两种截然不同的读取需求</h2><p>林远给研发助手发过这么一段话：</p>
+<blockquote>
+<p>“以后回答我都用中文，改配置文件之前必须先给我看 diff。对了，上周 <code>payment-gateway</code> 出 <code>PAY-409</code> 是因为幂等键 TTL 配成了 30 秒，比重试窗口还短。”</p>
+</blockquote>
+<p>仔细看，这里面藏着两种访问模式完全不同的东西：</p>
+<ul>
+<li><strong>稳定偏好（“中文回复、改配置先给 diff”）</strong>：几乎每一轮对话都用得上。如果每次都靠“拿当前问题去向量库碰运气”，哪天林远只问一句“帮我看看这段 SQL 慢在哪”，问题里完全没提“配置”和“diff”，向量搜索很可能根本捞不出偏好卡片！</li>
+<li><strong>具体经历（“上周 <code>PAY-409</code> 的根因”）</strong>：平时不用每轮占着 Prompt 宝贵的 Token，只有下次排查支付网关或发版时才需要精准捞出来。</li>
+</ul>
+<p>**事实路线（Mem0）<strong>和</strong>画像路线（Memobase）**的分歧，本质就是：<strong>你打算在“读取时按问题现挑”，还是在“写入时提前合并成固定字段直读”？</strong></p>
+<p><img src="../assets/rewrite-memory-b/10-01.svg" alt="事实检索与用户画像的读写权衡"></p>
+<h2 id="mem0-把对话拆成短事实卡片-再按问题捞回">Mem0：把对话拆成短事实卡片，再按问题捞回</h2><p>在 Mem0 里，上面那段话交给 <code>add()</code> 后，抽取模型会尝试把它拆成几张独立短事实：</p>
+<pre tabindex="0"><code class="hljs">F1：林远要求默认使用中文回复。
+F2：林远要求修改配置文件前必须先展示 diff。
+F3：payment-gateway 上周出现 PAY-409，因 idempotency_key TTL(30s) 小于重试窗口。</code></pre><p>把 Mem0 用好，必须看透它本地开源版（<code>2026-11-18</code> 快照 <code>fff8a6472512</code>，<a href="https://github.com/mem0ai/mem0/blob/fff8a6472512/mem0/memory/main.py">main.py</a>）的四个真实脾气：</p>
+<ol>
+<li><strong>同步默认是 ADD-only 批量追加</strong>：写入时参考最近 10 条消息和最多 10 条旧事实，只负责抽出新增文本、批量算向量、写入向量库与 SQLite 历史表，再更新实体链接。旧卡片不会因为林远改了主意就自动消失。</li>
+<li><strong>精确编号容易掉在语义池外</strong>：如果林远下次直接搜 <code>PAY-409</code>，而 F3 没挤进向量初选池（<code>max(limit * 4, 60)</code>），后续的 BM25 和实体 boost 只在语义池内加分，<strong>永远救不回 F3</strong>（第 5 章我们已经扒过 <code>scoring.py</code> 源码）。</li>
+<li><strong>过滤边界要自己把严</strong>：下面的接口调用示意展示了基本契约——注意 <code>user_id</code> 必须由服务端鉴权传入，不能让模型自己挑：<pre tabindex="0"><code class="hljs">messages = [
+    {<span class="hljs-string">&quot;role&quot;</span>: <span class="hljs-string">&quot;user&quot;</span>, <span class="hljs-string">&quot;content&quot;</span>: <span class="hljs-string">&quot;以后改配置前先给我看 diff，默认用中文回复。&quot;</span>},
+    {<span class="hljs-string">&quot;role&quot;</span>: <span class="hljs-string">&quot;user&quot;</span>, <span class="hljs-string">&quot;content&quot;</span>: <span class="hljs-string">&quot;不过今天演示环境的 hotfix 跳过格式检查，不改长期习惯。&quot;</span>},
+]
+receipt = memory.add(
+    messages,
+    user_id=<span class="hljs-string">&quot;linyuan&quot;</span>,
+    metadata={<span class="hljs-string">&quot;repo&quot;</span>: <span class="hljs-string">&quot;payment-gateway&quot;</span>, <span class="hljs-string">&quot;source&quot;</span>: <span class="hljs-string">&quot;chat-084&quot;</span>},
+)
+hits = memory.search(
+    <span class="hljs-string">&quot;改配置有什么要求&quot;</span>,
+    filters={<span class="hljs-string">&quot;user_id&quot;</span>: <span class="hljs-string">&quot;linyuan&quot;</span>, <span class="hljs-string">&quot;repo&quot;</span>: <span class="hljs-string">&quot;payment-gateway&quot;</span>},
+    top_k=<span class="hljs-number">4</span>,
+    explain=<span class="hljs-literal">True</span>,
+)</code></pre>这里要注意：<code>metadata</code> 里的自定义字段（如 <code>repo</code>）可以用来做外层检索过滤，但在 Mem0 内部部分范围处理里，默认只认 <code>user_id / agent_id / run_id</code> 这几个一级身份键——跨项目同名服务千万别只靠一个自定义 tag 隔离。</li>
+<li><strong>2026-11 最新演进：托管侧补齐了 User Profiles 与 Dream，安全补丁要及时升</strong><ul>
+<li>过去 Mem0 最大的短板是“既缺直接读取的结构化画像，又缺后台自动合并旧卡片的巩固引擎”。2026 年 9—11 月间，Mem0 在 Python SDK <code>v2.2.x</code> 补出了按 JSON Schema 异步维护的 <strong>User Profiles</strong>（<code>get_profile()</code> / <code>generate_profile()</code>）和防重放 <code>Idempotency-Key</code>，并在托管 Pro / Enterprise 侧上线了后台异步巩固引擎 <strong>Mem0 Dream</strong>（负责合并重复事实、标过时信息为 <code>superseded</code>），同时发布了存量聊天导入能力和针对作用域/会话隔离漏洞（如 <code>CVE-2026-116575</code>）的安全补丁（要求 Python SDK ≥ <code>2.0.18</code>、TS SDK ≥ <code>3.1.6</code>）。</li>
+<li><strong>架构师必看</strong>：User Profiles 和 Dream 主要是托管平台侧的能力；如果你部署的是本地自建 OSS，版本升级拿安全修复很必要，但<strong>结构化偏好直读、版本切换和后台巩固仍需业务外层补齐</strong>。</li>
+</ul>
+</li>
+</ol>
+<h2 id="memobase-把写入推到后台-buffer-换来读取热路径零检索">Memobase：把写入推到后台 buffer，换来读取热路径零检索</h2><p>Memobase 走了另一条思路——它把**用户画像（Profile）<strong>和</strong>事件时间线（Event）**彻底拆开：</p>
+<ul>
+<li>聊天消息进来先扔进 <code>buffer</code> 缓冲表（见 <a href="https://github.com/memodb-io/memobase/blob/358c16b/src/server/api/memobase_server/controllers/buffer.py">buffer.py</a>），主回复完全不用傻等大模型抽取；</li>
+<li>等 buffer 攒满一定 Token、会话空闲或显式调用 <code>flush</code> 时，后台批量抽成按 <code>topic / subtopic</code> 组织的结构化用户字段（比如 <code>preferences.language = &quot;zh&quot;</code>、<code>preferences.config_edit = &quot;show_diff_first&quot;</code>），同时把具体踩坑记进事件时间线；</li>
+<li>下次对话时，宿主<strong>直接按用户 ID 读画像字段</strong>塞进 System Prompt（不用做向量搜索，延迟极低且永不漏召回），只有追问“上次 <code>PAY-409</code> 怎么回事”时才去搜事件库。</li>
+</ul>
+<p>这套“读写不对称”设计非常聪明，但也有三个绕不开的工程代价：</p>
+<ol>
+<li><strong>写错放大效应</strong>：事实库里多了一条错卡片，顶多某次搜到才出错；画像里如果把“今天 hotfix 跳过 diff”错合并进了长期字段，<strong>之后每一轮对话都会稳定犯同一个错</strong>！</li>
+<li><strong>可见延迟与并发乱序</strong>：刚发完“以后改回先给 diff”，在 <code>flush</code> 跑完之前直接读画像，读到的还是旧值；如果并发触发两次 <code>flush</code>，还必须防旧任务晚完成反而把新纠正给覆盖掉。</li>
+<li><strong>停更维护风险</strong>：Memobase 仓库自 <strong>2026-01-11</strong> 之后没有新提交。它的“buffer/flush + 画像直读与事件分离”是非常值得抄作业的架构模式，但如果你打算直接拿它的代码上生产，得做好自己 fork 维护并发锁、原文保留（注意 <code>persistent_chat_blobs</code> 关闭后 flush 会清理原始聊天 blob！）和安全补丁的心理准备。</li>
+</ol>
+<h2 id="面对-单次例外-与-正式变更-两条路线怎么才不翻车">面对“单次例外”与“正式变更”，两条路线怎么才不翻车？</h2><p>拿三条连续输入测试任何事实或画像系统，立刻就能验出成色：</p>
+<ol>
+<li>“以后改配置前先给 diff。”（长期默认）</li>
+<li>“今天这个紧急 hotfix 直接改，不用先给 diff。”（单次例外）</li>
+<li>“下周一开始，所有配置改动统一走 PR，不再在终端看 diff。”（未来生效的正式变更）</li>
+</ol>
+<p>守住三条设计规矩，两条路线都能跑稳：</p>
+<ul>
+<li><strong>允许字段“未知”</strong>：林远从没表态过代码缩进用 2 空格还是 4 空格，画像里就留空，别让抽取模型从一次默认模板里硬猜一个偏好写进去；</li>
+<li><strong>单次例外只绑当前任务，绝不覆写长期字段</strong>，同时在组装层保证“当前对话明确要求 &gt; 长期偏好”；</li>
+<li><strong>绝不拿 <code>created_at</code> 当生效日</strong>：补录上周的复盘或者提前预告下周的新规矩，都不能按“谁最后写进库就听谁的”来裁决现行值。</li>
+</ul>
+<details class="implementation-notes">
+<summary>实现笔记：其他框架怎么保存稳定偏好？（选读）</summary>
+
+<p>把稳定偏好放进读取热路径，不只有 Memobase 一种写法，可以按团队现有技术栈对号入座：</p>
+<ul>
+<li><strong>最朴素的 SQL / JSON 表 + Mem0 组合</strong>：个人稳定偏好用一张极简的关系表按 <code>user_id</code> 直接读取（支持事务和版本审计），发版教训与历史排障交给 Mem0 或混合检索按问题搜——既零漏召回，又没有黑盒合并风险。</li>
+<li><strong>Letta Code（MemFS）</strong>：把稳定偏好写进根目录 <code>preferences.md</code> 常驻 System Prompt，修改走 Git commit 与审核，透明且随时可 <code>git diff</code>。</li>
+<li><strong>TencentDB Agent Memory</strong>：从 L0/L1 逐层归纳出 L3 核心记忆并通过 Proxy 注入，需要注意版本与缓存同步。</li>
+<li><strong>MemoryOS</strong>：靠中期页面热度触发长期画像分析，缺点是低频但明确的偏好纠正可能迟迟达不到晋升阈值。</li>
+<li><strong>Graphiti</strong>：可以把偏好建成带有效时间的关系边（<code>林远 --[prefers_config_workflow]--&gt; 先给 diff</code>），按需筛选生效区间，比直接读可能混杂旧信息的节点 <code>summary</code> 更稳妥。</li>
+</ul>
+</details>
+
+<h2 id="动手检查">动手检查</h2><p>按顺序向研发助手发送三条消息：① “以后改配置前都先给 diff”；② “今天这次紧急 hotfix 直接改，别走 diff”；③ “下月起配置统一走 GitOps PR，不再看终端 diff”。请写出每一步执行后，“本轮动作”“当前长期默认”和“未来预定变更”各自该是什么状态？如果后台采用 buffer/flush 机制且配置了 flush 后删除原始聊天记录，还要补什么来保证可追溯？</p>
+<p>答案提示：第 ② 步仅覆盖本次 hotfix，当前长期默认仍是“先给 diff”；第 ③ 步只登记下月生效的新版本，本月内依然维持“先给 diff”，到下月 1 日才切换。采用 buffer/flush 时，在 flush 完成前必须让当前会话直接携带最新纠正；如果关闭了原始 blob 保留，则必须在外层保留带脱敏和合规期限的变更来源索引（记录哪次对话触发了字段修改），否则画像一旦合错连回查原话的依据都没有。</p>
+<figure class="concept-diagram" tabindex="0"><img src="../assets/rewrite-memory-b/10-overview.svg" alt="同一条偏好在长期默认、单次例外与正式变更中的流转" loading="lazy"><figcaption>图：稳定偏好直读、临时例外绑任务、正式变更管版本，三者分开才不会互相踩脚。</figcaption></figure>
+
+<details class="comparison-reference">
+<summary>横向查阅表（选读）</summary>
+
+<h2 id="本章对照结论">本章对照结论</h2><table>
+<thead>
+<tr>
+<th>实现</th>
+<th>稳定偏好的落地方式</th>
+<th>读取时重点验什么</th>
+<th>必须买单的工程代价</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Mem0（OSS / 托管）</td>
+<td>OSS 存短事实卡；托管 v2.2+ 新增 User Profiles &amp; Dream</td>
+<td>跨主题偏好会不会漏召回、OSS 与托管边界</td>
+<td>OSS 需外层管现行版本与巩固；及时升安全补丁</td>
+</tr>
+<tr>
+<td>Memobase</td>
+<td>后台 <code>flush</code> 合并结构化 Profile + 独立事件库</td>
+<td>刚改完偏好时 flush 前后的可见延迟</td>
+<td>错误合并会每轮生效；仓库停更需自担维护</td>
+</tr>
+<tr>
+<td>Letta Code</td>
+<td>根目录 Markdown 常驻核心 + Git 版本控制</td>
+<td><code>git commit</code> 后是否在下次编译生效</td>
+<td>写错规则会常驻窗口，须控核心长度</td>
+</tr>
+<tr>
+<td>TencentDB</td>
+<td>多层归纳形成 L3 核心 + Proxy 注入</td>
+<td>身份、资产版本与代理缓存一致性</td>
+<td>跨服务状态同步与撤权失效</td>
+</tr>
+<tr>
+<td>MemoryOS</td>
+<td>短期溢出转页，达热度后提升进长期画像</td>
+<td>低频明确纠正有没有被旧画像压住</td>
+<td>热度门槛带来的晋升滞后</td>
+</tr>
+<tr>
+<td>Graphiti</td>
+<td>面向用户的带时间偏好边 + 实体摘要</td>
+<td>查有效边而非只读可能过时的节点摘要</td>
+<td>建图抽取成本与实体消歧</td>
+</tr>
+<tr>
+<td>Basic / MCP / Hippo</td>
+<td>显式笔记或标签记忆条目</td>
+<td>业务层自己约定现行字段读取方式</td>
+<td>存文本本身不自带字段自动合并</td>
+</tr>
+</tbody></table>
+</details>
+</article><nav class="pager" aria-label="章节导航"><a href="09-landscape.html"><small>上一章</small>怎样读懂一个记忆项目</a><a href="11-graph.html"><small>下一章</small>图谱路线：Graphiti / Cognee / HippoRAG</a></nav></main><div class="toolbar" role="group" aria-label="阅读工具"><a class="control" href="../index.html" aria-label="返回目录">目录</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></div></div><script src="../assets/wiki.js"></script></body></html>

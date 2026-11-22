@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 Octop v1.0.3b7 源码的架构解剖：单进程宿主、托管专家、多层存储、多副本租约与安全边界"><meta name="author" content="独立源码研究">
+<title>存储与历史：六类数据平面、下线归档与安全清理 · Octop 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">O</span><span>Octop 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 06</div><div class="rail-title">存储与历史：六类数据平面、下线归档与安全清理</div><ol><li><a href="#为什么必须把图状态和展示历史拆开">为什么必须把图状态和展示历史拆开</a></li><li><a href="#sqlitepool-与-postgrespool-的克制封装">SqlitePool 与 PostgresPool 的克制封装</a></li><li><a href="#adr-003-postgresql-接管技能包与知识库">ADR 003：PostgreSQL 接管技能包与知识库</a></li><li><a href="#为什么下线-history-v2">为什么下线 history_v2</a></li><li><a href="#v1-0-3b7-关键修复-postgresql-孤儿-checkpoint-绝不误删">v1.0.3b7 关键修复：PostgreSQL 孤儿 checkpoint 绝不误删</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 06 章</div><h1>存储与历史：六类数据平面、下线归档与安全清理</h1><div class="chapter-meta">Octop v1.0.3b7 快照 2026-11-18 · 约 18 分钟</div></header><div class="prose"><p>刷新页面后少了一段回复，或者删完一位旧专家磁盘空间一点没降，排查这类问题时最怕顺手找一个所谓的唯一数据库。在 Octop 里，数据按读写模式和一致性需求拆成了六个平面，而且在单机 SQLite 模式和集群 PostgreSQL 模式下的落盘位置差异很大。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 278" width="420" height="278" role="img" aria-label="SQLite 与 PostgreSQL 六类数据平面分布">
+<title>SQLite 与 PostgreSQL 六类数据平面分布</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="11" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="start">ADR 002 + ADR 003：驱动选定后，控制面与内容平面同步切换</text><text x="12" y="30" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.6" font-weight="700" fill="var(--ink)" text-anchor="start">数据类别</text><text x="116" y="30" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.6" font-weight="700" fill="var(--forest)" text-anchor="start">SQLite 单机模式</text><text x="266" y="30" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.6" font-weight="700" fill="var(--amber)" text-anchor="start">PostgreSQL 集群模式</text><line x1="8" y1="36" x2="412" y2="36" stroke="var(--ink)" stroke-width="1"/><text x="12" y="58" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.6" font-weight="600" fill="var(--ink)" text-anchor="start">控制面与历史</text><text x="116" y="58" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.3" font-weight="400" fill="var(--muted)" text-anchor="start">octop.db (WAL + IMMEDIATE)</text><text x="266" y="58" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.3" font-weight="400" fill="var(--muted)" text-anchor="start">共享 PG（thread_messages）</text><line x1="8" y1="68" x2="412" y2="68" stroke="var(--line)" stroke-width="0.6"/><text x="12" y="90" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.6" font-weight="600" fill="var(--ink)" text-anchor="start">技能包源文件</text><text x="116" y="90" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.3" font-weight="400" fill="var(--muted)" text-anchor="start">~/.octop/skill-packages/</text><text x="266" y="90" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.3" font-weight="400" fill="var(--muted)" text-anchor="start">PG 文件表（ADR 003）</text><line x1="8" y1="100" x2="412" y2="100" stroke="var(--line)" stroke-width="0.6"/><text x="12" y="122" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.6" font-weight="600" fill="var(--ink)" text-anchor="start">知识库原文/向量</text><text x="116" y="122" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.3" font-weight="400" fill="var(--muted)" text-anchor="start">knowledge/ + index.sqlite</text><text x="266" y="122" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.3" font-weight="400" fill="var(--muted)" text-anchor="start">PG 文件表 + pgvector</text><line x1="8" y1="132" x2="412" y2="132" stroke="var(--line)" stroke-width="0.6"/><text x="12" y="154" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.6" font-weight="600" fill="var(--ink)" text-anchor="start">Checkpoint</text><text x="116" y="154" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.3" font-weight="400" fill="var(--muted)" text-anchor="start">每专家 memory.sqlite</text><text x="266" y="154" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.3" font-weight="400" fill="var(--muted)" text-anchor="start">共享表（孤儿清理仅统计）</text><line x1="8" y1="164" x2="412" y2="164" stroke="var(--line)" stroke-width="0.6"/><text x="12" y="186" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.6" font-weight="600" fill="var(--ink)" text-anchor="start">长期记忆</text><text x="116" y="186" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.3" font-weight="400" fill="var(--muted)" text-anchor="start">本地 memory.sqlite</text><text x="266" y="186" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.3" font-weight="400" fill="var(--muted)" text-anchor="start">同 DSN 按 namespace 隔离</text><line x1="8" y1="196" x2="412" y2="196" stroke="var(--line)" stroke-width="0.6"/><text x="12" y="218" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.6" font-weight="600" fill="var(--ink)" text-anchor="start">专家工作区</text><text x="116" y="218" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.3" font-weight="400" fill="var(--muted)" text-anchor="start">本机目录（默认）</text><text x="266" y="218" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.3" font-weight="400" fill="var(--muted)" text-anchor="start">S3 / COS / TOS / PG / Sandbox</text><line x1="8" y1="228" x2="412" y2="228" stroke="var(--line)" stroke-width="0.6"/><text x="8" y="250" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--muted)" text-anchor="start">v1.0.3b5 起下线 history_v2，启动时由 retire_v2.py 单次迁回 thread_messages。</text><text x="8" y="265" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.4" font-weight="400" fill="var(--amber)" text-anchor="start">v1.0.3b7 修复：gc_orphan_checkpoints 对 PG 永远只统计，绝不删其他智能体对话。</text>
+</svg><figcaption>SQLite 与 PostgreSQL 六类数据平面分布</figcaption></figure>
+<h2 id="为什么必须把图状态和展示历史拆开">为什么必须把图状态和展示历史拆开<a class="anchor" href="#为什么必须把图状态和展示历史拆开" aria-label="链接到本节">#</a></h2>
+<p>初学者常把 LangGraph 的 checkpoint 直接当成聊天记录库，跑两周就会踩进两个坑。第一个坑是上下文压缩：长对话触发 <code>/compact</code> 或自动裁剪后，checkpoint 里保留的是压缩摘要和后续图状态，如果前端直接读 checkpoint，用户会发现昨天的原始问答凭空蒸发了。第二个坑是查询形态：前端需要稳定分页、说话人标记、工具调用折叠卡片、本轮改过的文件增删行数（<code>v1.0.3b6</code> 新增）、错误状态和耗时轨迹，而 checkpoint 保存的是面向图恢复的序列化快照。</p>
+<p>所以 Octop 把这两件事拆得清清楚楚：checkpoint 只管运行图恢复和 HITL 断点续跑；控制面里的 <code>thread_messages</code> 和 <code>trajectory_events</code> 表负责面向前端和审计的展示投影（由 <code>infra/history/projection.py</code> 维护）；长期提炼出的用户画像和事实记忆归 <code>octop-memory</code>；上传的文档切片和向量归知识库索引；<code>SOUL.md</code>、技能和生成产物归 <code>BackendWorkspace</code>。</p>
+<h2 id="sqlitepool-与-postgrespool-的克制封装">SqlitePool 与 PostgresPool 的克制封装<a class="anchor" href="#sqlitepool-与-postgrespool-的克制封装" aria-label="链接到本节">#</a></h2>
+<p>控制面的连接池封装在 <code>src/octop/infra/db/pool.py</code>。两个实现共用同一套 <code>DatabasePool</code> 协议（<code>connect</code>、<code>transaction</code>、<code>close</code>）和成对编号的迁移脚本（<code>NNN_*.sql</code> 与 <code>NNN_*.pg.sql</code>），但底层各有各的工程细节。</p>
+<p><code>SqlitePool</code> 用一把 <code>threading.RLock</code> 保护进程内唯一连接，建库时开启 <code>PRAGMA foreign_keys = ON</code> 和 <code>PRAGMA journal_mode = WAL</code>，POSIX 下把数据库文件权限设成 <code>0600</code>。这里有两处非常真实的生产踩坑记录直接写在了代码里：</p>
+<ol>
+<li><strong>事务固定用 <code>BEGIN IMMEDIATE</code> 而非延迟 <code>BEGIN</code></strong>，如果用默认的延迟事务，先读后写时才去抢写锁，一旦另一条连接（比如 CLI 命令或多个 worker）在中间提交了事务，SQLite 会立刻抛 <code>SQLITE_BUSY_SNAPSHOT</code>，连 5 秒的 <code>busy_timeout</code> 都救不了。提前拿写锁让竞争者乖乖排队，把快照冲突扼杀在入口。</li>
+<li><strong>Windows 下改为 <code>PRAGMA synchronous = NORMAL</code>（<code>v1.0.3b3</code> 修复）</strong>，WAL 配合默认的 <code>FULL</code> 会在每条自动提交语句上调用 Windows 的 <code>FlushFileBuffers</code>，把应用和测试拖成龟速。只在 <code>os.name == &quot;nt&quot;</code> 时降为 SQLite 官方推荐的 WAL 设置 <code>NORMAL</code>，应用崩溃不损坏库文件，其他平台继续保持 <code>FULL</code>。</li>
+</ol>
+<p><code>PostgresPool</code> 则包了一层 <code>_PgConnectionProxy</code>，暴露与 SQLite 相似的 <code>execute</code>、<code>executemany</code>（<code>v1.0.3b3</code> 补齐适配）和 <code>_CompatRow</code>（同时支持列名和下标取值），并用简单的 <code>qmark_to_pyformat()</code> 把 <code>?</code> 占位符替换成 <code>%s</code>。源码明确注明它不解析 SQL 字符串字面量，只服务于受控的仓储 SQL，不伪装成通用方言翻译器。</p>
+<h2 id="adr-003-postgresql-接管技能包与知识库">ADR 003：PostgreSQL 接管技能包与知识库<a class="anchor" href="#adr-003-postgresql-接管技能包与知识库" aria-label="链接到本节">#</a></h2>
+<p>在 <code>v1.0.3b1</code> 时期，哪怕你配了 PostgreSQL 控制面，技能包源文件和知识库索引依然死绑在 <code>~/.octop/skill-packages/</code> 和本地 <code>index.sqlite</code> 上。<code>v1.0.3b3</code> 落地 <code>docs/adr/003-skill-package-kb-pg-storage.md</code> 后，局面彻底变了：控制面驱动选定后，内容平面自动绑定，不再提供控制面用 PG 但知识库留本地的分叉配置。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>控制面驱动</th>
+<th>技能包源文件</th>
+<th>知识库原文</th>
+<th>知识库向量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>sqlite</code></td>
+<td>本地 <code>skill-packages/</code></td>
+<td>本地 <code>knowledge/&lt;id&gt;/docs/</code></td>
+<td>本地 <code>index.sqlite</code></td>
+</tr>
+<tr>
+<td><code>postgresql</code></td>
+<td>PG 表 <code>skill_package_files</code></td>
+<td>PG 表 <code>knowledge_files</code></td>
+<td>同库 <code>pgvector</code>（<code>knowledge_chunks</code>）</td>
+</tr>
+</tbody></table></div>
+<p>ADR 003 做了一个很克制的选择：不造新的二进制打包协议，直接复用 <code>octop-harness</code> 的 <code>PostgresBackend</code> 形态（路径一行一文件、<code>path</code> + JSONB 内容），但分表与专家工作区隔离；技能包绑定到专家时，依然保持从 Store 复制进专家工作区的既有行为，不强迫专家改成复杂的 composite 挂载。另外，按 ADR 002 的约定，Octop 建表迁移绝不私自执行 <code>CREATE EXTENSION vector</code>，<code>pgvector</code> 扩展由部署时的初始化脚本或 DBA 提前装好。</p>
+<p>需要注意，至今仍没有官方的 SQLite 到 PostgreSQL 一键数据迁移工具。单机转多副本集群时，需要从一套全新的 PostgreSQL 实例起步。</p>
+<h2 id="为什么下线-history-v2">为什么下线 history_v2<a class="anchor" href="#为什么下线-history-v2" aria-label="链接到本节">#</a></h2>
+<p>上一版架构书曾花大篇幅介绍过默认关闭的分段历史库 <code>history_v2.sqlite</code>。它的本意是通过写入前提交保证流式历史不丢，但在产品演进中暴露出两个硬伤：它只支持 SQLite 控制面，和 PostgreSQL 多副本路线天然冲突；同时多出一套独立 SQLite 文件，让备份、在线恢复、跨库一致性和历史分页变得格外沉重。</p>
+<p>因此在 <code>v1.0.3b5</code> 中，Octop 果断下线了 <code>history_v2</code>，删除了旧的 <code>history/service.py</code> 和 <code>history/recorder.py</code>，只留下 <code>projection.py</code>（消息投影）和 <code>retire_v2.py</code>（启动时单次迁回 <code>thread_messages</code>）。敢于把一个已经上线的复杂实验特性彻底收口退场，比硬撑着维护两套历史引擎健康得多。</p>
+<h2 id="v1-0-3b7-关键修复-postgresql-孤儿-checkpoint-绝不误删">v1.0.3b7 关键修复：PostgreSQL 孤儿 checkpoint 绝不误删<a class="anchor" href="#v1-0-3b7-关键修复-postgresql-孤儿-checkpoint-绝不误删" aria-label="链接到本节">#</a></h2>
+<p>控制面 <code>threads</code> 行和 checkpoint 处于不同存储层，异常崩溃或老版本缺陷可能留下没有对应 <code>threads</code> 行的孤儿 checkpoint。命令行 <code>octop chats gc-orphans</code> 就是干这件清理活的。</p>
+<p>但在 PostgreSQL 模式下，这里藏过一个极其凶险的边界：<code>octop_memory</code> 的 PostgreSQL checkpoint 表是<strong>同 DSN 下所有智能体、甚至可能包含多台宿主实例共享的一张大表</strong>，而 LangGraph 原生 checkpoint 表结构本身并不带强归属外键（Octop 只能靠写入 checkpoint <code>metadata-&gt;&gt;&#39;agent_id&#39;</code> 去反推归属）。如果某条记录缺标签、或者同库里别的智能体正挂着某个 <code>thread_id</code>，按单个专家的线程表一刀切去删，就会把其他智能体的正常对话直接清空。</p>
+<p><code>v1.0.3b7</code> 的 <code>src/octop/infra/agents/memory/thread_cleanup.py</code>（PR #2960）把这条风险焊死了：</p>
+<pre><code class="language-python">if backend == &quot;postgres&quot;:
+    if dsn != control_dsn:
+        skipped.append(SkippedCheckpoints(row.agent_id, &quot;external_database&quot;, None, 0))
+        continue
+    if live_threads is None:
+        live_threads = _all_live_threads(services)
+    usage = _postgres_thread_bytes(dsn, row.agent_id)
+    kept = [nbytes for tid, nbytes in usage.items() if tid not in live_threads]
+    if kept:
+        skipped.append(
+            SkippedCheckpoints(row.agent_id, &quot;postgres_report_only&quot;, len(kept), sum(kept))
+        )
+    continue
+</code></pre>
+<p>读懂这十几行就能抓住它的三条防护逻辑：</p>
+<ul>
+<li>如果该专家的记忆 DSN 和当前控制面不是同一个库，归为 <code>external_database</code> 直接跳过不扫描。</li>
+<li>即使在同一个控制面 PostgreSQL 上，先汇总<strong>全库所有专家</strong>的活跃线程集合 <code>_all_live_threads()</code>，绝不只拿单个专家的线程表做差集。</li>
+<li>最关键的是，就算传入了 <code>--yes</code>（<code>apply=True</code>），PostgreSQL 分支也永远只把统计出的孤儿线程数和字节数记入 <code>skipped</code>（原因 <code>postgres_report_only</code>），<strong>绝不执行 DELETE</strong>；只有独占文件的 SQLite 孤儿才会在 <code>apply=True</code> 时走 <code>delete_stored_thread()</code> 清理，并在空间充足时触发有界增量 vacuum（<code>_DELETE_VACUUM_PAGES = 2000</code>，整库 <code>VACUUM</code> 前还会检查磁盘剩余空间至少比库文件大 64MB）。</li>
+</ul>
+<p>同时，针对 PostgreSQL 记忆表的日常瘦身，<code>src/octop/infra/agents/memory/postgres_storage.py</code> 走的是另一条安全路径：用 <code>pg_try_advisory_xact_lock</code> 按命名空间互斥，用 <code>FOR UPDATE OF t SKIP LOCKED</code> 每次最多锁 500 行超过 30 天的已拒绝候选或超过 14 天的流水线日志，<strong>先把精确的待删行刷盘备份成 <code>0600</code> 权限的 JSONL 并 <code>fsync</code></strong>，再在同一事务里按 <code>namespace + id</code> 精准删除，绝不对共享表执行 <code>VACUUM FULL</code> 或触碰 checkpoint 与活跃记忆。</p>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/adr/002-database-backends.md"><code>docs/adr/002-database-backends.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/docs/adr/003-skill-package-kb-pg-storage.md"><code>docs/adr/003-skill-package-kb-pg-storage.md</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/db/pool.py"><code>src/octop/infra/db/pool.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/history/projection.py"><code>src/octop/infra/history/projection.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/history/retire_v2.py"><code>src/octop/infra/history/retire_v2.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/memory/thread_cleanup.py"><code>src/octop/infra/agents/memory/thread_cleanup.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/agents/memory/postgres_storage.py"><code>src/octop/infra/agents/memory/postgres_storage.py</code></a></li>
+<li><a href="https://github.com/TencentCloud/Octop/blob/ecd2cdbce3a54dee0f424f021d0a144d9669685e/src/octop/infra/db/migrations/001_initial.sql"><code>src/octop/infra/db/migrations/001_initial.sql</code></a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="05-identity.html"><small>上一章</small><strong>身份与会话：四种标识与共享专家的线程隔离</strong></a><a class="next" href="07-workspace.html"><small>下一章</small><strong>工作区后端：内容访问、对象存储与容器挂载边界</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：看懂一个 Agent 宿主如何拼起来</a><a href="../chapters/01-requirements.html"><span>01</span>需求推导：脱离模型 SDK 之后要守住什么</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：单进程宿主与四套可复用运行库</a><a href="../chapters/03-lifecycle.html"><span>03</span>启动与退出：装配顺序、延迟绑库与有序收尾</a><a href="../chapters/04-agent-runtime.html"><span>04</span>Agent 装配：原生专家、托管专家与中间件顺序</a><a href="../chapters/05-identity.html"><span>05</span>身份与会话：四种标识与共享专家的线程隔离</a><a href="../chapters/06-storage.html"><span>06</span>存储与历史：六类数据平面、下线归档与安全清理</a><a href="../chapters/07-workspace.html"><span>07</span>工作区后端：内容访问、对象存储与容器挂载边界</a><a href="../chapters/08-turn-path.html"><span>08</span>一次对话：从 WebSocket 入队到工具熔断与推送</a><a href="../chapters/09-memory-rag.html"><span>09</span>记忆与知识库：命名空间维护、图谱扩展与重排序</a><a href="../chapters/10-extensions.html"><span>10</span>工具与扩展：Skill、Plugin、Connector 与 MCP OAuth</a><a href="../chapters/11-teams.html"><span>11</span>多 Agent 团队：共享展示时间线，隔离执行状态</a><a href="../chapters/12-security.html"><span>12</span>安全边界：MFA、权限分离、审批串行与云凭证隔离</a><a href="../chapters/13-dashboard.html"><span>13</span>前端状态机：离线订阅、五道恢复门与历史竞态</a><a href="../chapters/14-interop.html"><span>14</span>跨端协作：托管 ACP 回环与 Bridge 实例隧道</a><a href="../chapters/15-operations.html"><span>15</span>部署与运维：Electron 壳、镜像分层与多副本租约</a><a href="../chapters/16-tradeoffs.html"><span>16</span>架构取舍：单机够用到何时，复杂度卡在哪里</a><a href="../chapters/17-mini-host.html"><span>17</span>代码实战：用两百行标准库模型验证六条边界</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.0.3b7 源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · Octop v1.0.3b7 · 快照 ecd2cdbce3a5 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

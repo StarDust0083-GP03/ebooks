@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="840" viewBox="0 0 1100 840" role="img" aria-labelledby="snap-title snap-desc">
+<title id="snap-title">快照模式路由：full 与 rootfsOnly 在三种后端的落点</title>
+<desc id="snap-desc">展示 create_snapshot(mode=full|rootfsOnly) 在 Docker、Kubernetes 与 Fast Sandbox（S3 原生和 OCI）中的校验门禁、制品内容与恢复语义差异。</desc>
+<style>text{font-family:"Noto Sans CJK SC",system-ui,sans-serif;fill:#252820}.name{font-size:20px;font-weight:650}.label{font-size:16px;fill:#29564c;font-weight:500}.sub{font-size:15px;fill:#586354}.warn{font-size:15px;fill:#8c4a1c;font-weight:550}.node{fill:#faf7ef;stroke:#a5ad9e;stroke-width:1.4}.active{fill:#edf2e9;stroke:#29564c;stroke-width:2}.amber{fill:#f9f1e4;stroke:#b86b2a;stroke-width:1.6}.edge{fill:none;stroke:#29564c;stroke-width:1.6}.return{fill:none;stroke:#72846b;stroke-width:1.5;stroke-dasharray:6 5}.warnwire{fill:none;stroke:#b86b2a;stroke-width:1.6;stroke-dasharray:5 4}</style>
+<defs>
+<marker id="sm-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 1 L9 5 L0 9" fill="#29564c"/></marker>
+<marker id="sm-warn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 1 L9 5 L0 9" fill="#b86b2a"/></marker>
+</defs>
+<rect width="1100" height="840" fill="#faf7ef"/>
+<text x="40" y="36" class="sub">v1.3.0-rc.2 公开快照 API：create_snapshot(mode="full" | "rootfsOnly") 全路径对照</text>
+
+<!-- Top API box -->
+<g data-box="1" id="api-req"><rect class="active" x="280" y="64" width="540" height="80" rx="6"/>
+<text x="550" y="96" class="name" text-anchor="middle">POST /v1/sandboxes/{id}/snapshots</text>
+<text x="550" y="124" class="sub" text-anchor="middle">CreateSnapshotRequest.mode 默认 "full"；五大 SDK 均已透传</text></g>
+
+<!-- Branch lines from top box -->
+<path class="edge" d="M400 144 V184 H195 V218" marker-end="url(#sm-arrow)"/>
+<path class="edge" d="M550 144 V218" marker-end="url(#sm-arrow)"/>
+<path class="edge" d="M700 144 V184 H875 V218" marker-end="url(#sm-arrow)"/>
+
+<!-- Col 1: Docker / K8s -->
+<g data-box="1" id="col-dk"><rect class="node" x="40" y="222" width="310" height="128" rx="6"/>
+<text x="195" y="256" class="name" text-anchor="middle">Docker / Kubernetes 后端</text>
+<text x="195" y="286" class="sub" text-anchor="middle">mode = "full"：commit 为 OCI 镜像</text>
+<text x="195" y="314" class="warn" text-anchor="middle">mode = "rootfsOnly"：预检拒绝 409</text>
+<text x="195" y="338" class="sub" text-anchor="middle">UNSUPPORTED_RUNTIME</text></g>
+
+<!-- Col 2: FSB full -->
+<g data-box="1" id="col-fsb-full"><rect class="node" x="395" y="222" width="310" height="128" rx="6"/>
+<text x="550" y="256" class="name" text-anchor="middle">Fast Sandbox · mode = "full"</text>
+<text x="550" y="286" class="sub" text-anchor="middle">rootfs + vmstate + guest 内存</text>
+<text x="550" y="314" class="sub" text-anchor="middle">暂停/恢复检查点始终保持 full-only</text>
+<text x="550" y="338" class="sub" text-anchor="middle">同架构与同 VMM 版本（1.16.1/1.17.0）</text></g>
+
+<!-- Col 3: FSB rootfsOnly -->
+<g data-box="1" id="col-fsb-rfs"><rect class="active" x="750" y="222" width="310" height="128" rx="6"/>
+<text x="905" y="256" class="name" text-anchor="middle">Fast Sandbox · rootfsOnly</text>
+<text x="905" y="286" class="sub" text-anchor="middle">同时覆盖原生 S3 与 OCI/OverlayBD</text>
+<text x="905" y="314" class="sub" text-anchor="middle">服务端去掉 OCI 预检，交由 FastPath</text>
+<text x="905" y="338" class="sub" text-anchor="middle">节点自推导资质并 fail-closed 复核</text></g>
+
+<!-- Arrows down to second row -->
+<path class="edge" d="M195 350 V426" marker-end="url(#sm-arrow)"/>
+<text x="210" y="394" class="sub">仅文件系统</text>
+
+<path class="edge" d="M550 350 V426" marker-end="url(#sm-arrow)"/>
+<text x="565" y="394" class="label">完整内存恢复</text>
+
+<path class="edge" d="M840 350 V426" marker-end="url(#sm-arrow)"/>
+<text x="772" y="394" class="label" text-anchor="end">节点合格</text>
+
+<path class="warnwire" d="M970 350 V426" marker-end="url(#sm-warn)"/>
+<text x="984" y="394" class="warn">不合格</text>
+
+<!-- Second row boxes -->
+<g data-box="1" id="res-dk"><rect class="node" x="40" y="430" width="310" height="132" rx="6"/>
+<text x="195" y="464" class="name" text-anchor="middle">恢复行为（容器）</text>
+<text x="195" y="494" class="sub" text-anchor="middle">Docker：本地 OCI 镜像，新容器启动</text>
+<text x="195" y="520" class="sub" text-anchor="middle">K8s：拉取推送镜像，重建 Pod</text>
+<text x="195" y="546" class="sub" text-anchor="middle">均不保留进程内存现场</text></g>
+
+<g data-box="1" id="res-full"><rect class="node" x="395" y="430" width="310" height="132" rx="6"/>
+<text x="550" y="464" class="name" text-anchor="middle">恢复行为（Full）</text>
+<text x="550" y="494" class="sub" text-anchor="middle">恢复 vmstate 与内存页</text>
+<text x="550" y="520" class="sub" text-anchor="middle">运行中进程继续执行，校准墙钟</text>
+<text x="550" y="546" class="sub" text-anchor="middle">运行时恢复数十毫秒级，制品体积较大</text></g>
+
+<g data-box="1" id="res-rfs-ok"><rect class="active" x="726" y="430" width="194" height="132" rx="6"/>
+<text x="823" y="464" class="name" text-anchor="middle">冷启动恢复</text>
+<text x="823" y="494" class="sub" text-anchor="middle">KB 级可写层制品</text>
+<text x="823" y="520" class="sub" text-anchor="middle">丢弃 RAM 与进程</text>
+<text x="823" y="546" class="sub" text-anchor="middle">重跑 entrypoint（秒级）</text></g>
+
+<g data-box="1" id="res-rfs-fail"><rect class="amber" x="936" y="430" width="124" height="132" rx="6"/>
+<text x="998" y="476" class="warn" text-anchor="middle">快照失败</text>
+<text x="998" y="506" class="sub" text-anchor="middle">绝不静默</text>
+<text x="998" y="532" class="sub" text-anchor="middle">降级 full</text></g>
+
+<!-- Bottom comparison bar -->
+<rect x="40" y="596" width="1020" height="114" rx="6" fill="#f5f1e6" stroke="#d9d2c3" stroke-width="1.2"/>
+<text x="64" y="630" class="name">关键约束与兼容性边界</text>
+<text x="64" y="660" class="sub">· 原生 S3 模板需在构建期注入 guest-control 并校验 freeze/thaw，旧模板捕获 rootfsOnly 会 fail-closed 失败。</text>
+<text x="64" y="688" class="sub">· Fast Sandbox 恢复与崩溃重启后会校准 guest 墙钟（Firecracker 无 RTC），避免 TLS 证书和令牌误判过期。</text>
+
+<line x1="40" y1="744" x2="1060" y2="744" stroke="#d9d2c3"/>
+<text x="40" y="776" class="sub">源码入口：server/opensandbox_server/services/fast_sandbox/snapshot_runtime.py、api/schema.py、oseps/0028</text>
+<text x="40" y="806" class="sub">注：OSEP-0028 正在落地 RootfsOnly 创建时经 resourceLimits 覆写 CPU/内存的能力，当前作为提案与实现进行中。</text>
+</svg>

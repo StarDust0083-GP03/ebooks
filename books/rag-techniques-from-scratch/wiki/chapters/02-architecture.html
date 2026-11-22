@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从文档解析、切分、混合检索到纠错、图谱、评估与上线边界的 RAG 工程实战指南"><meta name="author" content="独立源码研究">
+<title>技术方案：从需求推导一条可追踪的链路 · RAG 工程实战</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">RAG</span><span>RAG 工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 02</div><div class="rail-title">技术方案：从需求推导一条可追踪的链路</div><ol><li><a href="#把五条需求落到具体职责层">把五条需求落到具体职责层</a></li><li><a href="#写入链与查询链彻底解耦">写入链与查询链彻底解耦</a></li><li><a href="#核心对象只留承重字段">核心对象只留承重字段</a></li><li><a href="#三种存储形态怎么取舍">三种存储形态怎么取舍</a></li><li><a href="#一次查询经过哪些函数交接">一次查询经过哪些函数交接</a></li><li><a href="#本章对应代码">本章对应代码</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 02 章</div><h1>技术方案：从需求推导一条可追踪的链路</h1><div class="chapter-meta">RAG_Techniques 快照 2026-11-02 · 约 8 分钟</div></header><div class="prose"><p>需求定死以后，接下来要回答的核心架构问题是：版本、权限、相关性和长度预算分别应该卡在哪一层。线上最常见也最难救的一种写法，是先把全库最像的十段搜出来，再在系统提示词里嘱咐模型一句“请忽略旧版本并注意不要泄露他人隐私”。走到这一步，越权内容已经进了模型输入窗口，靠文字约束去拦泄密为时已晚。</p>
+<h2 id="把五条需求落到具体职责层">把五条需求落到具体职责层<a class="anchor" href="#把五条需求落到具体职责层" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>业务需求</th>
+<th>落地位置</th>
+<th>背后考量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>结论可回溯原文</td>
+<td>入库切分时固定来源与片段 ID</td>
+<td>生成完成后无法逆向补回定位</td>
+</tr>
+<tr>
+<td>默认只读现行规范</td>
+<td>检索计分前过滤版本视图</td>
+<td>相似度高低不能决定条款是否生效</td>
+</tr>
+<tr>
+<td>私人笔记禁止越权</td>
+<td>召回前及邻域扩展时双重限权</td>
+<td>相关性评分与访问权限互不替代</td>
+</tr>
+<tr>
+<td>验签与幂等缺一不可</td>
+<td>证据组装与完整性指标</td>
+<td>单条高分不代表必要条件齐全</td>
+</tr>
+<tr>
+<td>出错能迅速定位</td>
+<td>全程记录 <code>retrieved</code> 与 <code>injected</code></td>
+<td>区分漏召回与预算截断</td>
+</tr>
+</tbody></table></div>
+<p>这些模块划的是代码职责边界，不等于第一天就要拆成五个微服务。资料量不大时，单进程先把数据契约和接口边界跑稳，比维护一堆队列和跨服务调用省心得多；等文档规模、更新频率或团队分工真的撑大了，再按边界拆部署单元。</p>
+<h2 id="写入链与查询链彻底解耦">写入链与查询链彻底解耦<a class="anchor" href="#写入链与查询链彻底解耦" aria-label="链接到本节">#</a></h2>
+<p>整套系统分成两条独立流水线：写入链离线跑解析、结构切分、多表示索引和完整性自检，全部通过后才把只读指针原子切到新快照；查询链固定对着一个完整快照执行权限过滤、召回融合、邻域扩展和预算打包。这样一来，即便夜间重建索引在中途崩掉，线上查询依然稳稳读着旧快照，不会出现原文已经是 v2、向量还是 v1 的撕裂态。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 540 226" width="540" height="226" role="img" aria-label="写入链与查询链的职责边界">
+<title>写入链与查询链的职责边界</title>
+<defs><marker id="arr-pipeline-chain" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" fill="var(--muted)"/></marker></defs>
+<text x="10" y="14" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="600" fill="var(--forest)" text-anchor="start">写入链（离线构建与原子发布）</text><rect x="10" y="22" width="118" height="54" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="20" y="39" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">原文与版本</text><text x="20" y="55" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">PDF / CSV / JSON</text><text x="20" y="69" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">doc_id + version</text><line x1="128" y1="49" x2="144" y2="49" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-pipeline-chain)"/><rect x="144" y="22" width="122" height="54" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="154" y="39" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">解析与切分</text><text x="154" y="55" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">OCR 4.1 块结构</text><text x="154" y="69" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">保留来源定位</text><line x1="266" y1="49" x2="282" y2="49" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-pipeline-chain)"/><rect x="282" y="22" width="116" height="54" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="292" y="39" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">多表示索引</text><text x="292" y="55" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">倒排 / 向量</text><text x="292" y="69" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">代理问题与摘要</text><line x1="398" y1="49" x2="414" y2="49" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-pipeline-chain)"/><rect x="414" y="22" width="116" height="54" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.4"/><text x="424" y="39" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">完整快照发布</text><text x="424" y="55" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">校验后再切指针</text><text x="424" y="69" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">旧快照随时回退</text><line x1="10" y1="92" x2="530" y2="92" stroke="var(--line)" stroke-width="0.7" stroke-dasharray="3 3"/><line x1="472" y1="76" x2="472" y2="112" stroke="var(--muted)" stroke-width="1.15" stroke-dasharray="4 3" marker-end="url(#arr-pipeline-chain)"/><text x="466" y="106" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.5" font-weight="400" fill="var(--muted)" text-anchor="end">只读固定快照</text><text x="10" y="108" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="600" fill="var(--amber)" text-anchor="start">查询链（先授权，再召回，只交付注入证据）</text><rect x="10" y="116" width="118" height="60" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.4"/><text x="20" y="133" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">1. 权限与视图</text><text x="20" y="149" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">服务端会话身份</text><text x="20" y="163" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">active + scope</text><line x1="128" y1="146" x2="144" y2="146" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-pipeline-chain)"/><rect x="144" y="116" width="122" height="60" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="154" y="133" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">2. 召回与融合</text><text x="154" y="149" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">BM25 + 向量</text><text x="154" y="163" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">按 ID 对齐 RRF</text><line x1="266" y1="146" x2="282" y2="146" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-pipeline-chain)"/><rect x="282" y="116" width="116" height="60" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="292" y="133" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">3. 扩展与打包</text><text x="292" y="149" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">同文档同版邻块</text><text x="292" y="163" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">按预算计入标签</text><line x1="398" y1="146" x2="414" y2="146" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-pipeline-chain)"/><rect x="414" y="116" width="116" height="60" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.4"/><text x="424" y="133" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">4. 回答与引用</text><text x="424" y="149" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">仅引用 injected</text><text x="424" y="163" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">证据不足即拒答</text><text x="10" y="198" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--amber)" text-anchor="start">红琥珀框为访问边界：未授权与废弃版本必须在计分前剔除，不能交给模型兜底。</text><text x="10" y="214" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start">日志同步记录 retrieved 与 injected 两组 ID，用来区分漏召回与预算截断。</text>
+</svg><figcaption>写入链与查询链的职责边界</figcaption></figure>
+<p>图里最右侧的“回答与引用”属于可插拔环节。配套离线程序故意停在证据包这一步，把检索排序的确定性与大语言模型生成的随机性隔离开。排查线上答错时，第一步也是先检查送进模型的证据包到底长什么样，再判断模型有没有胡说。</p>
+<h2 id="核心对象只留承重字段">核心对象只留承重字段<a class="anchor" href="#核心对象只留承重字段" aria-label="链接到本节">#</a></h2>
+<p>教学实现把核心数据模型压成了一个不可变数据类：</p>
+<pre><code class="language-python">@dataclass(frozen=True)
+class Chunk:
+    id: str
+    doc_id: str
+    version: str
+    position: int
+    text: str
+    source: str
+    scope: str = &quot;public&quot;
+    active: bool = True
+</code></pre>
+<p>这里有两个身份容易混用，必须一开始就拆开：<code>id</code> 是全库唯一的片段身份（比如 <code>callback-v2:0</code>），多路检索融合时靠它精确对齐；<code>position</code> 是同一份文档同一版本里的顺序号，做邻域上下文扩展时靠 <code>(doc_id, version, position)</code> 找前后段，绝不能把检索器返回的排名当成原文段落顺序。</p>
+<p>用 <code>frozen=True</code> 能在内存实验里挡住意外篡改。到了生产库里，按业务审计需要再逐步补租户标识、生效时间窗、解析器版本号和原文内容哈希，没必要在第一版就堆满用不上的字段。</p>
+<h2 id="三种存储形态怎么取舍">三种存储形态怎么取舍<a class="anchor" href="#三种存储形态怎么取舍" aria-label="链接到本节">#</a></h2>
+<p>十来份教学片段直接从 JSONL 读进内存，每次查询按用户过滤后现算分数，零依赖且每一步中间变量一览无余，代价是计算量随片段数线性增长。</p>
+<p>如果团队本身已经在用 PostgreSQL 这类关系数据库，叠加全文检索或向量扩展往往最顺手：结构化权限表、版本事务和原文存储本来就在一起，少了一套跨库同步的麻烦。文档涨到百万级、需要独立扩缩容和近似近邻（ANN）高并发查询时，再引入专用向量检索服务。无论底座换哪家，原文定位、版本视图和访问控制三件套都不能省，换一个更贵的向量数据库并不会自动治好旧规范混入。</p>
+<h2 id="一次查询经过哪些函数交接">一次查询经过哪些函数交接<a class="anchor" href="#一次查询经过哪些函数交接" aria-label="链接到本节">#</a></h2>
+<p>配套程序把查询链路收口成五步清晰交接：</p>
+<pre><code class="language-text">load_chunks → Retriever(chunks)
+user        → visible(user)            # 剔除非 active 与无权片段
+query       → search(...)              # 仅在可见子集内算 BM25 / 余弦 / RRF
+hits        → expand(..., radius)      # 同 doc_id + 同 version + 再次验权
+chunks      → pack_context(..., budget)# 含来源标签的完整块打包，输出 injected IDs
+</code></pre>
+<p>每一层都只对自己的契约负责，并且显式报错。入库时遇到重复 <code>id</code> 或重复 <code>(doc_id, version, position)</code> 直接抛 <code>ValueError</code>，不默默覆盖；解析失败不能塞一条空文本糊弄过去；查询命中为空时老老实实返回空列表，绝不拿零分文档凑数。把交接点做硬，后续加任何高级策略才不会变成黑盒调参。</p>
+<h2 id="本章对应代码">本章对应代码<a class="anchor" href="#本章对应代码" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="appendix-code.html">核心数据结构与链路实现</a></li>
+<li><a href="appendix-code.html">权限、版本与打包边界测试</a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="01-requirements.html"><small>上一章</small><strong>需求篇：先框住哪些问题必须答对</strong></a><a class="next" href="03-ingestion.html"><small>下一章</small><strong>资料入库：先把文档读对，再谈检索</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-opening.html"><span>00</span>开篇：文档都在库里，助手为什么还会答错</a><a href="../chapters/01-requirements.html"><span>01</span>需求篇：先框住哪些问题必须答对</a><a href="../chapters/02-architecture.html"><span>02</span>技术方案：从需求推导一条可追踪的链路</a><a href="../chapters/03-ingestion.html"><span>03</span>资料入库：先把文档读对，再谈检索</a><a href="../chapters/04-chunking.html"><span>04</span>文档切分：验签和幂等，为什么总只召回一半</a><a href="../chapters/05-baseline.html"><span>05</span>基础检索：先交付一条能复现的离线链路</a><a href="../chapters/06-fusion-reranking.html"><span>06</span>混合检索与重排：把不同候选放进同一张账</a><a href="../chapters/07-query-enhancement.html"><span>07</span>查询增强：用户不一定会说出幂等这个词</a><a href="../chapters/08-context.html"><span>08</span>证据组装：检索到了，还要让模型完整读到</a><a href="../chapters/09-evaluation.html"><span>09</span>评估：两条高分结果，未必够答完一个问题</a><a href="../chapters/10-corrective.html"><span>10</span>纠错检索：找不到以后，系统走哪一条路</a><a href="../chapters/11-hierarchy-memory.html"><span>11</span>层次索引与记忆：问题开始面向整份资料</a><a href="../chapters/12-graph.html"><span>12</span>图谱检索：从模块一路查到技术负责人</a><a href="../chapters/13-multimodal-agent.html"><span>13</span>多模态与 Agent：处理图表文档与多步任务</a><a href="../chapters/14-production.html"><span>14</span>上线边界：权限、快照、停服与故障不能靠提示词兜底</a><a href="../chapters/15-wrap-up.html"><span>15</span>完结篇：用一次请求串起整套设计</a><a href="../chapters/appendix-map.html"><span>A</span>附录 A：上游 47 份 Notebook 与 21 份脚本阅读地图</a><a href="../chapters/appendix-sources.html"><span>B</span>附录 B：源码快照、论文范围、术语与研究边界</a><a href="../chapters/appendix-code.html"><span>C</span>附录 C：配套教学实现与样例数据</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · RAG_Techniques 2fd7bd0ffe5b（2026-11-02）· 核对 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

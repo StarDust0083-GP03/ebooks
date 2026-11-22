@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从需求、配置、角色到 Hook 与验收，解剖 Claude Code Game Studios 的工作流"><meta name="author" content="独立源码研究">
+<title>协作：团队流水线、默认塌缩与“透镜折叠” · Claude Code 游戏工作室</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">G</span><span>Claude Code 游戏工作室</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 12</div><div class="rail-title">协作：团队流水线、默认塌缩与“透镜折叠”</div><ol><li><a href="#场景-正文里点名-7-个专家-真跑起来为什么只出动了-1-个人">场景：正文里点名 7 个专家，真跑起来为什么只出动了 1 个人</a></li><li><a href="#为什么-49-个角色只是菜单-默认只上-1-个人">为什么 49 个角色只是菜单，默认只上 1 个人</a></li><li><a href="#决策点与杀不掉的确认项">决策点与杀不掉的确认项</a></li><li><a href="#蒸馏简报-返回契约-别让子代理把父会话撑爆">蒸馏简报 + 返回契约：别让子代理把父会话撑爆</a></li><li><a href="#并行协议与四条错误恢复触发器">并行协议与四条错误恢复触发器</a></li><li><a href="#两种务实的例外-必跑门禁与-v1-3-0-的-透镜折叠">两种务实的例外：必跑门禁与 v1.3.0 的“透镜折叠”</a></li><li><a href="#常见误解">常见误解</a></li><li><a href="#练习">练习</a></li><li><a href="#答案提示">答案提示</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 12 章</div><h1>协作：团队流水线、默认塌缩与“透镜折叠”</h1><div class="chapter-meta">CCGS v1.3.0 快照 2026-11-09 · 约 16 分钟</div></header><div class="prose"><h2 id="场景-正文里点名-7-个专家-真跑起来为什么只出动了-1-个人">场景：正文里点名 7 个专家，真跑起来为什么只出动了 1 个人<a class="anchor" href="#场景-正文里点名-7-个专家-真跑起来为什么只出动了-1-个人" aria-label="链接到本节">#</a></h2>
+<p>你敲下 <code>/team-combat melee parry system</code>。翻开 <code>.claude/skills/team-combat/SKILL.md</code>，阵仗吓人一跳——里面整整齐齐列着 7 个角色：游戏设计师、玩法程序员、AI 程序员、技术美术、音效设计师、引擎专家、QA 测试员。</p>
+<p>可一跑起来，终端里自始至终只有 <code>gameplay-programmer</code> 一个人把活干完了。</p>
+<p>这不是流水线出 bug 了，而是 CCGS 专门设计的一招省钱机制：<strong><code>team.size</code> 塌缩</strong>。在 v1.3.0 里，9 条 <code>/team-*</code> 流水线统一收编进了 Studio Mode，而它们之所以没把你的账单烧穿，全靠这层“默认塌缩 + 显式声明”的开关。</p>
+<h2 id="为什么-49-个角色只是菜单-默认只上-1-个人">为什么 49 个角色只是菜单，默认只上 1 个人<a class="anchor" href="#为什么-49-个角色只是菜单-默认只上-1-个人" aria-label="链接到本节">#</a></h2>
+<p>回到第 04 章的 <code>rigor</code> 展开表：</p>
+<ul>
+<li><code>minimal</code> → <code>team.size: individual</code></li>
+<li><code>standard</code> → <code>team.size: individual</code></li>
+<li><code>full</code> → <code>team.size: studio</code></li>
+</ul>
+<p>也就是说，只要你不手动调高 <code>team.size</code>（或把整仓拉到 <code>full</code>），<strong>跑任何团队流水线默认都是 <code>individual</code> 单人档</strong>：只拉起 1 个核心角色跑完全程，其余角色当参考视角用，不单独开子代理。切到 <code>small</code> 才铺开完整流水线，切到 <code>studio</code> 再加引擎子专家和一轮对抗性评审。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 296" width="420" height="296" role="img" aria-label="team.size 的三种塌缩">
+<title>team.size 的三种塌缩</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<rect x="8" y="10" width="404" height="72" rx="3" fill="none" stroke="var(--forest)" stroke-width="1.4"/><text x="18" y="28" font-family="'IBM Plex Mono','SFMono-Regular',Consolas,monospace" font-size="10" font-weight="700" fill="var(--ink)" text-anchor="start" opacity="1">individual</text><rect x="330" y="14" width="78" height="16" rx="8" fill="none" stroke="var(--forest)" stroke-width="0.9"/><text x="369.0" y="25.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="600" fill="var(--forest)" text-anchor="middle" opacity="1">默认</text><text x="18" y="46" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--ink)" text-anchor="start" opacity="1">gameplay-programmer</text><text x="18" y="74" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.5" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">正文点名 7 个，实际派生 1 个</text><rect x="8" y="94" width="404" height="72" rx="3" fill="none" stroke="var(--line)" stroke-width="0.8"/><text x="18" y="112" font-family="'IBM Plex Mono','SFMono-Regular',Consolas,monospace" font-size="10" font-weight="700" fill="var(--ink)" text-anchor="start" opacity="1">small</text><rect x="330" y="98" width="78" height="16" rx="8" fill="none" stroke="var(--muted)" stroke-width="0.9"/><text x="369.0" y="109.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="600" fill="var(--muted)" text-anchor="middle" opacity="1">提高档位</text><text x="18" y="130" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--ink)" text-anchor="start" opacity="1">game-designer · gameplay-programmer · ai-programmer</text><text x="18" y="144" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--ink)" text-anchor="start" opacity="1">technical-artist · sound-designer · specialist · qa-tester</text><text x="18" y="158" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.5" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">完整流水线</text><rect x="8" y="178" width="404" height="72" rx="3" fill="none" stroke="var(--line)" stroke-width="0.8"/><text x="18" y="196" font-family="'IBM Plex Mono','SFMono-Regular',Consolas,monospace" font-size="10" font-weight="700" fill="var(--ink)" text-anchor="start" opacity="1">studio</text><rect x="330" y="182" width="78" height="16" rx="8" fill="none" stroke="var(--muted)" stroke-width="0.9"/><text x="369.0" y="193.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="600" fill="var(--muted)" text-anchor="middle" opacity="1">完整档位</text><text x="18" y="214" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--ink)" text-anchor="start" opacity="1">以上全部 · 引擎子专家</text><text x="18" y="228" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--ink)" text-anchor="start" opacity="1">再加一轮对抗性评审</text><text x="18" y="242" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.5" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">验证与对抗</text><text x="8" y="284" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">收窄必须显式声明 Active set，避免把配置收窄误读成故障。</text>
+</svg><figcaption>team.size 的三档：正文点名的角色不一定真的派生</figcaption></figure>
+<p>原因很现实：7 个子代理各自把设计文档重读一遍、各写一份分析报告、再回传父会话汇总，token 消耗直接翻好几倍，但前面原作者的对照实验已经证明，堆人数和堆文档不一定换来更好的游戏。</p>
+<p>不过塌缩会带来一个极容易误会的问题：用户看着文档里写了 7 个人，最后却只看见玩法程序员干活，会以为脚本漏派了。所以每条团队技能在 Phase 0 都硬性规定，<strong>开干前必须先把名单亮出来</strong>：</p>
+<pre><code class="language-text">Active set (team.size: individual): gameplay-programmer.
+Not spawned this run: game-designer, ai-programmer, technical-artist, sound-designer,
+  engine specialist, qa-tester — consulted through the lead role.
+  Raise team.size (or modes.rigor) to expand.
+</code></pre>
+<p>把“按配置主动省钱收窄”和“系统出故障漏派人”明明白白隔开，用户一眼就能判断是不是正常行为。</p>
+<h2 id="决策点与杀不掉的确认项">决策点与杀不掉的确认项<a class="anchor" href="#决策点与杀不掉的确认项" aria-label="链接到本节">#</a></h2>
+<p>团队流水线的标准骨架就是“阶段 + 决策点”。每一阶段跑完，父技能把子代理的提案整理成 2–4 个选项甩给你拍板：</p>
+<ul>
+<li><code>collaborative</code>：每过一个阶段都停下来等你点头；</li>
+<li><code>guided</code>：没遇上 <code>BLOCKED</code> 就一路自动往前推，撞上大事才问你；</li>
+<li><code>autonomous</code>：全程自动拍板并调 <code>log_decision</code> 写进 <code>production/session-logs/decision-log.md</code>。</li>
+</ul>
+<p>但无论开到哪一档，<code>automation_always_ask</code> 里列着的类别（默认是范围变更、文件删除、schema 变更）<strong>永远停下来问人</strong>——哪怕全自动模式下，想砍功能、删故事、改模板，也得人点头。</p>
+<h2 id="蒸馏简报-返回契约-别让子代理把父会话撑爆">蒸馏简报 + 返回契约：别让子代理把父会话撑爆<a class="anchor" href="#蒸馏简报-返回契约-别让子代理把父会话撑爆" aria-label="链接到本节">#</a></h2>
+<p>多 Agent 编排最常见的死法不是报错，而是<strong>上下文爆炸</strong>：父会话把 50 KB 文档塞给 4 个子代理，4 个子代理各自把读过的内容又复述一遍塞回父会话，一轮下来主窗口直接撞上限。</p>
+<p>CCGS 用一头一尾两道箍勒住体积：</p>
+<ol>
+<li><strong>派活前先蒸馏</strong>：共享上下文由父技能读一次，只挑每个子代理真用得上的几行内联塞进简报；<strong>已经读过的文档别把路径传给子代理</strong>，不然子代理拿到路径又会乖乖重读一遍。</li>
+<li><strong>返回前签契约</strong>：分析/报告类子代理的提示词末尾必须带一段标准返还规矩——<ul>
+<li>完整长文直接写到简报点名的路径里（享受第 05 章说的 <code>production/</code>、<code>docs/</code>、<code>tests/</code> 新文件免弹窗豁免）；</li>
+<li>回复父会话时<strong>只准吐三样东西</strong>：落盘路径、不超过 5 条决策摘要、以及 <code>BLOCKED</code> / <code>CONCERNS</code> 每条一行，严禁把读过的文档再复述一遍。</li>
+<li>写代码的程序员代理另算：动真实源码前，还是得先交出计划改动的文件清单，确认后再落盘。</li>
+</ul>
+</li>
+</ol>
+<h2 id="并行协议与四条错误恢复触发器">并行协议与四条错误恢复触发器<a class="anchor" href="#并行协议与四条错误恢复触发器" aria-label="链接到本节">#</a></h2>
+<p><code>.claude/docs/coordination-rules.md</code> 对并行的规矩很干脆：互不依赖的分析任务（比如 <code>/review-all-gdds</code> 里的一致性检查和设计理论检查，都只依赖第一阶段读好的 GDD）要在等待任何返回之前<strong>一次性全部发出</strong>，收齐再进下一阶段；只要前后有输入依赖，老老实实串行。</p>
+<p>真正在多代理翻车时救命的，是 <code>.claude/docs/error-recovery-protocol.md</code> 里的五步反应（触发器 0 到 4）：</p>
+<ul>
+<li><strong>触发器 0（先查磁盘，再看嘴皮子）</strong>：子代理汇报写完某个文件后，<strong>第一步先去硬盘看文件在不在</strong>。源码里专门记过一种真实翻车：并行子代理折腾半天，最后回了一段客气流畅的开场白，没路径、没摘要、没报错，实际上硬盘上一个字没写；父会话如果不验文件只读文字，半个并行阶段就悄无声息蒸发了。</li>
+<li><strong>触发器 1（遇到 BLOCKED 立刻停步）</strong>：任何子代理报 <code>BLOCKED</code>、报错或干不了，立马如实上报，绝不跳过它硬跑依赖它的下游阶段。</li>
+<li><strong>触发器 2（算清依赖面）</strong>：区分这个阻塞卡死了哪些后续步骤，哪些独立分支还能收尾。</li>
+<li><strong>触发器 3（把选择权交给人）</strong>：给用户三个明牌选项——跳过这个代理并记下缺口、缩小范围重跑、或者停下来先把阻塞解掉。</li>
+<li><strong>触发器 4（永远出部分报告，且“跳过”不等于“通过”）</strong>：别因为一个代理挂了就把另外三个代理辛苦做完的成果全扔了；但有一条铁律——<strong>只要你选了“跳过某个被阻塞的代理”，后面阶段可以接着走，但整条流水线的最终判决必须钉死在 <code>BLOCKED</code></strong>，点名写清谁被跳过了、缺了哪块，绝不准写成 <code>COMPLETE</code>。</li>
+</ul>
+<h2 id="两种务实的例外-必跑门禁与-v1-3-0-的-透镜折叠">两种务实的例外：必跑门禁与 v1.3.0 的“透镜折叠”<a class="anchor" href="#两种务实的例外-必跑门禁与-v1-3-0-的-透镜折叠" aria-label="链接到本节">#</a></h2>
+<p>这套协作体系里藏着两处很值得品味的务实处理，说明作者没把“多 Agent”当教条：</p>
+<ol>
+<li><strong>叙事团队的结构性例外</strong>：在 <code>/team-narrative</code> 里，不管你的 <code>review_mode</code> 是 <code>lean</code> 还是 <code>solo</code>，只要 <code>narrative-director</code> 在场，<code>ND-CONSISTENCY</code> 叙事一致性检查<strong>一律不许跳过</strong>——因为那是整条叙事流水线里唯一的一道设定防穿帮检查，省掉它就等于彻底裸奔。</li>
+<li><strong>v1.3.0 的“透镜折叠”</strong>：9 条 <code>/team-*</code> 流水线（战斗、叙事、UI、发布、打磨、音频、关卡、Live Ops、QA）继续留在 Studio Mode 里按 <code>team.size</code> 展开；但另外 4 个高频单技能（<code>/design-system</code>、<code>/art-bible</code>、<code>/architecture-review</code>、<code>/code-review</code>）在 v1.3.0 里干脆不玩多代理接力了，直接把专家视角拆成 <code>references/lens-*.md</code> 放在主会话里自己顺序切换着写（仅 <code>/art-bible</code> 的核心视觉章节和 <code>/code-review</code> 的 1 个引擎助手还保留独立子代理）。<strong>拆不拆子代理，唯一标准是“隔离上下文带来的收益能不能盖过搬运成本”，不是为了显得团队热闹。</strong></li>
+</ol>
+<h2 id="常见误解">常见误解<a class="anchor" href="#常见误解" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>误解一：调用 <code>/team-release</code>（文档点名 10 个角色）就会一口气拉起 10 个子代理。</strong> 错，默认 <code>individual</code> 档只派 1 个，切 <code>small</code> 或 <code>studio</code> 才会展开。</li>
+<li><strong>误解二：在团队流水线里选“跳过阻塞代理”跑完剩下步骤，最后就能拿个 <code>COMPLETE</code>。</strong> 不行，最终判决强制保持 <code>BLOCKED</code>，如实暴露缺口。</li>
+<li><strong>误解三：所有任务都能并行，并行越多越快。</strong> 只要后一步依赖前一步的产物就不能并行；而且没配返回契约的盲目并行，只会把主上下文更快撑炸。</li>
+</ul>
+<h2 id="练习">练习<a class="anchor" href="#练习" aria-label="链接到本节">#</a></h2>
+<ol>
+<li>翻开 <code>.claude/skills/team-combat/SKILL.md</code> 的 Phase 0，分别写出 <code>individual</code>、<code>small</code>、<code>studio</code> 三档下实际会派生哪些角色。</li>
+<li>假设你要给后端做一次“接口设计 + 数据库建表 + 压测方案”的协作流程，其中哪些环节可以并行、哪些必须串行？如果压测子代理被卡住且你选择跳过，最终状态该标什么？</li>
+<li>结合 v1.3.0 把 <code>/design-system</code> 从“派 8 个子代理”改成“主会话读 <code>references/lens-*.md</code>”的改动，说说什么时候真的该起子代理，什么时候用透镜文档就够了。</li>
+</ol>
+<h2 id="答案提示">答案提示<a class="anchor" href="#答案提示" aria-label="链接到本节">#</a></h2>
+<ol>
+<li><code>individual</code> 只上 <code>gameplay-programmer</code>（需要时升级 <code>ai-programmer</code>）；<code>small</code> 拉起设计、玩法、AI、技术美术、音效、引擎专家、QA 完整小队；<code>studio</code> 再追加引擎子专家和对抗性评审。</li>
+<li>必须先串行敲定接口与数据模型（共享输入），然后围绕这份定稿并行跑“安全评审 / 缓存设计 / 压测方案”；压测被跳过后，其余成果照样出部分报告，但整体判决必须标 <code>BLOCKED</code> 并注明缺少压测评估。</li>
+<li>当任务需要大范围扫代码（防止把主上下文读爆）、需要完全不受主会话惯性影响的独立评审（如 <code>art-director</code> 初稿或对抗审査），或者需要更窄的工具白名单时，适合起子代理；当几个角色只是围绕同一份刚聊完的上下文从不同维度补写章节时，用 <code>lens-*.md</code> 折叠在主会话里更快、更省钱、也更少信息损耗。</li>
+</ol>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="11-registries.html"><small>上一章</small><strong>注册表：跨文档事实怎么管才不漂移</strong></a><a class="next" href="13-engine.html"><small>下一章</small><strong>引擎与品类适配：统一引擎表、Web 一等公民与品类库</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：先看清这东西到底是怎么跑起来的</a><a href="../chapters/01-requirements.html"><span>01</span>需求：一个人写游戏，为什么还要套规矩</a><a href="../chapters/02-architecture.html"><span>02</span>总体架构：一个会话，四种约束</a><a href="../chapters/03-onboarding.html"><span>03</span>入门：先玩一把（<code>/prototype</code>）与 Studio Mode（<code>/start</code>）双轨入口</a><a href="../chapters/04-config.html"><span>04</span>配置求值：一个 <code>rigor</code> 如何长出六个设置</a><a href="../chapters/05-agents.html"><span>05</span>角色系统：49 个 Agent 怎么分工，又什么时候根本不上场</a><a href="../chapters/06-skill-protocol.html"><span>06</span>Skill 协议：一条斜杠命令怎么从解析走到交接</a><a href="../chapters/07-artifacts.html"><span>07</span>产物模型：一页简报与故事、需求、ADR 三张网</a><a href="../chapters/08-dev-story.html"><span>08</span>实施链路：<code>/dev-story</code> 怎么把故事变成代码</a><a href="../chapters/09-story-done.html"><span>09</span>验收：<code>/story-done</code> 如何堵死“基本完成”</a><a href="../chapters/10-hooks.html"><span>10</span>Hook：十五个检查点里，到底谁真的能拦住</a><a href="../chapters/11-registries.html"><span>11</span>注册表：跨文档事实怎么管才不漂移</a><a href="../chapters/12-teams.html"><span>12</span>协作：团队流水线、默认塌缩与“透镜折叠”</a><a href="../chapters/13-engine.html"><span>13</span>引擎与品类适配：统一引擎表、Web 一等公民与品类库</a><a href="../chapters/14-context.html"><span>14</span>上下文与恢复：把硬盘文件当记忆，别指望聊天窗口</a><a href="../chapters/15-security.html"><span>15</span>安全边界：能聊天、有 Hook，不等于有沙箱</a><a href="../chapters/16-verification.html"><span>16</span>验证与演进：Markdown 写的框架，怎么证明自己没改坏</a><a href="../chapters/17-mini-studio.html"><span>17</span>最小实验：用两百行 Python 亲手跑通四条核心约束</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：v1.3.0 源码索引、实测数据、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · CCGS v1.3.0 · 快照 abc0de79d6ce · 2026-11-21</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

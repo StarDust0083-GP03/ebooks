@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从时间总线、分支路由、rutis 跨语言数据面到权限与压缩重放，源码级解剖 arcships/dim Agent v4 架构"><meta name="author" content="独立源码研究">
+<title>时间总线与只认序号的事实流 · Dim 架构解剖</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">D</span><span>Dim 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 03</div><div class="rail-title">时间总线与只认序号的事实流</div><ol><li><a href="#信封结构与-13-个核心保留域">信封结构与 13 个核心保留域</a></li><li><a href="#已提交与已发布-为什么要分双水位">已提交与已发布：为什么要分双水位</a></li><li><a href="#存储层的物理优化-去重-合行与-20ms-节流">存储层的物理优化：去重、合行与 20ms 节流</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 03 章</div><h1>时间总线与只认序号的事实流</h1><div class="chapter-meta">arcships/dim v0.1.0-alpha.27 · 快照 2026-11-22 · 约 14 分钟</div></header><div class="prose"><p>如果把一条分支上发生的所有事情摊平来看，并发 bug 的根源几乎都来自同一个错觉：代码以为先发起的操作会先完成，或者以为写进了内存就已经生效。在 <code>crates/dim-agent-runtime/src/core/timeline.rs</code> 和 <code>docs/architecture/rust-agent/timeline-storage.md</code> 中，Dim 把这条链路切成了两个清晰的水位和一个单调递增的序号，彻底剥离了执行耗时与业务先后。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 368" width="420" height="368" role="img" aria-label="时间总线写入、落盘与按序派发链路">
+<title>时间总线写入、落盘与按序派发链路</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+<text x="8" y="12" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="600" fill="var(--muted)" text-anchor="start" opacity="1">写入与分发分离：已提交（热窗口）不等于已发布（已落盘）</text><rect x="8" y="22" width="404" height="42" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="16" y="37.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">1. append / append_batch_registered</text><text x="16" y="51.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">能力提交 EventDraft，核心禁止扩展写入 13 个 RESERVED_DOMAINS</text><line x1="210" y1="64" x2="210" y2="76" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="76" width="404" height="42" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="16" y="91.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">2. before 同步变形链（提交锁内，仅 Rust）</text><text x="16" y="105.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">逐个变换草稿并记录 TraceStep；任意钩子报错则回退原草稿提交</text><line x1="210" y1="118" x2="210" y2="130" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="130" width="404" height="42" rx="2.5" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="16" y="145.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">3. 分配单调 sequence + 登记回调</text><text x="16" y="159.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">写锁内登记关联状态；登记失败整批中止，不留脏锚点</text><line x1="210" y1="172" x2="210" y2="184" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="184" width="404" height="42" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="16" y="199.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">4. 热窗口暂存 + SQLite WAL 写入轮</text><text x="16" y="213.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">synchronous=FULL（macOS 开 fullfsync）；输出行按 20ms 节流合批</text><line x1="210" y1="226" x2="210" y2="238" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="238" width="404" height="42" rx="2.5" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.3"/><text x="16" y="253.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">5. 推进发布水位 published()</text><text x="16" y="267.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">落盘返回后推进水位；外部读取与 Dispatcher 只消费已发布事件</text><line x1="210" y1="280" x2="210" y2="292" stroke="var(--muted)" stroke-width="1.05" marker-end="url(#arrow)"/><rect x="8" y="292" width="404" height="42" rx="2.5" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.3"/><text x="16" y="307.5" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="600" fill="var(--ink)" text-anchor="start" opacity="1">6. Dispatcher 严格按序派发</text><text x="16" y="321.0" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--muted)" text-anchor="start" opacity="1">订阅方经 consume() 先暂存再重建，只处理高于截点的实时事实</text><text x="8" y="356" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.2" font-weight="400" fill="var(--forest)" text-anchor="start" opacity="1">副作用发生在总线外：重启与重载按同一协议从截点重建，绝不重放外部动作。</text>
+</svg><figcaption>时间总线写入、落盘与按序派发链路</figcaption></figure>
+<h2 id="信封结构与-13-个核心保留域">信封结构与 13 个核心保留域<a class="anchor" href="#信封结构与-13-个核心保留域" aria-label="链接到本节">#</a></h2>
+<p>写上时间总线的每一条事实都装在 <code>crates/dim-agent-types/src/events.rs</code> 定义的 <code>AgentEvent</code> 信封里。信封只包含六个顶层字段：<code>id</code>（事件唯一标识）、<code>sequence</code>（分支内单调无符号整数序号）、<code>create_at</code>（Unix 毫秒时间戳）、可选的 <code>tags</code>、可选的 <code>parent_call_id</code>（用于标记 Code Mode 等嵌套工具调用产生的子事件），以及展平后的 <code>kind: EventKind</code>。</p>
+<p>这里有一条很巧妙的上下文防火墙：<code>AgentEvent::context_flags()</code> 会先检查 <code>parent_call_id.is_some()</code>，只要事件带有父调用标识，直接返回 <code>(false, false)</code>。像 Code Mode 脚本内部触发的所有子工具调用事件，虽然照常记录在时间线上供审计和调试，但永远不会被当作主模型的上下文输入。</p>
+<p>为了防止外部插件冒充核心状态机的事实，<code>dim-agent-types</code> 明确划定了 13 个核心保留域 <code>RESERVED_DOMAINS</code>：</p>
+<p><code>input</code>、<code>stop</code>、<code>approval</code>、<code>permission</code>、<code>exec</code>、<code>turn</code>、<code>prompt</code>、<code>context</code>、<code>model</code>、<code>step</code>、<code>branch</code>、<code>collaboration</code>、<code>session</code>。</p>
+<p>核心 <code>EventKind</code> 枚举覆盖了这 13 个域下的全部强类型事件（从 <code>input/message</code>、<code>input/consumed</code> 到 <code>branch/default</code>、<code>session/forked</code>）。外部扩展只能通过 <code>EventKind::Extension(ExtensionEvent)</code> 写入自己命名的域，且域和事件名都不能为空、不能包含 <code>/</code> 或 <code>*</code>。一旦扩展试图往 13 个保留域里塞不透明载荷，Timeline 在入口直接拒绝。</p>
+<h2 id="已提交与已发布-为什么要分双水位">已提交与已发布：为什么要分双水位<a class="anchor" href="#已提交与已发布-为什么要分双水位" aria-label="链接到本节">#</a></h2>
+<p>沿着图里的写入链路往下走，能力调用 <code>Timeline::append</code>、<code>append_registered</code> 或 <code>append_batch_registered</code> 时，函数是同步返回的，并不等待磁盘 fsync。在提交锁内部，Timeline 依次做三件事：跑完进程内同步的 <code>before</code> 变形链、分配连续的 <code>sequence</code>、执行产生方的登记回调（登记失败则整批中止，什么也不落盘）。通过之后，事件进入内存热窗口并塞进 <code>TimelineStore</code> 的后台写入队列，此时分支的 <code>committed()</code> 水位推进。</p>
+<p>但 <code>committed()</code> 推进不代表事件已经对外生效。后台写入任务（SQLite 实现位于 <code>SessionStorePlugin</code>）按轮次把所有 Session 的待写批次打包进同一个 SQLite 事务，开启 WAL 模式与 <code>synchronous=FULL</code>（macOS 上额外开启 <code>fullfsync</code>），保证事务返回即真正落盘。只有事务提交成功后，写入任务才在释放写锁之后推进各分支的发布水位 <code>published()</code>，并唤醒该分支的 <code>Dispatcher</code>。</p>
+<p>这种双水位设计把进程崩溃和断电的后果缩减到了三种清晰状态：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>中断时刻</th>
+<th>磁盘上的事实</th>
+<th>恢复后的行为</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>事务提交前崩溃</td>
+<td>该轮事件不存在</td>
+<td>这些事件从未发布，也没有被任何订阅者消费，系统回退到上一轮水位</td>
+</tr>
+<tr>
+<td>事务提交后、发布前崩溃</td>
+<td>该轮事件已完整落盘</td>
+<td>此前尚未分发，重启后各能力按统一恢复协议读取历史并接手</td>
+</tr>
+<tr>
+<td>发布后崩溃</td>
+<td>事件存在且已进入分发</td>
+<td>状态机从历史恢复等价状态，不重复执行外部副作用</td>
+</tr>
+</tbody></table></div>
+<p>两类读者的可见边界也跟着双水位分开：分支内部的能力在重建或复核时，可以通过 <code>Timeline</code> 读到 <code>committed()</code>（包含热窗口里已受理但尚未落盘的尾部）；而 <code>Dispatcher</code>、分支外部的 <code>Branch</code> 与 <code>Session</code> 门面、以及所有 RPC 客户端，只能看到 <code>published()</code> 之前的事件。对外部世界来说，一条事件只有落盘发布了才算数。</p>
+<h2 id="存储层的物理优化-去重-合行与-20ms-节流">存储层的物理优化：去重、合行与 20ms 节流<a class="anchor" href="#存储层的物理优化-去重-合行与-20ms-节流" aria-label="链接到本节">#</a></h2>
+<p>把模型流式输出的每一个 token 增量和每一轮完整的消息数组都原样写进 SQLite，很快就会把磁盘和 I/O 打爆。Dim 在不破坏逻辑事件序号的前提下，在存储边界做了三项物理压缩，而且全部对上层透明：</p>
+<p><strong>内容寻址的消息链表。</strong> 每轮 <code>context/prepare</code> 和 <code>model/call</code> 携带的 <code>request.messages</code> 往往与上一轮共享 95% 以上的前缀。SQLite 存储把每条消息存成 Session 内容表里按内容哈希寻址的链表节点，指向前一个节点的地址；<code>tools</code> 和 <code>system</code> 也按内容哈希去重。事件正文里只存最后一个节点的地址、长度以及 <code>tools</code> 与 <code>system</code> 的引用编号。</p>
+<p><strong>流式输出合行与事务内热缓存。</strong> 同一分支、同一请求下连续产生的 <code>step/text</code> 或 <code>step/thinking</code> 增量，在物理表里合并为同一条输出行（受 1 秒或 4 KB 阈值切分），行内按序保存各逻辑事件的 <code>id</code>、<code>sequence</code>、<code>create_at</code>、<code>tags</code> 和 <code>delta</code>。写入器在同一个事务内按分支缓存最后一条输出行的已解码结构，后续增量直接内存追加，免去反复查表和解析 JSON，非输出事件到达或事务结束时立刻失效。</p>
+<p><strong>分流式写入轮节流。</strong> 后台写入器在上一轮提交完成后，只要队列里还有普通批次（比如工具调用、审批、输入采用），立刻开始下一轮提交，不人为加延迟。只有当队列里全部是流式输出行增量时，才等到距上一轮开始满 20 毫秒再合并提交，把纯流式输出压在每秒至多 50 次 WAL fsync。</p>
+<p><code>docs/architecture/rust-agent/timeline-storage.md</code> 坦诚记录了这套策略的实测权衡：在 Apple M4 上用 <code>timeline_acceptance rounds 64 200 64</code> 实测（64 条流式分支每秒各 200 增量，叠加 64 条依赖写入链），普通批次不等待让依赖链每步发布延迟中位数从 22 ms 降到了 9 ms、吞吐翻了 1.8 倍，但代价是每秒写入轮次升到 97 轮、WAL 写入量从每秒 40 MB 升到 80 MB（因为普通批次顺带把所有在等的流式增量一起带走了）。上游团队明确记下了这个代价，并决定暂不打破“一轮取走全部待写批次”的简单模型。</p>
+<p>读写并发同样做了收敛：所有只读查询走按需创建的只读连接池，上限 4 条连接，空闲时收缩回 1 条，读操作在语句开始时的最新提交快照上执行，不抢写连接互斥锁；大 Session 的分叉与删除则通过复制连接按每 256 个逻辑序号、每 1024 个内容哈希分块提交，每块之间把写锁让给正常的写入轮。</p>
+<p>当事件稳稳落盘并推进发布水位之后，真正决定业务怎么流转的，是站在总线另一端的 <code>Dispatcher</code> 和一整套事件驱动契约。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="02-workspace-and-scopes.html"><small>上一章</small><strong>28 个 Crate 与三层作用域</strong></a><a class="next" href="04-event-driven-contracts.html"><small>下一章</small><strong>事件驱动契约：Dispatcher、before 与重启重建</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言与全景导读</a><a href="../chapters/01-why-not-a-chat-loop.html"><span>01</span>为什么不用普通对话循环</a><a href="../chapters/02-workspace-and-scopes.html"><span>02</span>28 个 Crate 与三层作用域</a><a href="../chapters/03-time-bus.html"><span>03</span>时间总线与只认序号的事实流</a><a href="../chapters/04-event-driven-contracts.html"><span>04</span>事件驱动契约：Dispatcher、before 与重启重建</a><a href="../chapters/05-timeline-branches.html"><span>05</span>分支时间线：默认分支、父子通信与配额路由</a><a href="../chapters/06-rutis-and-data-faces.html"><span>06</span>rutis 插件引擎与跨语言数据面</a><a href="../chapters/07-self-evolving-plugins.html"><span>07</span>在会话里给自己写插件与热重载自演化</a><a href="../chapters/08-context-compaction-and-replay.html"><span>08</span>上下文投影、压缩与历史渲染边界</a><a href="../chapters/09-detached-work-and-permissions.html"><span>09</span>脱离工作、工具审批与权限边界</a><a href="../chapters/10-codemode-and-aimux.html"><span>10</span>Code Mode 与 Aimux 模型宿主</a><a href="../chapters/11-server-cli-web-and-protocols.html"><span>11</span>App Server、CLI、Web 与 ACP / MCP 网关</a><a href="../chapters/12-tradeoffs-and-boundaries.html"><span>12</span>架构权衡与工程边界</a><a href="../chapters/13-teaching-model.html"><span>13</span>零依赖 Python 教学模型与 18 个单元测试</a><a href="../chapters/appendix-sources.html"><span>A</span>附录 A：源码索引、术语与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · arcships/dim v0.1.0-alpha.27 · 快照 88a3df366940 · 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

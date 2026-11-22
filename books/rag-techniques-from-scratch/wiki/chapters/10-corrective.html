@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从文档解析、切分、混合检索到纠错、图谱、评估与上线边界的 RAG 工程实战指南"><meta name="author" content="独立源码研究">
+<title>纠错检索：找不到以后，系统走哪一条路 · RAG 工程实战</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">RAG</span><span>RAG 工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 10</div><div class="rail-title">纠错检索：找不到以后，系统走哪一条路</div><ol><li><a href="#先分清相关性和充分性">先分清相关性和充分性</a></li><li><a href="#self-rag-的论文与教程别混为一谈">Self-RAG 的论文与教程别混为一谈</a></li><li><a href="#crag-把检索失败变成三态状态机">CRAG 把检索失败变成三态状态机</a></li><li><a href="#内部规范为什么不能默认上网兜底">内部规范为什么不能默认上网兜底</a></li><li><a href="#自适应路由与反馈收集的克制用法">自适应路由与反馈收集的克制用法</a></li><li><a href="#本章对应代码与资料">本章对应代码与资料</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 10 章</div><h1>纠错检索：找不到以后，系统走哪一条路</h1><div class="chapter-meta">RAG_Techniques 快照 2026-11-02 · 约 10 分钟</div></header><div class="prose"><p>值班同事问：“退款超时后能不能直接再发起一笔新退款？”检索器这次没撞中退款规范，只拉回来两条支付成功回调的段落。如果系统傻傻地把无关材料塞给大模型，模型多半会顺着参数里的通用经验编出一段看似稳妥的建议。在企业内部规则场景下，拿通用常识冒充公司现行规范，比直接回答“当前资料不足”危害大得多。纠错检索要设计的，就是“检索质量不达标时的分流状态机”。</p>
+<h2 id="先分清相关性和充分性">先分清相关性和充分性<a class="anchor" href="#先分清相关性和充分性" aria-label="链接到本节">#</a></h2>
+<p>一段文档提到“退款单字段定义”，对上面那个问题算相关，却根本回答不了“超时后能不能重试”；只有明确写着“先查询渠道结果，再决定是否重试，不得仅凭超时再次发起新退款”的 <code>refund-v2:0</code>，才算具备充分性。</p>
+<p>给候选池加一层相关性评估、给最终证据包加一层充分性评估，思路很清晰，但别迷信模型吐出来的打分数字。提示词里让模型“给相关性打 0 到 1 分”，它给出的 <code>0.8</code> 并不对应统计学上的 80% 真实准确率。落地时优先用离散档位（比如充分、模糊、无关）配合人工标注阈值校准，比直接拿浮点分画死线可靠得多。</p>
+<h2 id="self-rag-的论文与教程别混为一谈">Self-RAG 的论文与教程别混为一谈<a class="anchor" href="#self-rag-的论文与教程别混为一谈" aria-label="链接到本节">#</a></h2>
+<p>Self-RAG（论文 arXiv:2310.11511）的原始设计是通过微调让模型学会输出特殊反思 token，自主决定要不要检索、证据有没有支撑、回答有没有用。上游 <code>self_rag.ipynb</code> 则是用多轮提示词串联检索判断、相关性评分、生成、支持度检查和效用评估，方便在通用模型上演示控制流，但开销和精度都与原论文的专门训练模型不同。</p>
+<p>读 <code>self_rag.ipynb</code> 时要特别留意一个默认分支：当检索回来的段落全被判为不相关时，示例会退回无检索生成，直接靠大模型自身知识作答。做开放百科问答这样兜底没问题，放到内部支付规范助手上就必须改写这个分支：找不到有效证据时，要么在受控次数内换改写词再查一次，要么老老实实返回 <code>insufficient_evidence</code>，绝不把无证据猜测包装成正式结论。</p>
+<h2 id="crag-把检索失败变成三态状态机">CRAG 把检索失败变成三态状态机<a class="anchor" href="#crag-把检索失败变成三态状态机" aria-label="链接到本节">#</a></h2>
+<p>CRAG（Corrective RAG，论文 arXiv:2401.15884）把检索质量拆成三种状态处理：质量高直接提炼使用，质量模糊则改写补充，质量低则触发纠错回退。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 540 206" width="540" height="206" role="img" aria-label="CRAG 与受控纠错检索状态机">
+<title>CRAG 与受控纠错检索状态机</title>
+<defs><marker id="arr-crag-state-machine" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,1 L10,5 L0,9 z" fill="var(--muted)"/></marker></defs>
+<text x="10" y="14" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="600" fill="var(--ink)" text-anchor="start">纠错检索状态机（内部规范默认禁止无依据自由发挥）</text><rect x="10" y="28" width="122" height="62" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="20" y="45" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">1. 检索与质检</text><text x="20" y="61" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">authorized_scope</text><text x="20" y="75" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">相关性 + 充分性</text><line x1="132" y1="59" x2="156" y2="40" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-crag-state-machine)"/><line x1="132" y1="59" x2="156" y2="96" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-crag-state-machine)"/><line x1="132" y1="59" x2="156" y2="152" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-crag-state-machine)"/><rect x="156" y="16" width="154" height="46" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.4"/><text x="166" y="33" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">correct（证据充分）</text><text x="166" y="49" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">进入打包与引用校验</text><rect x="156" y="72" width="154" height="46" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.4"/><text x="166" y="89" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">ambiguous（证据偏弱）</text><text x="166" y="105" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">受控改写重试（限次数）</text><rect x="156" y="128" width="154" height="46" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.4"/><text x="166" y="145" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">incorrect（未命中）</text><text x="166" y="161" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">不凭参数知识硬猜</text><line x1="310" y1="39" x2="344" y2="39" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-crag-state-machine)"/><rect x="344" y="16" width="186" height="46" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.4"/><text x="354" y="33" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">返回 evidence_ready</text><text x="354" y="49" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">逐句绑定 injected_ids</text><line x1="310" y1="95" x2="344" y2="95" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-crag-state-machine)"/><rect x="344" y="72" width="186" height="46" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.85"/><text x="354" y="89" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">attempt &lt; max_attempts</text><text x="354" y="105" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">重新检索；权限范围不变</text><line x1="437" y1="118" x2="437" y2="128" stroke="var(--muted)" stroke-width="1.15" stroke-dasharray="4 3" marker-end="url(#arr-crag-state-machine)"/><line x1="310" y1="151" x2="344" y2="151" stroke="var(--muted)" stroke-width="1.15" marker-end="url(#arr-crag-state-machine)"/><rect x="344" y="128" width="186" height="46" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.4"/><text x="354" y="145" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">insufficient_evidence</text><text x="354" y="161" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9" font-weight="400" fill="var(--muted)" text-anchor="start">明确拒答，不默认上网泄密</text><text x="10" y="194" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--amber)" text-anchor="start">与开放问答不同：内部规则助手遇到无证据时，少答优于用模型常识或公网结果硬凑。</text>
+</svg><figcaption>CRAG 与受控纠错检索状态机</figcaption></figure>
+<p>配套 <code>examples/mini_rag.py</code> 里的 <code>crag_route()</code> 用纯 Python 实现了面向内部规范的受控版本：</p>
+<pre><code class="language-python">res = crag_route(
+    retriever,
+    query=&quot;xyzunfindable&quot;,
+    user=&quot;alice&quot;,
+    rewrites=[&quot;重复通知如何处理&quot;],
+    max_attempts=2,
+)
+</code></pre>
+<p>这套路由有四条明确约束，并全部覆盖在单元测试里：</p>
+<ol>
+<li>首轮命中高分（<code>correct</code>）立刻停手返回 <code>evidence_ready</code>，不白白触发后续改写。</li>
+<li>首轮未命中或偏弱（<code>incorrect</code> / <code>ambiguous</code>）且未到 <code>max_attempts</code> 时，用下一条改写词重新检索；整个重试过程始终锁定同一个服务端 <code>user</code> 权限视图，绝不因为第一次没搜到就放宽权限或打开已废弃版本。</li>
+<li>达到重试次数上限仍无达标证据，立即终止并返回 <code>status=&quot;insufficient_evidence&quot;</code>，杜绝死循环刷账单。</li>
+<li>全程输出 <code>trace</code> 记录每一轮查询词、状态、最高分和命中 ID，事后一眼能查清是第几轮救回来的。</li>
+</ol>
+<h2 id="内部规范为什么不能默认上网兜底">内部规范为什么不能默认上网兜底<a class="anchor" href="#内部规范为什么不能默认上网兜底" aria-label="链接到本节">#</a></h2>
+<p>公开版 CRAG 教程（上游 <code>crag.ipynb</code>，在 LangChain 1.x 迁移后使用 <code>langchain_community.tools.DuckDuckGoSearchResults(output_format=&quot;json&quot;)</code> 供 JSON 解析器读取）在本地检索失败时会去搜公网。这一步搬到企业内网有两个硬伤：</p>
+<ul>
+<li>外部网页查得到通用支付协议，查不到你们公司结算组昨天刚改的回调幂等约定。</li>
+<li>把带着内部商户名、报错详情或风控规则的问题直接丢给公网搜索引擎，本身就是一次数据泄密事故。</li>
+</ul>
+<p>如果业务确实同时涉及公开第三方 SDK 文档和内部规范，应当按数据分级拆开路由：公网搜索只允许在白名单问题类型上触发、先过脱敏过滤，并且把外部来源与发布时间标得清清楚楚；一旦公网说法和公司内部规范冲突，直接把两者的适用范围并排呈现，不要让模型擅自选“听起来更专业”的那一边。</p>
+<h2 id="自适应路由与反馈收集的克制用法">自适应路由与反馈收集的克制用法<a class="anchor" href="#自适应路由与反馈收集的克制用法" aria-label="链接到本节">#</a></h2>
+<p>不是每条请求都值得走完整纠错循环。上游 <code>adaptive_retrieval.ipynb</code> 演示了先给问题分类再选检索策略：查精确错误码或接口名直接走关键词，问概念和原因走混合检索，查单笔实时交易转去业务 API，跨文档查负责人走受控两步检索。分类器本身也会误判，所以既要记录实际走了哪条路，也要留给用户手动切换或重试的入口。</p>
+<p>至于线上点赞和点踩反馈（参考 <code>retrieval_with_feedback_loop.ipynb</code>），最稳妥的用法是回流到离线评估集做人工归因，而不是让一次点踩就自动降权或删文档。用户点踩可能是检索漏了、可能是回答编了、也可能是文档本身已经过时；不先定位层就直接喂回排序权重，只会把好规范慢慢冲走。</p>
+<h2 id="本章对应代码与资料">本章对应代码与资料<a class="anchor" href="#本章对应代码与资料" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><a href="appendix-code.html">有界三态纠错路由 <code>crag_route</code></a></li>
+<li><a href="appendix-code.html">首轮直出、改写恢复与耗尽拒答测试</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/self_rag.ipynb">上游 Self-RAG</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/crag.ipynb">上游 CRAG</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/adaptive_retrieval.ipynb">上游 Adaptive Retrieval</a></li>
+<li><a href="https://github.com/NirDiamant/RAG_Techniques/blob/2fd7bd0ffe5b8520cfd1a6ee75fcb86fc41bf8c6/all_rag_techniques/retrieval_with_feedback_loop.ipynb">上游 Feedback Loop</a></li>
+<li><a href="https://arxiv.org/abs/2310.11511">Self-RAG 论文（arXiv:2310.11511）</a></li>
+<li><a href="https://arxiv.org/abs/2401.15884">CRAG 论文（arXiv:2401.15884）</a></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="09-evaluation.html"><small>上一章</small><strong>评估：两条高分结果，未必够答完一个问题</strong></a><a class="next" href="11-hierarchy-memory.html"><small>下一章</small><strong>层次索引与记忆：问题开始面向整份资料</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-opening.html"><span>00</span>开篇：文档都在库里，助手为什么还会答错</a><a href="../chapters/01-requirements.html"><span>01</span>需求篇：先框住哪些问题必须答对</a><a href="../chapters/02-architecture.html"><span>02</span>技术方案：从需求推导一条可追踪的链路</a><a href="../chapters/03-ingestion.html"><span>03</span>资料入库：先把文档读对，再谈检索</a><a href="../chapters/04-chunking.html"><span>04</span>文档切分：验签和幂等，为什么总只召回一半</a><a href="../chapters/05-baseline.html"><span>05</span>基础检索：先交付一条能复现的离线链路</a><a href="../chapters/06-fusion-reranking.html"><span>06</span>混合检索与重排：把不同候选放进同一张账</a><a href="../chapters/07-query-enhancement.html"><span>07</span>查询增强：用户不一定会说出幂等这个词</a><a href="../chapters/08-context.html"><span>08</span>证据组装：检索到了，还要让模型完整读到</a><a href="../chapters/09-evaluation.html"><span>09</span>评估：两条高分结果，未必够答完一个问题</a><a href="../chapters/10-corrective.html"><span>10</span>纠错检索：找不到以后，系统走哪一条路</a><a href="../chapters/11-hierarchy-memory.html"><span>11</span>层次索引与记忆：问题开始面向整份资料</a><a href="../chapters/12-graph.html"><span>12</span>图谱检索：从模块一路查到技术负责人</a><a href="../chapters/13-multimodal-agent.html"><span>13</span>多模态与 Agent：处理图表文档与多步任务</a><a href="../chapters/14-production.html"><span>14</span>上线边界：权限、快照、停服与故障不能靠提示词兜底</a><a href="../chapters/15-wrap-up.html"><span>15</span>完结篇：用一次请求串起整套设计</a><a href="../chapters/appendix-map.html"><span>A</span>附录 A：上游 47 份 Notebook 与 21 份脚本阅读地图</a><a href="../chapters/appendix-sources.html"><span>B</span>附录 B：源码快照、论文范围、术语与研究边界</a><a href="../chapters/appendix-code.html"><span>C</span>附录 C：配套教学实现与样例数据</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · RAG_Techniques 2fd7bd0ffe5b（2026-11-02）· 核对 2026-11-22</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

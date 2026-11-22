@@ -1,0 +1,77 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>权衡：这套架构主动放弃了什么 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="18-tradeoffs"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#1-无状态前缀路由-放弃多后端扩展弹性">1. 无状态前缀路由，放弃多后端扩展弹性</a></li><li><a href="#2-统一公开契约-放弃后端能力完全等价">2. 统一公开契约，放弃后端能力完全等价</a></li><li><a href="#3-预热池与模板-放弃按请求任意定制">3. 预热池与模板，放弃按请求任意定制</a></li><li><a href="#4-容器-sidecar-与-fastlet-共享-egress-的两套实现">4. 容器 Sidecar 与 Fastlet 共享 Egress 的两套实现</a></li><li><a href="#5-全线-fail-closed-放弃静默降级换来的虚假可用性">5. 全线 fail-closed，放弃静默降级换来的虚假可用性</a></li><li><a href="#6-单活控制面-放弃零中断控制面升级">6. 单活控制面，放弃零中断控制面升级</a></li><li><a href="#7-sse-文本流-放弃命令通道内置双向控制">7. SSE 文本流，放弃命令通道内置双向控制</a></li><li><a href="#8-绝对-ttl-放弃省心的原生空闲超时">8. 绝对 TTL，放弃省心的原生空闲超时</a></li><li><a href="#9-full-与-rootfsonly-双轨快照-接受恢复体验分化">9. `full` 与 `rootfsOnly` 双轨快照，接受恢复体验分化</a></li><li><a href="#10-生态兼容靠独立旁路-shim-不污染主契约">10. 生态兼容靠独立旁路 Shim，不污染主契约</a></li><li><a href="#给自建者的选型对照">给自建者的选型对照</a></li><li><a href="#源码入口">源码入口</a></li></ol></details><article class="content"><h1 id="权衡-这套架构主动放弃了什么">权衡：这套架构主动放弃了什么</h1><p>前十七篇一直在解释现有设计如何运转。任何系统只要跑在真实约束下，换取一项特性就必然丢掉另一项。把 OpenSandbox 最结构性的十个取舍翻到反面来看，才能判断它在什么时候顺手、什么时候会开始硌脚。</p>
+<h2 id="1-无状态前缀路由-放弃多后端扩展弹性">1. 无状态前缀路由，放弃多后端扩展弹性</h2><p><code>CompositeSandboxService</code> 用 <code>fsb-</code> 前缀把请求分给 Fast Sandbox，其余归 Kubernetes 容器后端。这省掉了维护 <code>sandbox_id -&gt; backend</code> 映射表的一致性负担，控制面崩溃重启后路由信息零损失。代价是前缀成了散落在路由、SDK 约定与运维排障里的隐式知识；目前两个分支撑得住，一旦未来接进第三个需要并存的底层运行时，靠字符串前缀就得换成真正的元数据索引。</p>
+<h2 id="2-统一公开契约-放弃后端能力完全等价">2. 统一公开契约，放弃后端能力完全等价</h2><p>调用方用同一份 SDK 从本机 Docker 迁到 Kubernetes 集群，学习与迁移成本极低。反面代价是 API 类型无法表达各后端的语义落差：Docker 和 Kubernetes 拒接 <code>rootfsOnly</code> 快照（<code>409</code>），Kubernetes 暂停恢复后 Vault 为空而 Fast Sandbox 自动带走，Fast Sandbox 不支持卷挂载。目前全局层面没有统一的能力协商端点，只能靠 <code>docs/api/implementation-compatibility.md</code> 和局部探测（如 <code>/v1/isolated/capabilities</code>）补位。</p>
+<h2 id="3-预热池与模板-放弃按请求任意定制">3. 预热池与模板，放弃按请求任意定制</h2><p>预热 Pod 把 100 个沙箱的交付压到 0.92 秒，预编译 golden image 把串行 microVM 创建 p50 压到 64 ms。为了这份速度，请求侧失去了在创建瞬间随意改 Pod 模板的自由：池化沙箱的 <code>entrypoint</code>/<code>env</code> 改走分配后 task、<code>poolRef</code> 排斥 <code>networkPolicy</code> 和 <code>volumes</code>，模板沙箱直接拒绝请求级 <code>entrypoint</code>/<code>env</code>，数据面还必须为安全复用补上 <code>execd</code> 的 per-allocation 原子绑定与未绑定前 <code>503</code> 门禁。当每个请求都需要截然不同的定制镜像时，预热收益会被池碎片化吃光。</p>
+<h2 id="4-容器-sidecar-与-fastlet-共享-egress-的两套实现">4. 容器 Sidecar 与 Fastlet 共享 Egress 的两套实现</h2><p>每沙箱挂一个独立 egress sidecar，网络隔离最直观，策略彼此零干扰，但每个沙箱多起一套 DNS 代理和规则进程，节点密度上不去。Fast Sandbox 反过来在一个 Fastlet 里塞进多台 microVM 共用一个共享 egress 进程，把密度拉回来了，代价是执行路径陡然变厚：要靠源 IP 分发、维护 per-subject 状态机、在实验性 credential-bound 模式下做排水围栏和源 IP 复用阻断。上游没有勉强把两套压成一套逻辑，而是做成互斥 profile，诚实承认不同密度下没有单一最优解。</p>
+<h2 id="5-全线-fail-closed-放弃静默降级换来的虚假可用性">5. 全线 fail-closed，放弃静默降级换来的虚假可用性</h2><p>从启动期缺少 API key 或命名空间不可达直接 <code>os._exit(1)</code>，到节点不合格时 <code>rootfsOnly</code> 快照直接失败绝不回退 <code>full</code>，再到 Vault 私有 socket 故障立刻返回 <code>503</code> 或断连、Exchange 超出 64 头直接返 <code>407</code>，这套系统在安全与数据边界上几乎清一色选了 fail-closed。原因很现实：安全组件一旦静默降级，请求看似全绿，实则在裸奔放行或泄漏秘密。运维要付的代价是，egress sidecar 和 Vault socket 从附属组件变成了数据面可用性的硬依赖。</p>
+<h2 id="6-单活控制面-放弃零中断控制面升级">6. 单活控制面，放弃零中断控制面升级</h2><p>生命周期服务器默认单副本 <code>Recreate</code>，Fast Sandbox 全功能控制器在 <code>1.3.0-rc.2</code> 更是被 Chart 硬锁单副本 <code>Recreate</code>。这省掉了分布式选主、内存放置视图共识和跨节点锁的巨额复杂度，使得控制面代码保持单线程直觉，只在 PostgreSQL 公开快照创建这一窄路径上用 CAS 加恢复扫描支持双副本。这份取舍之所以站得住脚，前提是<strong>控制面故障域与数据面解耦</strong>，升级期间在跑沙箱不断流；一旦业务规模大到每秒百次创建、连几秒控制面升级窗口都扛不住，就必须等 ROADMAP 里的通用控制面高可用落地。</p>
+<h2 id="7-sse-文本流-放弃命令通道内置双向控制">7. SSE 文本流，放弃命令通道内置双向控制</h2><p>命令与代码执行选用 HTTP SSE 而不是全双工 WebSocket（仅 PTY 走 WebSocket），换来的是普通 HTTP 客户端、代理网关和浏览器零门槛消费。放弃双向通道的后果，是中断命令必须另发请求，客户端必须死守「收到 <code>execution_complete</code> 才算结束、超时识别 <code>CommandTimeout</code>、断流视为不确定」的解析纪律，并且还要警惕强类型语言客户端在事件新增字段时的反序列化兼容问题。</p>
+<h2 id="8-绝对-ttl-放弃省心的原生空闲超时">8. 绝对 TTL，放弃省心的原生空闲超时</h2><p>把 <code>timeout</code> 钉死成创建时刻起算的绝对过期时间，暂停不延寿、重启不重置，换来了极强的资源审计确定性：任何沙箱为什么还活着都有唯一账本。代价是违背了交互式用户「只要还在用就不该断」的直觉，结果平台不得不再叠加上访问续期（OSEP-0009）与空闲暂停/唤醒（OSEP-0024）两套独立子系统来补齐体验。</p>
+<h2 id="9-full-与-rootfsonly-双轨快照-接受恢复体验分化">9. <code>full</code> 与 <code>rootfsOnly</code> 双轨快照，接受恢复体验分化</h2><p><code>1.3.0</code> 把 <code>rootfsOnly</code> 推上公开 API 后，Fast Sandbox 终于能以 KB 级制品替代动辄数 GB 的内存快照，代价是同一份快照接口下出现两种截然不同的恢复语义：<code>full</code> 恢复保留内存与在跑进程，耗时数十毫秒级但强绑定同构 VMM 版本；<code>rootfsOnly</code> 丢弃内存与进程、冷启动重跑 <code>entrypoint</code>，耗时升到秒级但换来更轻的存储与跨节点可移植性。调用方必须清楚自己要的是「接着跑的现场」还是「干净的文件起点」。</p>
+<h2 id="10-生态兼容靠独立旁路-shim-不污染主契约">10. 生态兼容靠独立旁路 Shim，不污染主契约</h2><p>面对外部生态（如 E2B 协议调用方），<code>1.3.0-rc.2</code> 引入的 OSEP-0027 没有把异构路径揉进 <code>sandbox-lifecycle.yml</code>，而是在 <code>components/e2b-shim</code> 另起独立 Go 模块按骨架逐步演进。主契约因此保持克制干净，代价是兼容层独立部署与后续路由对齐需要额外维护成本。</p>
+<h2 id="给自建者的选型对照">给自建者的选型对照</h2><p>如果正打算从零搭一套类似的 Agent 执行层，可以把这十条压成七句工程判断：</p>
+<table>
+<thead>
+<tr>
+<th>你的约束</th>
+<th>推荐落点</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>运行时后端只有两个</td>
+<td>前缀路由足够用，别过早造全局映射数据库</td>
+</tr>
+<tr>
+<td>计划持续接入多种异构后端</td>
+<td>第一天就设计机器可读的能力声明接口，别全靠文档维护</td>
+</tr>
+<tr>
+<td>创建延迟压到百毫秒级是硬指标</td>
+<td>上预热池或模板快照，但同步设计复用时的原子身份绑定</td>
+</tr>
+<tr>
+<td>单机密度决定毛利</td>
+<td>把每沙箱 sidecar 换成节点/Pod 级共享代理，并接受源 IP 围栏复杂度</td>
+</tr>
+<tr>
+<td>安全子系统失效时无明显报错</td>
+<td>全线 fail-closed，并把它当作数据面一等可用性依赖来监控</td>
+</tr>
+<tr>
+<td>控制面变更频次不高</td>
+<td>先守住控制面与数据面解耦，单活加清晰升级窗口远胜半吊子多活</td>
+</tr>
+<tr>
+<td>存在多档快照与持久语义</td>
+<td>在创建与快照 API 上显式区分模式（如 <code>full</code> / <code>rootfsOnly</code>），不让调用方猜</td>
+</tr>
+</tbody></table>
+<h2 id="源码入口">源码入口</h2><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>docs/api/implementation-compatibility.md</code></td>
+<td>契约覆盖与后端能力落差的公开账本</td>
+</tr>
+<tr>
+<td><code>docs/architecture/fast-sandbox/ha.md</code></td>
+<td>单副本控制面的明确设计立场</td>
+</tr>
+<tr>
+<td><code>server/opensandbox_server/services/composite_service.py</code></td>
+<td>零状态前缀分发实现</td>
+</tr>
+<tr>
+<td><code>oseps/0027-optional-e2b-compatibility.md</code></td>
+<td>独立旁路兼容层（<code>components/e2b-shim</code>）提案</td>
+</tr>
+<tr>
+<td><code>ROADMAP.md</code></td>
+<td>当前公开承认的未完成项与优先级</td>
+</tr>
+</tbody></table>
+</article><nav class="pager" aria-label="篇章导航"><a href="17-operations.html"><small>上一篇</small>运维与失败：升级顺序、单活红线与真实边界</a><a href="19-wrap-up.html"><small>下一篇</small>完结篇：跟着一次请求走完全书</a></nav></main><script src="../assets/wiki.js"></script></body></html>

@@ -1,0 +1,1575 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="从无阻塞执行切片、RAP 响应式工具协议到堆叠沙箱与跨主机热迁移，解剖 hydro-project/infinity 的 Rust Agent 运行时架构"><meta name="author" content="独立源码研究">
+<title>离线合订本 · Infinity 架构解剖</title>
+<style>@font-face{font-family:BookSerif;src:local("Charter"),local("Bitstream Charter");font-display:swap}
+:root{color-scheme:light;--paper:#f6f1e7;--paper-2:#ebe3d4;--ink:#20251f;--muted:#686d64;--forest:#174f42;--amber:#8f451f;--line:#cbc2b2;--code:#18231f;--code-ink:#e8eadf;--reader-size:20px;--progress:0%;--serif:BookSerif,"Source Han Serif SC","Noto Serif CJK SC","Songti SC",serif;--sans:"IBM Plex Sans","Noto Sans CJK SC",system-ui,sans-serif;--mono:"IBM Plex Mono","SFMono-Regular",Consolas,monospace}
+:root[data-theme="dark"]{color-scheme:dark;--paper:#171b18;--paper-2:#202720;--ink:#e5e1d6;--muted:#a6aa9e;--forest:#78b9a5;--amber:#f0a26b;--line:#39423b;--code:#0f1311;--code-ink:#e2e8df}
+:root[data-theme="light"]{color-scheme:light}
+@media(prefers-color-scheme:dark){:root[data-theme="auto"]{color-scheme:dark;--paper:#171b18;--paper-2:#202720;--ink:#e5e1d6;--muted:#a6aa9e;--forest:#78b9a5;--amber:#f0a26b;--line:#39423b;--code:#0f1311;--code-ink:#e2e8df}}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;background:var(--paper)}
+body{margin:0;color:var(--ink);background:var(--paper);font-family:var(--serif);text-rendering:optimizeLegibility}
+a{color:var(--forest);text-decoration-thickness:.07em;text-underline-offset:.18em}
+a:hover{color:var(--amber)}
+button,input{font:inherit}
+button{color:inherit}
+.skip{position:fixed;left:1rem;top:-5rem;z-index:99;padding:.7rem 1rem;background:var(--ink);color:var(--paper)}
+.skip:focus{top:1rem}
+.progress{position:fixed;z-index:20;inset:0 0 auto;height:3px;background:linear-gradient(90deg,var(--amber) var(--progress),transparent 0)}
+.topbar{height:62px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 max(20px,calc((100vw - 1180px)/2));font-family:var(--sans);position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--paper) 94%,transparent);backdrop-filter:blur(10px)}
+.brand{display:flex;align-items:center;gap:12px;color:var(--ink);text-decoration:none;font-weight:700;letter-spacing:-.02em}
+.brand-mark{display:grid;place-items:center;width:31px;height:31px;border:1px solid var(--forest);color:var(--forest);font-family:var(--mono);font-size:11px;transform:rotate(-2deg)}
+.tools{display:flex;align-items:center;gap:4px}
+.tool-button{border:0;background:transparent;min-width:42px;min-height:42px;padding:0 10px;cursor:pointer;color:var(--muted);font-family:var(--sans);font-size:13px}
+.tool-button:hover,.tool-button:focus-visible{color:var(--ink);background:var(--paper-2);outline:none}
+main{min-height:calc(100vh - 62px)}
+.hero{max-width:1180px;margin:auto;padding:clamp(60px,10vw,132px) 24px 70px;display:grid;grid-template-columns:minmax(0,1.35fr) minmax(260px,.65fr);gap:clamp(40px,8vw,110px);border-bottom:1px solid var(--line)}
+.kicker{font:600 12px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--amber);margin:0 0 24px}
+.hero h1{font-size:clamp(44px,7vw,88px);line-height:.98;letter-spacing:-.055em;font-weight:600;margin:0;max-width:850px}
+.hero h1 em{font-style:normal;color:var(--forest)}
+.dek{font-size:clamp(20px,2.1vw,27px);line-height:1.5;color:var(--muted);max-width:760px;margin:30px 0 0}
+.hero-aside{align-self:end;border-left:1px solid var(--line);padding-left:28px;font:14px/1.65 var(--sans);color:var(--muted)}
+.hero-aside strong{display:block;color:var(--ink);font-size:15px;margin-bottom:8px}
+.snapshot{display:grid;grid-template-columns:auto 1fr;gap:5px 16px;margin-top:22px;font-family:var(--mono);font-size:11px}.snapshot dt{color:var(--amber)}.snapshot dd{margin:0;color:var(--ink);overflow-wrap:anywhere}
+.home-grid{max-width:1180px;margin:auto;padding:62px 24px 100px;display:grid;grid-template-columns:220px 1fr;gap:clamp(38px,7vw,90px)}
+.home-intro{font:14px/1.7 var(--sans);color:var(--muted);position:sticky;top:95px;align-self:start}.home-intro h2{font:700 14px/1.2 var(--sans);color:var(--ink);margin:0 0 13px}.home-intro a{display:inline-block;margin-top:10px}
+.contents{border-top:2px solid var(--ink)}
+.chapter-row{display:grid;grid-template-columns:54px 1fr auto;gap:20px;align-items:baseline;padding:20px 4px;border-bottom:1px solid var(--line);text-decoration:none;color:var(--ink)}
+.chapter-row:hover{color:var(--ink);background:var(--paper-2)}
+.chapter-no{font:12px/1 var(--mono);color:var(--amber)}
+.chapter-row h3{font-size:clamp(19px,2vw,25px);line-height:1.25;margin:0;font-weight:600;letter-spacing:-.02em}
+.chapter-row p{font:13px/1.4 var(--sans);color:var(--muted);margin:4px 0 0}
+.arrow{font-family:var(--sans);color:var(--forest)}
+.reader-layout{display:grid;grid-template-columns:minmax(180px,260px) minmax(0,860px);gap:clamp(40px,7vw,100px);max-width:1260px;margin:auto;padding:58px 24px 120px}
+.chapter-rail{font-family:var(--sans);font-size:13px;color:var(--muted);position:sticky;top:100px;align-self:start;max-height:calc(100vh - 130px);overflow:auto;padding-right:15px}.rail-label{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--amber);margin-bottom:16px}.rail-title{font:600 16px/1.35 var(--serif);color:var(--ink);margin-bottom:22px}.chapter-rail ol{padding:0;margin:0;list-style:none;border-top:1px solid var(--line)}.chapter-rail li{border-bottom:1px solid var(--line)}.chapter-rail li a{display:block;padding:10px 2px;text-decoration:none;color:var(--muted)}.chapter-rail li a:hover{color:var(--forest)}
+.chapter{min-width:0}.chapter-head{padding-bottom:36px;border-bottom:1px solid var(--line);margin-bottom:42px}.chapter-number{font:600 12px/1 var(--sans);letter-spacing:.14em;color:var(--amber);text-transform:uppercase}.chapter-head h1{font-size:clamp(37px,5.5vw,64px);line-height:1.06;letter-spacing:-.045em;margin:15px 0 0;font-weight:600}.chapter-meta{font:13px/1.6 var(--sans);color:var(--muted);margin-top:18px}
+.prose{font-size:var(--reader-size);line-height:1.86;letter-spacing:.005em}.prose>p:first-of-type{font-size:calc(var(--reader-size) * 1.12);line-height:1.72}.prose h2{font-size:clamp(27px,3.4vw,38px);line-height:1.25;letter-spacing:-.025em;margin:2.1em 0 .75em;padding-top:.2em}.prose h3{font-size:1.18em;line-height:1.4;margin:1.8em 0 .55em}.anchor{margin-left:.35em;color:var(--muted);font:400 .55em var(--sans);text-decoration:none;opacity:0}.prose h2:hover .anchor,.prose h3:hover .anchor,.anchor:focus{opacity:1}.prose p{margin:0 0 1.25em}.prose strong{font-weight:700}.prose ul,.prose ol{margin:0 0 1.4em;padding-left:1.4em}.prose li{padding-left:.3em;margin:.35em 0}.prose li::marker{color:var(--amber)}.prose blockquote{margin:2em 0;padding:.4em 0 .4em 1.3em;border-left:3px solid var(--amber);color:var(--muted);font-style:normal}.prose hr{border:0;border-top:1px solid var(--line);margin:3em 0}
+.prose code{font:0.82em/1.45 var(--mono);background:var(--paper-2);padding:.1em .35em;border-radius:2px;overflow-wrap:anywhere}.prose pre{position:relative;margin:1.8em 0 2em;padding:22px 24px;background:var(--code);color:var(--code-ink);overflow:auto;border-radius:2px;box-shadow:inset 4px 0 var(--forest)}.prose pre code{font-size:13px;line-height:1.65;background:transparent;padding:0;white-space:pre;overflow-wrap:normal}.copy{position:absolute;right:8px;top:8px;border:1px solid #52615a;background:#222e29;color:#dfe6dd;padding:5px 9px;font:11px var(--sans);cursor:pointer}.copy:hover{background:#35463f}
+.table-wrap{overflow-x:auto;margin:1.8em 0}.prose table{width:100%;border-collapse:collapse;font:14px/1.55 var(--sans);min-width:530px}.prose th{text-align:left;color:var(--ink);border-bottom:2px solid var(--ink);padding:10px 12px}.prose td{border-bottom:1px solid var(--line);padding:10px 12px;vertical-align:top}.prose tr:hover td{background:var(--paper-2)}
+.chapter-nav{display:grid;grid-template-columns:1fr 1fr;gap:18px;border-top:1px solid var(--line);margin-top:70px;padding-top:26px;font-family:var(--sans)}.chapter-nav a{text-decoration:none;padding:16px 0}.chapter-nav small{display:block;color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:5px}.chapter-nav strong{font-size:15px}.chapter-nav .next{text-align:right;grid-column:2}
+.menu-panel{width:min(520px,calc(100vw - 24px));max-height:calc(100vh - 24px);border:1px solid var(--line);background:var(--paper);color:var(--ink);padding:0;margin:12px 12px 12px auto}.menu-panel::backdrop{background:rgba(8,12,9,.56)}.menu-head{position:sticky;top:0;background:var(--paper);display:flex;justify-content:space-between;align-items:center;padding:17px 20px;border-bottom:1px solid var(--line);font:600 14px var(--sans)}.menu-list{padding:10px 20px 30px}.menu-list a{display:grid;grid-template-columns:36px 1fr;gap:10px;padding:12px 0;border-bottom:1px solid var(--line);text-decoration:none;color:var(--ink);font-size:16px}.menu-list span{font:11px var(--mono);color:var(--amber)}
+.search-page{max-width:930px;margin:auto;padding:70px 24px 120px}.search-page h1{font-size:clamp(42px,6vw,72px);letter-spacing:-.045em;margin:0 0 35px}.search-input{width:100%;border:0;border-bottom:2px solid var(--ink);background:transparent;color:var(--ink);font:clamp(22px,4vw,38px)/1.4 var(--serif);padding:10px 0;outline:none}.search-input:focus{border-color:var(--amber)}.search-hint{font:15px/1.7 var(--sans);color:var(--muted);margin-top:30px}.search-hit a{display:grid;grid-template-columns:52px 1fr;text-decoration:none;color:var(--ink);border-bottom:1px solid var(--line);padding:23px 0}.search-hit span{font:11px var(--mono);color:var(--amber);grid-row:1/3}.search-hit h2{font-size:23px;margin:0}.search-hit p{font:14px/1.6 var(--sans);color:var(--muted);margin:7px 0 0}.search-hit a:hover{background:var(--paper-2)}
+.site-footer{border-top:1px solid var(--line);padding:28px 24px;text-align:center;font:12px/1.6 var(--sans);color:var(--muted)}
+@media(max-width:820px){.hero{grid-template-columns:1fr;padding-top:65px}.hero-aside{border-left:0;border-top:1px solid var(--line);padding:22px 0 0}.home-grid{grid-template-columns:1fr}.home-intro{position:static}.reader-layout{display:block;padding-top:38px}.chapter-rail{display:none}.topbar{padding:0 12px}.brand span:last-child{display:none}.chapter-row{grid-template-columns:42px 1fr}.chapter-row .arrow{display:none}}
+@media(max-width:520px){.hero{padding-left:18px;padding-right:18px}.hero h1{font-size:43px}.home-grid,.reader-layout,.search-page{padding-left:18px;padding-right:18px}.chapter-head h1{font-size:38px}.prose{line-height:1.78}.prose pre{margin-left:-18px;margin-right:-18px;border-radius:0;padding:20px 18px}.chapter-nav{grid-template-columns:1fr}.chapter-nav .next{grid-column:1;text-align:left}.chapter-row{padding:17px 0}.tool-button{padding:0 7px;min-width:38px}.theme-label{display:none}}
+@media print{.topbar,.progress,.skip,.chapter-rail,.chapter-nav,.menu-panel,.site-footer,.copy{display:none!important}.reader-layout{display:block;max-width:none;padding:0}.chapter{max-width:none}.prose{font-size:11pt;color:#000}.prose pre{white-space:pre-wrap;break-inside:avoid}.prose a{color:#000}.chapter-head{margin-top:0}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+.volume{display:block;max-width:960px}.volume-cover{padding:80px 0 110px;border-bottom:1px solid var(--line);line-height:1.8}.volume-cover h1{font-size:54px;font-weight:600;margin:30px 0 0;letter-spacing:0}.volume-cover h2{font-size:32px;font-weight:400;margin-top:0}.volume-cover p{overflow-wrap:anywhere}.volume-toc{padding:40px 0;line-height:2}.book-section{margin-top:100px}.prose details{margin:1.8em 0;padding:18px 0;border-block:1px solid var(--line)}.prose summary{cursor:pointer;font:500 16px/1.6 var(--sans)}.prose details[open] summary{margin-bottom:16px}.chapter-head h1,.hero h1{letter-spacing:0}.tool-button{min-width:44px;min-height:44px}a:focus-visible,button:focus-visible{outline:2px solid var(--forest);outline-offset:3px}
+@media print{@page{size:A5;margin:16mm 14mm 18mm}html,body{background:white!important;color:#222!important}.volume{padding:0}.volume-cover{break-after:page;padding:32mm 0 0;border:0;min-height:140mm}.volume-cover h1{font-size:30pt}.volume-cover h2{font-size:18pt}.volume-cover p{font-size:10pt}.volume-toc{break-after:page;font-size:10pt;line-height:1.85;padding:0}.volume-toc h1{font-size:20pt}.book-section{break-before:page;margin:0}.chapter-head{padding-bottom:6mm;margin-bottom:8mm;break-after:avoid}.chapter-head h1{font-size:25pt}.chapter-number{font-size:9pt}.prose{font-size:10.5pt;line-height:1.75;orphans:3;widows:3}.prose>p:first-of-type{font-size:11pt}.prose h2{font-size:16pt;margin:1.4em 0 .7em;break-after:avoid}.prose h3{font-size:12pt;break-after:avoid}.prose table{min-width:0;font-size:8pt;table-layout:fixed}.prose td,.prose th{padding:6px;overflow-wrap:anywhere}.table-wrap{overflow:visible}.prose pre{background:#f2f2ec;color:#222;padding:10px;box-shadow:none;margin:10px 0;break-inside:auto}.prose pre code{white-space:pre-wrap;overflow-wrap:anywhere;font-size:7.5pt;line-height:1.6}.prose code{background:none;font-size:.8em}.prose ul{padding-left:1em}.prose li{overflow-wrap:anywhere}.prose a{text-decoration:none;color:#222}.prose details{font-size:9pt}.anchor{display:none}.book-section .prose li a{font-size:9pt}}
+.concept-diagram{margin:2em 0;overflow-x:auto;padding:18px 0;border-block:1px solid var(--line)}.concept-diagram svg{display:block;width:100%;min-width:620px;height:auto;color:var(--forest);font-family:var(--sans)}.concept-diagram figcaption{font:13px/1.5 var(--sans);color:var(--muted);margin-top:8px}
+
+/* ebook-reader-polish v1 */
+:root{--eb-light-accent:#174f42;--eb-dark-accent:#9bc8b3}
+/* Shared reading refinements. Embedded in each book so offline copies stay portable. */
+@media screen {
+  :root {
+    --eb-accent:var(--forest,var(--accent,var(--brand,#1b365d)));
+    --eb-line:var(--line,var(--rule,#d8d5c9));
+    --eb-panel:var(--paper-2,var(--paper-deep,var(--panel,#eeece2)));
+  }
+  html {scroll-padding-top:88px;scrollbar-color:var(--eb-line) var(--paper);scrollbar-width:thin}
+  :root[data-theme="light"] {color-scheme:light;--paper:#faf8f2;--paper-2:#f0ece2;--paper-deep:#f0ece2;--panel:#f0ece2;--ink:#262b27;--muted:#5d665e;--line:#d4d8ce;--rule:#d4d8ce;--code:#f0ece2;--code-ink:#283b33;--forest:var(--eb-light-accent,#29564c);--accent:var(--eb-light-accent,#29564c);--brand:var(--eb-light-accent,#29564c)}
+  :root[data-theme="dark"] {color-scheme:dark;--paper:#171d19;--paper-2:#222b24;--paper-deep:#222b24;--panel:#222b24;--ink:#e3e7de;--muted:#b0bbad;--line:#455044;--rule:#455044;--code:#202a24;--code-ink:#e3e7de;--forest:var(--eb-dark-accent,#9bc8b3);--accent:var(--eb-dark-accent,#9bc8b3);--brand:var(--eb-dark-accent,#9bc8b3)}
+  @media(prefers-color-scheme:dark) {:root:not([data-theme="light"]):not([data-theme="dark"]){color-scheme:dark;--paper:#171d19;--paper-2:#222b24;--paper-deep:#222b24;--panel:#222b24;--ink:#e3e7de;--muted:#b0bbad;--line:#455044;--rule:#455044;--code:#202a24;--code-ink:#e3e7de;--forest:var(--eb-dark-accent,#9bc8b3);--accent:var(--eb-dark-accent,#9bc8b3);--brand:var(--eb-dark-accent,#9bc8b3)}}
+  body {font-variant-numeric:tabular-nums;overflow-wrap:break-word}
+  .layout code,.layout pre {background:var(--eb-panel);color:var(--ink)}
+  .layout th {background:var(--eb-panel)}
+  .layout blockquote {border-left-width:1px}
+  .reading .lesson-note,.reading .book-diagram {background:var(--eb-panel)}
+  ::selection {background:color-mix(in srgb,var(--eb-accent) 22%,var(--paper));color:var(--ink)}
+  input {caret-color:var(--eb-accent)}
+  h1,h2,h3,h4 {text-wrap:balance;letter-spacing:0}
+  p,li {text-wrap:pretty}
+  .kicker,.eyebrow {display:none}
+  .topbar {background:var(--paper);backdrop-filter:none;min-height:64px;height:auto;gap:12px}
+  .brand {letter-spacing:0;min-width:0}
+  .brand-mark {transform:none;border:0;font-size:14px;font-weight:600;white-space:nowrap;min-width:44px;width:auto}
+  .hero {padding-top:64px;padding-bottom:48px;gap:56px}
+  .hero h1 {font-size:clamp(36px,4.5vw,58px);line-height:1.25;letter-spacing:0}
+  .hero .dek {font-size:21px;line-height:1.8;margin-top:22px;max-width:34em}
+  .hero-aside {font-size:14px;line-height:1.8;border-left:1px solid var(--eb-line)}
+  .home-grid {padding-top:42px}
+  .home-intro {font-size:15px;line-height:1.8}
+  .chapter-row {gap:18px;padding:21px 4px;transition:background-color 120ms ease-out}
+  .chapter-row h3 {font-size:22px;line-height:1.5;letter-spacing:0}
+  .chapter-row p {font-size:14px;line-height:1.7;margin-top:6px}
+  .chapter-row:focus-visible {outline-offset:-2px}
+  .reader-layout {grid-template-columns:220px minmax(0,780px);gap:64px;padding-top:44px}
+  .chapter-rail {font-size:14px;line-height:1.65;top:96px;max-height:calc(100dvh - 120px)}
+  .rail-label {letter-spacing:.03em}
+  .rail-title {font-size:17px;line-height:1.65}
+  .chapter-rail li a {padding:11px 4px}
+  .chapter-rail a[aria-current="location"],nav.toc>a[aria-current="location"] {color:var(--eb-accent);font-weight:600;text-decoration:underline;text-underline-offset:5px}
+  .chapter-head {padding-bottom:28px;margin-bottom:32px}
+  .chapter-head h1 {font-size:clamp(32px,3.6vw,46px);line-height:1.4;letter-spacing:0}
+  .chapter-meta {font-size:14px;line-height:1.8}
+  .chapter-number {letter-spacing:.02em}
+  .prose,.content,.reading {line-height:1.9;letter-spacing:0}
+  .prose>p:first-of-type {font-size:inherit;line-height:inherit}
+  .prose p,.content p,.reading p {margin-bottom:1.25em}
+  .prose h2,.content h2,.reading h2 {font-size:1.45em;line-height:1.5;letter-spacing:0;margin-top:2.1em;margin-bottom:.7em;border-left:0;padding-left:0}
+  .prose h3,.content h3,.reading h3 {font-size:1.15em;line-height:1.6}
+  .prose blockquote,.reading blockquote {font-style:normal;border-left-width:1px}
+  .anchor {opacity:.55;padding:4px}
+  .table-wrap {max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-width:thin;margin:1.7em 0}
+  .table-wrap table {min-width:560px;font-size:15px;line-height:1.75;table-layout:auto}
+  .table-wrap:focus-visible,pre:focus-visible {outline:2px solid var(--eb-accent);outline-offset:4px}
+  pre {max-width:100%;tab-size:4;overscroll-behavior-inline:contain;scrollbar-width:thin;box-shadow:none}
+  .prose pre,.content pre {padding:54px 22px 22px}
+  .prose pre code,.content pre code {font-size:14px;line-height:1.8}
+  .copy {min-height:44px;min-width:52px;top:5px;right:8px;font-size:12px;border-color:color-mix(in srgb,var(--code-ink,var(--ink)) 35%,transparent);background:var(--code);color:var(--code-ink,var(--ink))}
+  .book {width:min(100% - 48px,780px);padding-top:46px}
+  .home-title {font-size:clamp(34px,4.5vw,52px);line-height:1.3;letter-spacing:0}
+  .content h1 {font-size:clamp(30px,3.5vw,42px);line-height:1.45}
+  .deck {line-height:1.85}
+  .resume {box-shadow:none;border-block:1px solid var(--eb-line);padding:20px 0;background:transparent}
+  .toolbar {display:none}
+  .control,.tool-button {min-height:44px;min-width:44px;font-size:14px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none}
+  [data-reader-theme] {appearance:none;background:transparent;border:1px solid var(--eb-line);color:var(--muted);border-radius:3px;padding:8px 10px;cursor:pointer;font:14px/1.6 var(--sans,"Noto Sans CJK SC",sans-serif)}
+  button,a,input,summary {touch-action:manipulation}
+  a:focus-visible,button:focus-visible,summary:focus-visible,input:focus-visible {outline:2px solid var(--eb-accent);outline-offset:3px}
+  .search-input {font-size:20px;min-height:52px;border-radius:2px}
+  .search-page h1 {font-size:clamp(32px,4vw,48px);line-height:1.4;letter-spacing:0}
+  .search-hit h2 {line-height:1.6}
+  .reader-book-toc {position:sticky;top:28px;align-self:start;max-height:calc(100dvh - 60px);overflow:auto}
+  .reader-book-toc>summary {display:none}
+  .reader-book-toc nav.toc {position:static;max-height:none}
+  .reader-mobile-toc {display:none}
+  .reader-mobile-toc summary {min-height:48px;cursor:pointer;display:flex;align-items:center;font:500 15px/1.7 "Noto Sans CJK SC",sans-serif}
+  .reader-mobile-toc ol {margin:0 0 18px;padding-left:22px;font:15px/1.8 "Noto Sans CJK SC",sans-serif}
+  .reader-mobile-toc a {display:block;padding:8px 0;text-decoration:none}
+  .cover {padding-top:58px;padding-bottom:46px}
+  .cover h1 {font-size:clamp(36px,4.5vw,58px);line-height:1.3;letter-spacing:0}
+  .cover .intro {line-height:1.85}
+  .layout {grid-template-columns:225px minmax(0,780px);gap:52px;max-width:1180px}
+  .layout>main {max-width:780px;font-size:20px;line-height:1.9}
+  .layout h1#cover {font-size:44px;line-height:1.4;letter-spacing:0}
+  .layout h1 {line-height:1.5;letter-spacing:0}
+  .layout h2 {border-left:0;padding-left:0;margin-top:2em}
+  nav.toc>a {padding:10px 4px}
+  .tools a,.tools button {min-height:44px;display:inline-flex;align-items:center;justify-content:center}
+  .volume {display:block;max-width:880px}
+  @media(max-width:1000px) {
+    .reader-layout {display:block;max-width:828px;padding-inline:24px}
+    .chapter-rail {display:none}
+    .reader-book-toc {position:static;max-height:none;margin-bottom:30px;border-bottom:1px solid var(--eb-line)}
+    .reader-book-toc>summary {display:flex;align-items:center;min-height:48px;cursor:pointer;font:500 16px/1.7 sans-serif}
+    .reader-mobile-toc {display:block;border-block:1px solid var(--eb-line);margin:0 0 32px}
+    .layout {display:block;padding:28px 24px 80px}
+    nav.toc {columns:2;position:static;max-height:none}
+  }
+  @media(max-width:700px) {
+    .topbar {padding:8px 14px;gap:6px;flex-wrap:wrap}
+    .brand {font-size:14px;line-height:1.6;max-width:100%;overflow-wrap:anywhere}
+    .brand span:last-child {display:none}
+    .topbar .tools {margin-left:auto;gap:0}
+    .topbar .spacer {min-width:0}
+    .hero {display:block;padding:38px 20px 34px}
+    .hero h1 {font-size:36px;line-height:1.4}
+    .hero .dek {font-size:19px;line-height:1.9}
+    .hero-aside {margin-top:28px;border-left:0;border-top:1px solid var(--eb-line);padding:20px 0 0}
+    .home-grid {display:block;padding:30px 20px 70px}
+    .home-intro {position:static;margin-bottom:28px}
+    .chapter-row h3 {font-size:20px}
+    .reader-layout {padding:30px 20px 80px}
+    .chapter-head h1 {font-size:32px}
+    .prose,.content,.reading {line-height:1.9}
+    .prose pre {margin-inline:0;padding-inline:16px}
+    .book {width:calc(100% - 40px);padding-top:32px}
+    .home-title,.content h1 {font-size:32px;line-height:1.4}
+    .topbar .brand {max-width:calc(100% - 150px);white-space:normal}
+    .reader-tools {flex-wrap:wrap}
+    .bar-inner {gap:8px;flex-wrap:wrap}
+    .layout>main {font-size:19px}
+    .layout h1#cover {font-size:34px}
+    nav.toc {columns:1}
+    .search-page {padding-top:36px}
+    .chapter-nav {margin-top:44px}
+  }
+  @media(prefers-reduced-motion:reduce) {html{scroll-behavior:auto}.chapter-row,.control{transition:none}}
+}
+@media print {.reader-mobile-toc,.reader-book-toc,[data-reader-theme],.copy{display:none!important}}
+
+@media screen and (max-width:520px){.concept-diagram svg{min-width:560px}}
+@media print{.concept-diagram{break-inside:avoid;overflow:visible;padding:10px 0}.concept-diagram svg{min-width:0;width:100%;max-width:100%}.concept-diagram figcaption{font-size:8pt}}
+</style>
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="#main"><span class="brand-mark">∞</span><span>Infinity 架构解剖</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <span class="tool-button">Ctrl+F 查找</span>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout volume"><article class="chapter"><section class="volume-cover"><p>源码驱动的架构解剖 · hydro-project/infinity</p><h1>Infinity 架构解剖</h1><h2>面向高并发 Agent 的无阻塞运行时与响应式工具协议</h2><p>前言 · 13 章 · 附录</p><p>hydro-project/infinity<br>e1a3e4b36e5f6143e03a59a7ad86e1abacfd22e8<br>上游提交 2026-11-05 · 采集核验 2026-11-22</p><p>独立源码分析，非官方文档。基于静态源码拆解与离线教学模型核验，不代表真实云端生产压测。</p></section><section class="volume-toc"><h1>全书目录</h1><ol><li><a href="#00-preface">前言：为什么一台树莓派能装下七万五千个 Agent</a></li><li><a href="#01-blocking-trap">阻塞式 Agent 的死结与无阻塞切片不变量</a></li><li><a href="#02-workspace-topology">21 个 Crate 的分层版图与类型化 ID 体系</a></li><li><a href="#03-slice-and-history">切片执行循环与三阶段 HistoryManager</a></li><li><a href="#04-rap-protocol">响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</a></li><li><a href="#05-threading-compaction">线程树、上下文继承与位置索引压缩</a></li><li><a href="#06-local-actor-deferral">单线程本地调度器、延迟队列与抢占打断</a></li><li><a href="#07-provider-error-boundary">模型供应协议、跨进程隔离与错误分类契约</a></li><li><a href="#08-stacked-sandboxes">堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</a></li><li><a href="#09-daemon-remote-migration">本地守护进程、SSH 远程代理与跨主机热迁移</a></li><li><a href="#10-serverless-aws">零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</a></li><li><a href="#11-clients-and-hydro-dataflow">多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</a></li><li><a href="#12-tradeoffs-and-limits">失败模式、安全边界与架构取舍</a></li><li><a href="#13-mini-infinity">零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</a></li><li><a href="#appendix-sources">附录：源码索引、实测统计与核心术语对照</a></li></ol></section><section class="book-section" id="00-preface"><header class="chapter-head"><div class="chapter-number">00</div><h1>前言：为什么一台树莓派能装下七万五千个 Agent</h1></header><div class="prose"><p>线上跑过长周期 Coding Agent 或运维 Agent 的人，大概率撞过同一堵墙：模型只花了三秒钟决定触发一次 CI 构建，或者发出一条等待人工审批的工单，接下来的二十分钟甚至三天里，整个 Agent 进程却只能挂在那里干等。stdio 管道不能关，HTTP 会话不能断，协程栈和内存上下文不能放，扔进 AWS Lambda 还会撞上十五分钟执行上限。把并发量拉到几百个，内存和闲置算力账单立刻失控；如果再让多个子 Agent 同时改同一个代码仓库，工作目录里很快就会出现互相覆盖的脏文件。</p>
+<p>UC Berkeley Hydro 团队开源的 <code>hydro-project/infinity</code> 从头拆解了这套阻塞假设。它把异步运行时的思想搬进了 Agent 系统：单次执行切片（slice）绝不阻塞在外部工具上。模型一旦吐出异步工具调用，运行时先把这一轮对话刷进持久化存储，发出一次即发即忘（fire-and-forget）的 HTTP POST，随后立刻退出当前切片。两轮之间，一个等待中的 Agent 在系统里只剩几行历史记录，没有驻留任务，没有调用栈，也没有打开的网络连接。等几分钟或几天后工具把结果推回回调地址，运行时再按线程 ID 重新加载历史、继续推理。</p>
+<p>沿着这条主线，<code>infinity</code> 在同一个 Rust 工作区里搭出了三层互相咬合的工程组件：</p>
+<ul>
+<li><strong>Infinity Runtime</strong>（<code>infinity-agent-core</code> 与 <code>infinity-agent-lambda</code>），负责切片执行、三阶段历史缓冲、去重、线程树、位置索引压缩，以及同一套核心逻辑在本地常驻进程与 AWS Lambda 无服务器环境之间的复用。</li>
+<li><strong>Reactive Agent Protocol（RAP）</strong>（<code>rap-protocol</code>、<code>rap-client</code>、<code>infinity-rap-bridge</code> 与 <code>infinity-mcp-bridge</code>），用无状态 HTTP 触发加异步回调取代长连接会话，原生支持长耗时工具、事件订阅、OAuth 授权、人工确认弹窗、前端视图更新与跨机迁移，同时通过桥接层兼容现有 MCP 服务。</li>
+<li><strong>Infinity Code 与堆叠沙箱</strong>（<code>infinity-daemon</code>、<code>infinity-agent-cli</code>、<code>sandbox-core</code>、<code>sandbox-local</code>、<code>sandbox-remote</code>），面向本地与远程机器的并发编码代理。每个线程拿到独立的 Jujutsu 工作区或 Git worktree，并通过 macOS <code>sandbox-exec</code> 或 Linux Bubblewrap 限制写权限，并行干活后再把子沙箱压缩合回父书签，宿主工作目录始终保持干净。</li>
+</ul>
+<h2 id="00-preface--本书依据的源码快照与研究边界">本书依据的源码快照与研究边界<a class="anchor" href="#00-preface--本书依据的源码快照与研究边界" aria-label="链接到本节">#</a></h2>
+<p>全书所有模块路径、类型签名、协议字段、常数与设计取舍，全部直接核验自上游仓库的固定快照：</p>
+<ul>
+<li>仓库：<code>https://github.com/hydro-project/infinity</code>（Apache-2.0 许可证）</li>
+<li>提交 SHA：<code>e1a3e4b36e5f6143e03a59a7ad86e1abacfd22e8</code>（<code>2026-11-05</code>，<code>docs: explain Linux sandbox prerequisites (#188)</code>）</li>
+<li>规模实测：21 个 Rust workspace crate，169 个 <code>.rs</code> 文件（57,969 行 Rust 代码），配套 <code>agent/</code>（AWS CDK）、<code>infinity-ui/</code>、<code>infinity-web/</code> 前端代码与 51 篇官方文档。</li>
+</ul>
+<p>本书属于独立源码架构分析，不是官方文档。凡涉及性能数字（比如 80,000 个空闲 Agent 占约 8.4 GB RSS），均明确标注其来自上游基准代码 <code>crates/infinity-agent-core/examples/agent_scale.rs</code> 与文档图表 <code>docs/src/components/MemoryChart.tsx</code> 的记录，作者未在真实 AWS Bedrock 或生产 Lambda 集群上重新跑压测。第 13 章附带的零依赖 Python 教学实现与 19 个单元测试则在本地离线实际运行并通过，用来验证核心不变量而非替代生产运行时。</p>
+<h2 id="00-preface--怎么读这本书">怎么读这本书<a class="anchor" href="#00-preface--怎么读这本书" aria-label="链接到本节">#</a></h2>
+<p>如果你关心高并发 Agent 为什么能压低空闲内存并无缝缩容到零，先读第 1 到第 3 章，把无阻塞切片、<code>HistoryManager</code> 的三阶段缓冲和落盘屏障看透。</p>
+<p>如果你想设计异步工具协议、对接外部 Webhook 或改造现有 MCP 服务，重点看第 4、第 5 与第 7 章，里面拆解了 RAP 回调、事件子线程、位置索引压缩和供应器错误分类契约。</p>
+<p>如果你想把多 Agent 并发改代码落到本机或远程开发机，直接看第 6、第 8、第 9 章，对照本地单线程路由器、<code>jj</code>/<code>git</code> 堆叠沙箱、Linux <code>bwrap</code> 写边界和跨机热迁移的完整实现。第 12 章集中列出源码中已经暴露的边界和未完成项，第 13 章提供可以直接单步调试的 Python 教学模型。</p>
+</div></section><section class="book-section" id="01-blocking-trap"><header class="chapter-head"><div class="chapter-number">01</div><h1>阻塞式 Agent 的死结与无阻塞切片不变量</h1></header><div class="prose"><p>让一个编码 Agent 在真实仓库里跑 <code>cargo test --workspace</code>，或者让运维 Agent 等一个 GitHub PR 通过人工审批，传统同步循环很快会露馅。模型在第 1 秒吐出一条工具调用，工具需要跑二十分钟，MCP 的 stdio 管道或 HTTP SSE 会话就必须一直开着，调用栈上的异步任务、内存里的整段对话历史和宿主进程谁都不能退。把这套模式搬到多 Agent 并行场景，问题会成倍放大：一百个等待 Webhook 的 Agent 占着一百份常驻内存和一百条长连接；放到 AWS Lambda 这类按毫秒计费、单次调用最多十五分钟的无服务器平台上，等待本身就直接变成超时故障和纯浪费账单。</p>
+<h2 id="01-blocking-trap--为什么传统-agent-架构卡在等待上">为什么传统 Agent 架构卡在等待上<a class="anchor" href="#01-blocking-trap--为什么传统-agent-架构卡在等待上" aria-label="链接到本节">#</a></h2>
+<p>常规 Agent 框架把一轮多步任务写成一条长循环：<code>while !done { call_llm(); await call_tool(); }</code>。这种写法把两件性质截然不同的事情绑死在同一个操作系统进程生命周期里。</p>
+<p>大模型推理和本地状态更新属于短时、有界的计算，通常几秒到几十秒结束。而外部世界里的工具耗时完全无界：跑完一轮集成测试可能要二十分钟，等一位同事在 Slack 里点下确认按钮可能要两小时，订阅一个仓库的 PR 动态更是按周甚至按月计算。一旦运行时在 <code>await call_tool()</code> 上挂住，进程亲和性就被锁死了。结果回包必须回到原来那台机器、原来的那个进程、原来的那条管道；机器重启或容器回收，这轮任务就断了线。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 316" width="640" height="316" role="img" aria-label="阻塞式 Agent 与 Infinity 无阻塞切片对比">
+<title>阻塞式 Agent 与 Infinity 无阻塞切片对比</title>
+<defs><marker id="01-blocking-trap--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker><marker id="01-blocking-trap--arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--amber)"/></marker><marker id="01-blocking-trap--arrow-forest" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--forest)"/></marker></defs>
+<text x="10" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--amber)" text-anchor="start">传统阻塞模型：等待期间进程、栈与连接全程常驻</text><rect x="10" y="28" width="620" height="88" rx="4" fill="none" stroke="var(--amber)" stroke-width="1" stroke-dasharray="4 3"/><rect x="22" y="42" width="138" height="60" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="32" y="61" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--ink)" text-anchor="start">LLM 轮次 1</text><text x="32" y="78" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">决定调用 CI 构建</text><text x="32" y="94" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">占用常驻任务栈</text><line x1="160" y1="72" x2="192" y2="72" stroke="var(--amber)" stroke-width="1.2" marker-end="url(#arrow-amber)"/><rect x="194" y="42" width="246" height="60" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="204" y="61" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--amber)" text-anchor="start">阻塞等待工具返回 (20 分钟+)</text><text x="204" y="78" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">stdio/HTTP 会话不能断</text><text x="204" y="94" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">Lambda 超时、空闲内存无法回收</text><line x1="440" y1="72" x2="472" y2="72" stroke="var(--amber)" stroke-width="1.2" marker-end="url(#arrow-amber)"/><rect x="474" y="42" width="144" height="60" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="484" y="61" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--ink)" text-anchor="start">LLM 轮次 2</text><text x="484" y="78" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">继续消费结果</text><text x="484" y="94" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">期间始终按时长计费</text><text x="10" y="146" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--forest)" text-anchor="start">Infinity 无阻塞切片模型：派发即让出，等待期间纯数据休眠</text><rect x="10" y="156" width="620" height="148" rx="4" fill="none" stroke="var(--forest)" stroke-width="1.2"/><rect x="22" y="170" width="174" height="72" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="32" y="189" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--forest)" text-anchor="start">切片 1 (Slice)</text><text x="32" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">加载历史 -&gt; 模型流式输出</text><text x="32" y="222" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">先 sync() 落盘再 POST</text><text x="32" y="238" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">收到 200 ACK 立即退出</text><line x1="196" y1="206" x2="226" y2="206" stroke="var(--forest)" stroke-width="1.2" marker-end="url(#arrow-forest)"/><rect x="228" y="170" width="184" height="72" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="238" y="189" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--ink)" text-anchor="start">休眠期 (0 驻留任务)</text><text x="238" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">仅存历史与状态表</text><text x="238" y="222" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">无进程、无栈、无长连接</text><text x="238" y="238" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">本地退驱动 / Lambda 缩零</text><line x1="412" y1="206" x2="442" y2="206" stroke="var(--forest)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow-forest)"/><rect x="444" y="170" width="174" height="72" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="454" y="189" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11" font-weight="600" fill="var(--forest)" text-anchor="start">切片 2 (新唤醒)</text><text x="454" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">RAP 回调 POST -&gt; 入队</text><text x="454" y="222" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">按 group_id 重载历史</text><text x="454" y="238" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">去重匹配后继续下一轮</text><text x="22" y="268" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">单线程串行与多线程并发由队列层 group_id (SQS FIFO / 本地 mpsc 路由) 保障，运行时无需分布式锁。</text><text x="22" y="288" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="600" fill="var(--forest)" text-anchor="start">实测基准 (agent_scale.rs): 80,000 个空闲 Agent 共占约 8.4 GB RSS，约 102 KiB/Agent。</text>
+</svg>
+<figcaption>阻塞式 Agent 与 Infinity 无阻塞切片对比</figcaption></figure>
+<p>上面这张图对比了两种执行模型的分叉点。上半部分是传统阻塞循环，进程在二十分钟等待期里全程在线；下半部分是 Infinity 的解法，把长循环切碎成一个个彼此独立、绝不等待外部 I/O 的执行切片（slice）。</p>
+<h2 id="01-blocking-trap--一条核心不变量-切片绝不阻塞">一条核心不变量：切片绝不阻塞<a class="anchor" href="#01-blocking-trap--一条核心不变量-切片绝不阻塞" aria-label="链接到本节">#</a></h2>
+<p>阅读 <code>docs/docs/infinity-runtime/architecture.md</code> 和 <code>crates/infinity-agent-core/src/system/thread.rs</code>，整个 Infinity 运行时的设计都围绕同一条约束展开：<strong>单个执行切片绝不阻塞在任何外部操作上</strong>。</p>
+<p>这条约束逼出了四个连环设计决策：</p>
+<ol>
+<li><strong>万物皆消息（Everything is a message）</strong>，<code>crates/infinity-agent-core/src/message.rs</code> 里只定义了一种入口信封 <code>InputMessage</code>。用户输入、异步工具结果、外部订阅事件、子线程回报、OAuth 跳转请求、人工选择弹窗、上下文压缩指令以及定时器唤醒，全都包装成 <code>InputMessage</code> 投进输入队列，通过 <code>group_id: ThreadId</code> 路由到对应线程。进程里不存在一个记录着正在等工具 X 或睡到早上九点的内存状态机。</li>
+<li><strong>先落盘、再派发、立刻让出</strong>，当模型决定调用异步工具时，切片先执行 <code>HistoryManager::sync()</code> 把本轮对话与工具调用写入持久化存储，然后向工具服务器发出一次无状态的 HTTP POST（携带 <code>callback_url</code>），只要对方回一个 <code>2xx</code> 确认收到，当前切片立刻结束。本地常驻驱动退出当前任务，Lambda 函数直接结束进程。</li>
+<li><strong>跨线程并发靠队列分组，不靠分布式锁</strong>，同一个线程的两次切片不能并发读写同一份历史，否则消息顺序会乱；不同线程之间没有共享可变状态，应该彻底并行。Infinity 没有在运行时里手写分布式锁，而是把串行约束直接交给队列层：AWS 侧用 SQS FIFO 的 <code>MessageGroupId</code> 绑定 <code>group_id</code>，本地侧用 <code>route_loop</code> 为每个活跃 <code>ThreadId</code> 维护单条 <code>mpsc</code> 通道。</li>
+<li><strong>重投递安全靠持久化去重与尾扫</strong>，队列只能保证至少一次投递（at-least-once），因此每个切片必须幂等。用户输入与订阅事件在 <code>StateStore</code> 中记录已处理 ID；工具结果则直接逆向扫描历史尾部匹配待应答调用，重复送达自动丢弃。</li>
+</ol>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>传统阻塞式 Agent（如直连 MCP）</th>
+<th>Infinity 无阻塞切片运行时</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>工具等待期资源占用</td>
+<td>进程、任务栈、连接与内存历史全程常驻</td>
+<td>仅持久化存储中的历史行，无任务、无栈、无连接</td>
+</tr>
+<tr>
+<td>进程亲和性</td>
+<td>强绑定原进程与 stdio/SSE 通道</td>
+<td>无亲和性，任意进程按 <code>ThreadId</code> 重载历史继续</td>
+</tr>
+<tr>
+<td>适用等待时长</td>
+<td>秒级到分钟级，长等待依赖轮询或保活</td>
+<td>百毫秒到数天等价，成本只与实际推理切片成正比</td>
+</tr>
+<tr>
+<td>单线程并发控制</td>
+<td>进程内锁或粘性路由</td>
+<td>队列层按 <code>group_id</code> 保证每线程 FIFO，无分布式锁</td>
+</tr>
+<tr>
+<td>Serverless 适配</td>
+<td>只能硬扛空闲计费与超时上限</td>
+<td>原生契合 Lambda 缩容到零，平台缩容即休眠</td>
+</tr>
+</tbody></table></div>
+<h2 id="01-blocking-trap--七万五千个-agent-放进树莓派是怎么测出来的">七万五千个 Agent 放进树莓派是怎么测出来的<a class="anchor" href="#01-blocking-trap--七万五千个-agent-放进树莓派是怎么测出来的" aria-label="链接到本节">#</a></h2>
+<p>README 开篇提到 Infinity 轻到能在一台树莓派内存里装下 75,000 个 Agent。这句宣传语背后对应的真实代码是 <code>crates/infinity-agent-core/examples/agent_scale.rs</code>，以及文档里嵌的实测数据 <code>docs/src/components/MemoryChart.tsx</code>。</p>
+<p>拆开 <code>agent_scale.rs</code> 看测量口径很清楚：基准程序在一个单线程 <code>tokio::task::LocalSet</code> 上启动 <code>LocalAgentSystem</code>，使用内存版 <code>InMemoryConversationStore</code> 和 <code>InMemoryStateStore</code>，配合一个进程内脚本化模型 <code>ScriptedModel</code> 和异步回环工具 <code>RunCommand</code>。每个 Agent 真实走完 20 轮完整切片链路，每轮包含两次模型流式补全（每次 12 块、共约 1.2 KB 文本）加一次异步工具经队列回传。每跑完一波（<code>WAVE=4000</code>），程序等待所有线程驱动退出进入空闲态，排空生命周期通道，调用 Linux 的 <code>libc::malloc_trim(0)</code> 把分配器缓存还给内核，再读取 <code>/proc/self/status</code> 里的 <code>VmRSS</code>。</p>
+<p>上游在 AMD EPYC 9R14 上跑 <code>AGENTS=80000 TURNS=20 WAVE=4000</code> 的记录如下：</p>
+<ul>
+<li>0 个 Agent 基准 RSS：5,304,320 字节（约 5.3 MB）。</li>
+<li>40,000 个空闲 Agent：4,348,772,352 字节（约 4.35 GB）。</li>
+<li>80,000 个空闲 Agent：8,406,446,080 字节（约 8.41 GB）。</li>
+<li>线性斜率折算：约 <strong>102 KiB / Agent</strong>。</li>
+</ul>
+<p>按这个斜率外推，8 GB 内存的树莓派确实能装下约 75,000 个各带 20 轮对话历史的空闲 Agent。不过必须把口径看清：这 102 KiB 几乎全是 20 轮历史字符串本身在 <code>InMemoryConversationStore</code> 里的存储体积，之所以没有额外膨胀，是因为本地路由器 <code>route_loop</code> 直接把每个线程驱动放进 <code>FuturesUnordered</code>，线程一旦空闲就立刻退出并释放整个 <code>drive_thread</code> future 与 <code>HistoryManager</code> 缓存。如果换成真正驻留的大内存工具进程，或者成千上万个线程同时处于模型流式推理中，峰值内存会取决于同时活跃的切片数，而不是总注册 Agent 数。</p>
+<h2 id="01-blocking-trap--同步工具的例外-为什么要允许切片内回环">同步工具的例外：为什么要允许切片内回环<a class="anchor" href="#01-blocking-trap--同步工具的例外-为什么要允许切片内回环" aria-label="链接到本节">#</a></h2>
+<p>并非所有工具都适合发出去然后结束切片。以内置的 <code>spawn_thread</code> 为例，它在 <code>ConversationStore</code> 里写几条元数据、往队列丢一条子线程启动消息，几微秒就能完成。如果让它也走异步让出，不仅白白多出一次存储重载和切片调度，还会引出一个隐蔽竞态：父线程刚派发 <code>spawn_thread</code> 就退出了切片，紧接着一条无关的并发事件抢在 <code>spawn_thread</code> 的结果之前抵达父线程，父线程就会以为 <code>spawn_thread</code> 被中断了，可实际上子线程早就已经启动并在后台跑起来了。</p>
+<p>因此 <code>Tool</code> trait 在 <code>crates/infinity-agent-core/src/tools/mod.rs</code> 里特意留了 <code>supports_sync()</code> 和 <code>execute_synchronous()</code> 两个钩子。当 <code>run_completion</code> 在流里碰到同步工具调用，或者碰到模型幻觉出来的未知工具名时，运行时不会结束切片，而是当场内联执行（或注入错误结果），把结果塞回当前内存历史，在同一个切片里直接发起下一轮模型推理。只有真正跨进程或跨网络的异步工具才会触发落盘屏障与切片让出。</p>
+<p>这种切分把状态变更极快、怕竞态的元操作留在切片内部当场完成，把一切耗时不可控的外部调用隔离在队列边界之外。</p>
+</div></section><section class="book-section" id="02-workspace-topology"><header class="chapter-head"><div class="chapter-number">02</div><h1>21 个 Crate 的分层版图与类型化 ID 体系</h1></header><div class="prose"><p>打开一个近六万行 Rust 代码的多 crate 仓库，最容易迷失在交叉依赖里：本地守护进程、AWS Lambda、CLI 终端、Slack 机器人、MCP 桥接和 Jujutsu 沙箱全挤在同一个 <code>Cargo.toml</code> 下面，它们之间到底谁依赖谁，共享了哪些契约，又在哪里画出了硬隔离边界？</p>
+<p>把 <code>crates/</code> 目录下的 21 个成员按依赖方向自顶向下摊开，整座系统其实只有五层，而且上下层之间的耦合压得很低。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 416" width="640" height="416" role="img" aria-label="Infinity 21 个 Crate 的五层依赖版图">
+<title>Infinity 21 个 Crate 的五层依赖版图</title>
+<defs><marker id="02-workspace-topology--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker><marker id="02-workspace-topology--arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--amber)"/></marker><marker id="02-workspace-topology--arrow-forest" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--forest)"/></marker></defs>
+<text x="10" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">21 个 Workspace Crate 的五层依赖版图 (自顶向下调用)</text><rect x="10" y="30" width="620" height="58" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="20" y="49" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--forest)" text-anchor="start">交互前端与部署外壳 (5 Crates)</text><text x="20" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">infinity-agent-cli (TUI/ACP) · infinity-daemon · infinity-agent-lambda · slack-bot · slack-dataflow</text><text x="20" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">面向终端、桌面 Web、Zed/ACP、AWS Lambda 与 Slack 的运行宿主</text><line x1="320" y1="88" x2="320" y2="102" stroke="var(--line)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="10" y="102" width="620" height="58" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="20" y="121" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--amber)" text-anchor="start">核心切片运行时 (2 Crates)</text><text x="20" y="138" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">infinity-agent-core (event_processor / HistoryManager / local router &amp; driver) · infinity-mdtests</text><text x="20" y="154" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">全部状态机、三阶段缓冲、线程树、位置索引压缩与单线程 Actor 调度</text><line x1="320" y1="160" x2="320" y2="174" stroke="var(--line)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="10" y="174" width="620" height="58" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="20" y="193" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">工具桥接与标准 RAP 服务 (6 Crates)</text><text x="20" y="210" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">rap-client · infinity-rap-bridge · infinity-mcp-bridge · steering-server · github-poller · test-servers</text><text x="20" y="226" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">统一回调转换 prepare_callback、MCP JSON-RPC 适配、规则扫描与 GitHub 订阅轮询</text><line x1="320" y1="232" x2="320" y2="246" stroke="var(--line)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="10" y="246" width="620" height="58" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="20" y="265" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">堆叠沙箱子系统 (3 Crates)</text><text x="20" y="282" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">sandbox-core (SandboxBackend/ModeProvider) · sandbox-local (jj/git + bwrap) · sandbox-remote (EFS)</text><text x="20" y="298" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">按线程隔离工作区、命令流式输出、OS 写隔离、审批弹窗与 git bundle 跨机迁移</text><line x1="320" y1="304" x2="320" y2="318" stroke="var(--line)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="10" y="318" width="620" height="58" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="20" y="337" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--forest)" text-anchor="start">底层线缆协议与模型供应 (5 Crates)</text><text x="20" y="354" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">rap-protocol (类型化 ID) · infinity-protocol (ThreadRef) · provider-protocol (ErrorClass) · bedrock · rig</text><text x="20" y="370" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">跨进程与跨网络稳定契约：strkind 强类型 ID、Unix Socket 供应器与结构化错误分类</text><text x="10" y="402" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="400" fill="var(--muted)" text-anchor="start">辅助 TS 子项目: agent/ (AWS CDK 部署栈) · infinity-ui/ (共享 React 组件) · infinity-web/ (Vite 桌面端)</text>
+</svg>
+<figcaption>Infinity 21 个 Crate 的五层依赖版图</figcaption></figure>
+<h2 id="02-workspace-topology--五层-crate-拓扑与各自职责">五层 Crate 拓扑与各自职责<a class="anchor" href="#02-workspace-topology--五层-crate-拓扑与各自职责" aria-label="链接到本节">#</a></h2>
+<p>最底层是<strong>线缆协议与模型供应层</strong>，包含 5 个 crate，定义了跨进程和跨网络的稳定数据结构，不依赖核心状态机。<code>rap-protocol</code>（392 行）只放 RAP 协议消息、基础类型化 ID 和 <code>CallbackClient</code> trait；<code>infinity-protocol</code>（613 行）定义客户端和守护进程之间的 <code>ClientMessage</code>/<code>DaemonMessage</code> 以及 <code>ThreadRef</code>；<code>infinity-provider-protocol</code>（1,280 行）抽离出 <code>ModelProvider</code> trait、<code>StreamChunk</code>、<code>ErrorClass</code> 和 Unix Socket 跨进程协议，让 <code>infinity-provider-bedrock</code>（1,445 行）与 <code>infinity-provider-rig</code>（504 行）既可以直接链接进进程，也可以作为独立子进程被守护进程托管。</p>
+<p>往上一层是<strong>堆叠沙箱子系统</strong>，由 3 个 crate 组成。<code>sandbox-core</code>（3,902 行）实现了整套 Axum HTTP RAP 沙箱服务、<code>SandboxBackend</code> 与 <code>ModeProvider</code> 两个核心 trait、流式命令执行以及 <code>git bundle</code> 迁移导入导出；<code>sandbox-local</code>（4,911 行，含大量集成测试）在其上实现本地 <code>jj</code>/<code>git</code> 工作区管理和 macOS <code>sandbox-exec</code> / Linux <code>bwrap</code> 写隔离；<code>sandbox-remote</code>（534 行）则实现面向 AWS Lambda 的 EFS 裸仓镜像后端。</p>
+<p>第三层是<strong>工具桥接与标准 RAP 服务层</strong>，包含 6 个 crate。<code>rap-client</code>（515 行）封装 HTTP 客户端、工具清单加载缓存、本地回调监听和 <code>RapNotifier</code> 生命周期通知；<code>infinity-rap-bridge</code>（704 行）提供守护进程与 AWS <code>rap-receiver</code> 共用的 <code>prepare_callback</code> 转换器，避免本地和云端在回调解析上漂移；<code>infinity-mcp-bridge</code>（797 行）负责把 Stdio 和 Streamable HTTP 两类 MCP 服务适配成 Infinity 工具；<code>rap-steering-server</code>（348 行）与 <code>rap-github-event-poller</code>（715 行）是两个开箱即用的真实 RAP 服务；<code>rap-test-servers</code>（246 行）供集成测试使用。</p>
+<p>第四层是整座仓库的心脏，<strong>核心切片运行时</strong>。<code>infinity-agent-core</code> 独占 15,372 行代码（占全仓四分之一以上），内部包含 <code>event_processor.rs</code>（切片三阶段逻辑与 <code>HistoryManager</code>，单文件 5,209 行含测试）、<code>system/</code>（<code>AgentSystemBuilder</code>、<code>Thread</code>、本地单线程路由器与驱动、<code>DeferQueue</code>）、<code>tools/</code>（<code>spawn_thread</code>、<code>report_to_parent</code>、<code>close_thread</code>、<code>send_message_to_child</code>、<code>cancel_subscription</code>、<code>sleep</code> 家族与 <code>RapTool</code>）和 <code>stores.rs</code>（内存版默认存储）。旁边的 <code>infinity-mdtests</code>（100 行）负责把 <code>docs/docs/infinity-runtime/**/*.md</code> 里的 44 段代码示例自动编进 Rust 测试，确保文档示例不会和主干 API 脱节。</p>
+<p>最顶层是<strong>交互前端与部署外壳</strong>，共 5 个 Rust crate 外加 3 个 TypeScript 目录。<code>infinity-daemon</code>（9,215 行）是本地常驻守护进程，把 <code>infinity-agent-core</code>、本地 JSON 持久化、SSH 远程代理、热迁移编排和 WebSocket 前端打包在一起；<code>infinity-agent-cli</code>（10,294 行）实现内联终端 TUI、无头命令和 <code>infinity acp</code> 编辑器协议服务；<code>infinity-agent-lambda</code>（1,894 行）提供云端 SQS 消费 Lambda 与 <code>rap-receiver</code> Function URL 两个二进制入口；<code>infinity-slack-bot</code>（2,371 行）与 <code>infinity-slack-dataflow</code>（1,817 行）把守护进程接到 Slack，其中后者直接用 Hydro 团队自研的 <code>hydro_lang</code> 编写分阶段数据流。仓库根目录下的 <code>agent/</code>（AWS CDK）、<code>infinity-ui/</code>（共享 React 组件）和 <code>infinity-web/</code>（Vite 桌面端）则补齐了云端基础设施和图形界面。</p>
+<h2 id="02-workspace-topology--工作区纪律-把-bug-拦在编译期">工作区纪律：把 Bug 拦在编译期<a class="anchor" href="#02-workspace-topology--工作区纪律-把-bug-拦在编译期" aria-label="链接到本节">#</a></h2>
+<p>翻看根目录 <code>Cargo.toml</code> 里的 <code>[workspace.lints]</code> 和 <code>AGENTS.md</code>，能看出团队对运行时健壮性的几条硬规矩。workspace clippy 显式开启了 <code>unwrap_used = &quot;warn&quot;</code>、<code>unused_async = &quot;warn&quot;</code>、<code>allow_attributes_without_reason = &quot;warn&quot;</code>，以及 <code>missing_unsafe_on_extern = &quot;deny&quot;</code>。<code>AGENTS.md</code> 要求代码中不得悄悄吞掉 <code>Result::Err</code>，需要断言不变量时必须写 <code>.expect(&quot;bug: ...&quot;)</code>，把逻辑缺陷和外部运行时错误清楚分开。这些规矩和下面要讲的强类型 ID 体系一脉相承。</p>
+<h2 id="02-workspace-topology--为什么花四个阶段消灭裸-string-id">为什么花四个阶段消灭裸 String ID<a class="anchor" href="#02-workspace-topology--为什么花四个阶段消灭裸-string-id" aria-label="链接到本节">#</a></h2>
+<p>在多租户、多线程、多主机代理的 Agent 运行时里，字符串 ID 串台是一类极其隐蔽的故障：把父线程 ID 传进需要 <code>tool_call_id</code> 的存储接口，或者把带远程前缀的 <code>&quot;devbox/uuid&quot;</code> 直接当成本地 <code>ThreadId</code> 去查文件，编译器不会报任何错，直到线上热迁移或回调匹配时才静默丢消息。</p>
+<p>从变更记录 <code>0.2.0</code>（PR #115 与 #116）和源码可以看到，Hydro 团队分四阶段完成了从裸 <code>String</code> 到 <code>strkind</code> 强类型 ID 的全仓迁移，同时把 JSON 线缆格式保持为透明字符串（零序列化开销）。</p>
+<pre><code class="language-rust">// crates/rap-protocol/src/lib.rs
+strkind::strkind! {
+    pub ThreadId;
+    pub ToolCallId;
+    pub ProviderCallId;
+}
+
+pub type ChoiceId&lt;T = String&gt; = ToolCallId&lt;T&gt;;
+</code></pre>
+<p><code>rap-protocol</code> 定义了最基础的四个标识：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>类型</th>
+<th>线缆字段名</th>
+<th>来源与含义</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ThreadId</code></td>
+<td><code>group_id</code></td>
+<td>会话线程标识。本地守护进程生成 UUID，Lambda 侧由调用方指定并复用为 SQS FIFO <code>MessageGroupId</code></td>
+</tr>
+<tr>
+<td><code>ToolCallId</code></td>
+<td><code>id</code></td>
+<td>单次工具调用标识，由模型供应器生成（如 Bedrock 的 <code>tooluse_...</code>）或运行时为合成事件生成 UUID</td>
+</tr>
+<tr>
+<td><code>ProviderCallId</code></td>
+<td><code>call_id</code></td>
+<td>部分模型供应器附带的第二调用标识，工具回包时必须原样回显</td>
+</tr>
+<tr>
+<td><code>ChoiceId</code></td>
+<td><code>id</code> / <code>choice_id</code></td>
+<td>挂起人工选择项的标识，目前是 <code>ToolCallId</code> 的类型别名，因为选择弹窗绑定到发起它的工具调用</td>
+</tr>
+</tbody></table></div>
+<p>注意 <code>ToolCallId</code> 和 <code>ProviderCallId</code> 被刻意拆成两个不兼容类型。不同大模型 API 对工具调用 ID 的约定不一致（有的只用一个 ID，有的需要把 <code>call_id</code> 原样带回），过去用两个 <code>String</code> 参数传给 <code>Tool::execute</code> 极易传反，现在编译期就能拦住。转换只发生在最外层边界，比如与 <code>rig-core</code> 结构体对接或写入 DSQL/DynamoDB 字符串列时。</p>
+<h2 id="02-workspace-topology--会话即根线程与-threadref">会话即根线程与 ThreadRef<a class="anchor" href="#02-workspace-topology--会话即根线程与-threadref" aria-label="链接到本节">#</a></h2>
+<p>在守护进程和客户端协议层（<code>crates/infinity-protocol/src/lib.rs</code>），团队做了另一项很干净的概念收敛：<strong>取消独立的 <code>session_id</code>，承认一个会话就是它的根线程（<code>root_thread_id</code>）</strong>。</p>
+<p>过去协议里同时存在 <code>session_id</code> 和 <code>thread_id</code>，连 <code>SwitchModel</code> 里原本针对单线程的字段都被误标成了 <code>session_id</code>，而远程会话又靠手工拼接和 <code>split_once(&#39;/&#39;)</code> 在字符串 <code>&quot;devbox/uuid&quot;</code> 上做手术。引入 <code>RemoteName</code> 和 <code>ThreadRef</code> 后，这套字符串手术全部被替换成类型方法：</p>
+<pre><code class="language-rust">// crates/infinity-protocol/src/lib.rs
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ThreadRef {
+    pub remote: Option&lt;RemoteName&gt;,
+    pub id: ThreadId,
+}
+</code></pre>
+<p><code>ThreadRef</code> 在几个细节上考虑得很周全：</p>
+<ul>
+<li><strong>线缆兼容</strong>：<code>Serialize</code> 与 <code>Deserialize</code> 仍然走 <code>&quot;{remote}/{id}&quot;</code>（远程）或 <code>&quot;{id}&quot;</code>（本地）的复合字符串形式，前端 TypeScript 照旧按普通字符串收发；解析器 <code>FromStr</code> 会显式拒绝空远程名、空 ID 以及包含两个及以上 <code>/</code> 的非法串。</li>
+<li><strong>边界分离</strong>：面向客户端的 <code>ClientMessage</code>（如 <code>Connect</code>、<code>UserInput</code>、<code>SwitchModel</code>、<code>RequestMigrate</code>）一律使用 <code>ThreadRef</code>，明确表达目标所在主机；而守护进程之间点对点通信的迁移指令（<code>Emigrate</code>、<code>EmigrateDone</code>、<code>ImportSession</code>）使用纯 <code>ThreadId</code>，因为已经落在目标主机本地。</li>
+<li><strong>代理改写与排序</strong>：<code>ThreadRef::prefixed(&amp;remote)</code> 和 <code>ThreadRef::strip(&amp;remote)</code> 替代了原本分散在 <code>client_handler.rs</code> 和 <code>migrate.rs</code> 里的字符串拆拼；派生 <code>Ord</code> 遵循 <code>(remote, id)</code>，让 <code>None</code>（本地线程）天然排在所有 <code>Some(remote)</code> 之前，不会像字典序字符串那样把本地 UUID 和远程主机名混插在一起。</li>
+</ul>
+<p>把 21 个 crate 的分层边界和这套强类型 ID 记在心里，接下来就能直接钻进 <code>infinity-agent-core</code>，拆解一次执行切片内部最核心的三阶段状态机。</p>
+</div></section><section class="book-section" id="03-slice-and-history"><header class="chapter-head"><div class="chapter-number">03</div><h1>切片执行循环与三阶段 HistoryManager</h1></header><div class="prose"><p>试想一个线上常见的死锁事故：用户随手往对话框里粘贴了一段 80 万字的日志，或者某个 <code>grep</code> 工具一不小心扫出几十兆构建产物。传统 Agent 框架收到消息后，顺手把这条输入追加进了持久化对话表，再打包发给大模型。模型立刻返回上下文超窗报错；用户重试或者刷新页面重新加载会话，运行时又把刚才那条已经落盘的巨型消息原封不动地读出来发给模型，模型继续报错。一条超长输入，就能把整条会话线程永久卡死在毒消息（poison message）上。</p>
+<p>再想另一个并发故障：模型决定调用一个修改数据库的远程工具，运行时先发了 HTTP 请求，再去把这次工具调用写进数据库。如果恰好在发出 HTTP 之后、落盘完成之前进程崩了，或者对方工具回包极快（比如 5 毫秒内就把回调推回了队列），下一轮切片在历史表里根本找不到对应的 <code>ToolCall</code>，只能把真实的执行结果当成幽灵消息丢弃。</p>
+<p><code>crates/infinity-agent-core/src/event_processor.rs</code> 用一套严谨的三阶段 <code>HistoryManager</code> 和落盘屏障，把这两类问题一起挡在了核心层。</p>
+<h2 id="03-slice-and-history--一次切片的三段流水线">一次切片的三段流水线<a class="anchor" href="#03-slice-and-history--一次切片的三段流水线" aria-label="链接到本节">#</a></h2>
+<p>任何平台宿主（无论是本地常驻驱动还是 AWS Lambda 的单次调用）驱动一次切片，底层组合的都是 <code>event_processor</code> 暴露的三个函数：<code>prepare_input</code>、<code>run_completion</code> 与 <code>execute_action</code>。在 <code>crates/infinity-agent-core/src/system/thread.rs</code> 的 <code>Thread::step_no_defer</code> 里，它们的执行顺序是写死的：</p>
+<ol>
+<li><strong>准备阶段（<code>prepare_input</code>）</strong>：逐条吸收本批次的 <code>InputMessage</code>。过滤已关闭线程，拦截重复投递，处理压缩触发与压缩完成消息，分流订阅事件，把 OAuth 与 <code>UserChoice</code> 直接返回给上层前端，只把真正需要模型响应的新内容塞进 <code>HistoryManager</code>。如果整批消息没有任何一条返回 <code>PrepareResult::Ready</code>，本轮直接跳过模型调用，零成本结束切片。</li>
+<li><strong>补全阶段（<code>run_completion</code>）</strong>：把内存历史和工具定义发给 <code>ModelProvider</code>，以流的形式接收文本、推理块和工具调用。遇到同步工具（如 <code>spawn_thread</code>）或未知工具名，在当前循环内直接执行并把结果注回历史，继续发起下一次补全；遇到异步工具调用或普通结束信号，产出终端动作 <code>CompletionAction</code> 后跳出流。</li>
+<li><strong>落盘屏障与派发阶段（<code>sync()</code> -&gt; <code>execute_action</code>）</strong>：先调用 <code>self.history.sync().await?</code> 把本轮所有已知安全的消息持久化，<strong>确认落盘成功之后</strong>，才调用 <code>execute_action_with_error_result</code> 向外部 RAP 服务发出 HTTP POST。</li>
+</ol>
+<p>这里有一条不能违背的铁律：<code>sync()</code> 必须在 <code>execute_action</code> 之前完成。哪怕进程在派发瞬间崩溃，持久化存储里也已经记下了那条待应答的 <code>ToolCall</code>；而如果派发本身因为网络错误失败，<code>execute_action_with_error_result</code> 会立即把一条错误 <code>ToolResult</code> 塞回输入队列，让模型在下一轮感知失败并自行恢复，而不会永远干等一个永远不会来的回调。</p>
+<h2 id="03-slice-and-history--三阶段未落盘状态与轮次缓冲">三阶段未落盘状态与轮次缓冲<a class="anchor" href="#03-slice-and-history--三阶段未落盘状态与轮次缓冲" aria-label="链接到本节">#</a></h2>
+<p>为了解决开头提到的毒消息卡死和流式中断脏写问题，<code>HistoryManager</code> 在已持久化的 <code>ConversationStore</code> 之上，把内存里尚未落盘的内容拆成了三层（对应 <code>event_processor.rs</code> 第 150 至 174 行的注释与字段）：</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 262" width="640" height="262" role="img" aria-label="HistoryManager 三阶段未落盘状态与溢出恢复">
+<title>HistoryManager 三阶段未落盘状态与溢出恢复</title>
+<defs><marker id="03-slice-and-history--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker><marker id="03-slice-and-history--arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--amber)"/></marker><marker id="03-slice-and-history--arrow-forest" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--forest)"/></marker></defs>
+<text x="10" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">HistoryManager 三阶段未落盘状态、轮次缓冲与溢出恢复</text><rect x="10" y="34" width="184" height="82" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="20" y="53" font-family="'IBM Plex Mono','SFMono-Regular',Consolas,monospace" font-size="10" font-weight="600" fill="var(--amber)" text-anchor="start">1. unvalidated_items</text><text x="20" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">刚入内存的新输入</text><text x="20" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">用户文本 / 工具结果 / 合成事件</text><text x="20" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">sync() 跳过，防毒消息落盘</text><line x1="194" y1="75" x2="226" y2="75" stroke="var(--forest)" stroke-width="1.2" marker-end="url(#arrow-forest)"/><text x="210" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="600" fill="var(--forest)" text-anchor="middle">首输出</text><rect x="228" y="34" width="184" height="82" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="238" y="53" font-family="'IBM Plex Mono','SFMono-Regular',Consolas,monospace" font-size="10" font-weight="600" fill="var(--forest)" text-anchor="start">2. pending_items</text><text x="238" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">mark_inputs_model_validated</text><text x="238" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">已证安全输入 + 已刷轮次</text><text x="238" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">断言: 无未验证项才可提交</text><line x1="412" y1="75" x2="444" y2="75" stroke="var(--forest)" stroke-width="1.2" marker-end="url(#arrow-forest)"/><text x="428" y="66" font-family="'IBM Plex Mono','SFMono-Regular',Consolas,monospace" font-size="8.8" font-weight="600" fill="var(--forest)" text-anchor="middle">sync()</text><rect x="446" y="34" width="184" height="82" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="456" y="53" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start">3. 持久化存储</text><text x="456" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">ConversationStore 追加消息</text><text x="456" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">StateStore 写非幂等去重 ID</text><text x="456" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">落盘屏障后才派发异步工具</text><rect x="228" y="152" width="184" height="72" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="238" y="171" font-family="'IBM Plex Mono','SFMono-Regular',Consolas,monospace" font-size="9.8" font-weight="600" fill="var(--ink)" text-anchor="start">turn_buffer (流式缓冲)</text><text x="238" y="188" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">合并连续 Text 块</text><text x="238" y="204" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">正常结束: flush_turn()</text><text x="238" y="220" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">中途故障: discard_turn()</text><line x1="320" y1="152" x2="320" y2="116" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><text x="328" y="138" font-family="'IBM Plex Mono','SFMono-Regular',Consolas,monospace" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="start">flush_turn</text><line x1="102" y1="116" x2="102" y2="152" stroke="var(--amber)" stroke-width="1.2" marker-end="url(#arrow-amber)"/><text x="110" y="138" font-family="'IBM Plex Mono','SFMono-Regular',Consolas,monospace" font-size="8.8" font-weight="600" fill="var(--amber)" text-anchor="start">ContextOverflow</text><rect x="10" y="152" width="184" height="72" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="20" y="171" font-family="'IBM Plex Mono','SFMono-Regular',Consolas,monospace" font-size="9.6" font-weight="600" fill="var(--amber)" text-anchor="start">recover_from_overflow</text><text x="20" y="188" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">仅 1 条可替换项: 改占位符重试</text><text x="20" y="204" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">含用户输入或多条: 结算中断</text><text x="20" y="220" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">丢弃未验证用户输入并停止</text><line x1="538" y1="116" x2="538" y2="152" stroke="var(--forest)" stroke-width="1.2" marker-end="url(#arrow-forest)"/><text x="546" y="138" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="600" fill="var(--forest)" text-anchor="start">屏障之后</text><rect x="446" y="152" width="184" height="72" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="456" y="171" font-family="'IBM Plex Mono','SFMono-Regular',Consolas,monospace" font-size="9.8" font-weight="600" fill="var(--forest)" text-anchor="start">execute_action()</text><text x="456" y="188" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">POST /invoke 异步派发</text><text x="456" y="204" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">失败则回注错误结果</text><text x="456" y="220" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">避免线程永久挂起等待</text><text x="10" y="248" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="400" fill="var(--muted)" text-anchor="start">顺序不变量: pending_items 始终位于 unvalidated_items 之前；普通工具结果靠尾扫 match_tool_result 去重。</text>
+</svg>
+<figcaption>HistoryManager 三阶段未落盘状态与溢出恢复</figcaption></figure>
+<p>第一层是 <strong><code>unvalidated_items</code></strong>。所有刚通过 <code>handle_content</code> 进入内存的新输入（用户文本、工具结果、内联合成事件）都先躺在这里。它们已经加入内存的 <code>history</code> 向量，所以紧接着发起的模型请求能看到它们；但 <code>sync()</code> 会刻意跳过这批项，一字节都不往存储里写。原因很直接：模型还没见过它们，谁也不知道里面有没有一条会撑爆上下文窗口的毒消息。</p>
+<p>第二层是 <strong><code>pending_items</code></strong>（已知安全队列）。只要模型针对这次请求流式吐出了任意有效输出，就证明整个输入上下文没有超窗，运行时立刻调用 <code>mark_inputs_model_validated()</code>，把 <code>unvalidated_items</code> 整体晋升到 <code>pending_items</code>。模型自己产出的内容则在轮次提交时通过 <code>append_known_safe</code> 直接进入 <code>pending_items</code>。<code>append_known_safe</code> 内部有一条硬断言：如果此时 <code>unvalidated_items</code> 非空直接 panic，从代码逻辑上杜绝先持久化模型回答、漏掉对应输入的乱序可能。</p>
+<p>第三层是 <strong><code>turn_buffer</code></strong>（流式轮次缓冲）。模型流式吐出的每个 <code>StreamChunk</code> 都先攒在这里，不污染 <code>history</code>。<code>handle_completion</code> 还会通过 <code>try_merge_buffer_text</code> 把连续的 <code>StreamChunk::Text</code> 片段合并成单条助手消息，避免把一句话按 token 切成几百行写进数据库把磁盘撑爆。流式过程若中途断连需要重试，调用 <code>discard_turn()</code> 一键清空 <code>turn_buffer</code>，下一轮重试直接从干净的已提交历史重建请求；流式正常结束时，调用 <code>flush_turn()</code> 或 <code>flush_turn_trimming_reasoning()</code>（剔除末尾孤立的推理块与空白文本，确保已提交历史不以半截 thinking 结尾）把内容刷进 <code>history</code> 和 <code>pending_items</code>。</p>
+<p>这套分层顺带给前端重放提供了很大便利：<code>current_turn_view()</code> 把 <code>history</code> 和 <code>turn_buffer</code> 拼起来返回，于是用户在模型输出到一半时新开一个浏览器标签页附着上来，也能通过 <code>ReplaySnapshot</code> 立刻看到正在生成的那半段回复。</p>
+<h2 id="03-slice-and-history--上下文溢出恢复-精确止损-绝不静默丢掉用户的原话">上下文溢出恢复：精确止损，绝不静默丢掉用户的原话<a class="anchor" href="#03-slice-and-history--上下文溢出恢复-精确止损-绝不静默丢掉用户的原话" aria-label="链接到本节">#</a></h2>
+<p>当模型供应器明确回报 <code>ErrorClass::ContextOverflow</code> 时，三阶段设计的价值就全体现出来了。因为引发溢出的新输入还留在 <code>unvalidated_items</code> 里，根本没进数据库，<code>recover_from_overflow</code>（<code>event_processor.rs</code> 第 1444 行）可以按两种情况精准处理：</p>
+<ul>
+<li><strong>单一可替换元凶</strong>：如果 <code>unvalidated_items</code> 里恰好只有 1 条记录，且它是工具结果或订阅事件，那超窗的罪魁祸首毫无歧义。运行时调用 <code>replace_unvalidated_tool_results</code> 把它的正文替换成固定占位符 <code>TOOL_RESULT_TOO_LARGE_PLACEHOLDER</code>（<code>&quot;[tool result omitted: it was too large for the model&#39;s remaining context window]&quot;</code>），清除附带的 <code>display_segments</code>，然后立刻重试补全。替换函数会跳过正文已经等于占位符的条目，因此万一换完占位符仍然超窗，第二次不会陷入死循环，而是自动落入下面的丢弃分支。</li>
+<li><strong>含用户输入或多条混合</strong>：只要 <code>unvalidated_items</code> 里混进了用户文本，或者同时有多条输入无法判断谁超了限，或者重试后再次溢出，运行时把其中的可替换工具结果统一结算为 <code>TOOL_CALL_INTERRUPTED_TEXT</code>（<code>&quot;Tool call interrupted by user&quot;</code>），调用 <code>drop_unvalidated_user_inputs</code> 把未验证的用户输入从内存历史末尾截掉并<strong>从 <code>processed_message_ids</code> 中移除其去重 ID</strong>，然后<strong>直接终止本轮并向上报错，绝不静默重试</strong>。</li>
+</ul>
+<p>源码注释把这里两个很细的判断写透了：第一，如果删掉了用户的原话还悄悄拿旧历史再跑一轮推理，模型会按过时指令乱动作，所以丢弃用户输入后必须停下来等用户重新发话；第二，此时被一起结算的挂起工具结果不能填成结果过大的提示，否则模型下一轮可能会误以为应该重新跑一遍工具，填成和用户打断一致的 <code>&quot;Tool call interrupted by user&quot;</code> 才准确。同时，因为被丢弃的用户输入在 <code>StateStore</code> 里从未落盘，且内存里的去重 ID 也被遗忘，这条线程在下一条正常消息到来时立刻恢复健康，彻底告别毒消息锁死。</p>
+<h2 id="03-slice-and-history--双重去重策略-谁该写去重表-谁靠尾扫就行">双重去重策略：谁该写去重表，谁靠尾扫就行<a class="anchor" href="#03-slice-and-history--双重去重策略-谁该写去重表-谁靠尾扫就行" aria-label="链接到本节">#</a></h2>
+<p>在至少一次投递的队列上，消息重投是常态。如果把每一条工具结果、每一条助手回复的 ID 全塞进 <code>StateStore</code> 的去重集合，长会话的状态记录会越滚越大。</p>
+<p><code>HistoryManager::sync()</code>（第 649 至 669 行）做了一次非常克制的拆分：<strong>只有天然不幂等的输入才会把 <code>message_id</code> 持久化到 <code>StateStore</code></strong>，也就是 <code>InfinityMessage::User</code> 和 <code>InfinityMessage::SubscriptionEvent</code>。订阅事件如果不记 ID，重投一次就会再生成一条新的合成调用注入历史，造成重复响应。</p>
+<p>而普通 <code>ToolResult</code> 完全不写持久化去重表。<code>handle_content</code> 收到工具结果时，调用 <code>match_tool_result</code> 从 <code>history</code> 末尾逆向扫描：</p>
+<pre><code class="language-rust">// crates/infinity-agent-core/src/event_processor.rs
+fn match_tool_result(&amp;self, result_id: &amp;str) -&gt; ToolResultMatch {
+    for msg in self.history.borrow().iter().rev() {
+        match msg {
+            InfinityMessage::ToolCall { call, .. } =&gt; {
+                if call.id == result_id {
+                    return ToolResultMatch::Unanswered;
+                }
+            }
+            InfinityMessage::ToolResult { result, .. } =&gt; {
+                if result.id == result_id {
+                    return ToolResultMatch::AlreadyAnswered;
+                }
+            }
+            _ =&gt; return ToolResultMatch::NoPendingCall,
+        }
+    }
+    ToolResultMatch::NoPendingCall
+}
+</code></pre>
+<p>这个逆向扫描只跨越连续的 <code>ToolCall</code> 和 <code>ToolResult</code>（顺手兼容了未来并行多个工具调用形成 <code>tc tc tr tr</code> 尾部的场景）；一旦遇到任何用户文本、助手文本或订阅事件，说明碰到了上一轮边界，直接判定 <code>NoPendingCall</code> 丢弃过时回包。如果逆向先撞到同 ID 的 <code>ToolResult</code>，说明已经应答过，判定 <code>AlreadyAnswered</code> 跳过；先撞到同 ID 的 <code>ToolCall</code>，才判定 <code>Unanswered</code> 放行。</p>
+<p>当非工具结果消息（如用户突然打断）到达，且历史最后一条正好是未应答的 <code>ToolCall</code> 时，<code>interrupt_pending_tool_call</code> 会往 <code>interrupted_tool_calls</code> 里登记该调用 ID，并自动补一条内容为 <code>&quot;Tool call interrupted by user&quot;</code> 的合成 <code>ToolResult</code> 保持对话结构合法，随后由上层 <code>Thread::step_no_defer</code> 通过 <code>RapNotifier</code> 尽力向工具服务器发取消通知。即便远端工具没来得及停下、过几分钟仍把真实结果推了回来，尾扫也会因为历史里已经跨过了新的轮次边界而干净利落地把它挡在门外。</p>
+</div></section><section class="book-section" id="04-rap-protocol"><header class="chapter-head"><div class="chapter-number">04</div><h1>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</h1></header><div class="prose"><p>用过 MCP（Model Context Protocol）写长耗时工具的工程师都遇到过同样的别扭事：MCP 天生是面向持久会话的请求响应协议，无论是本地 stdio 子进程管道，还是远程 Streamable HTTP 会话，Agent 运行时都得一直挂着连接等回包。查个天气、读个文件自然够用；一旦要触发二十分钟的编译测试、订阅某个 GitHub 仓库持续一周的 PR 事件，或者中途弹出人工审批等待两小时，连接一旦断开或容器被回收，上下文就全散了。于是每个团队只能各自在业务代码里拼凑轮询循环、Webhook 胶水和状态表。</p>
+<p>Infinity 给出的解法是把工具协议本身翻转过来，定义了 <strong>RAP（Reactive Agent Protocol）</strong>。核心代码分散在 <code>rap-protocol</code>、<code>rap-client</code>、<code>infinity-rap-bridge</code> 和 <code>infinity-mcp-bridge</code> 四个 crate 中。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 296" width="640" height="296" role="img" aria-label="RAP 响应式工具协议全链路与五类回调分流">
+<title>RAP 响应式工具协议全链路与五类回调分流</title>
+<defs><marker id="04-rap-protocol--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker><marker id="04-rap-protocol--arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--amber)"/></marker><marker id="04-rap-protocol--arrow-forest" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--forest)"/></marker></defs>
+<text x="10" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">RAP 响应式工具协议全链路：断连回调、订阅分流与 MCP 兼容</text><rect x="10" y="34" width="196" height="116" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="20" y="53" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--forest)" text-anchor="start">Agent Runtime</text><text x="20" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">1. GET /.well-known/rap-toolset</text><text x="20" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">2. POST /invoke (带 callback_url)</text><text x="20" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">3. 收到 2xx 即让出并休眠</text><text x="20" y="118" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">4. RapNotifier 生命周期通知:</text><text x="20" y="134" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">   /close_thread /cancel /migrate</text><rect x="242" y="34" width="188" height="116" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="252" y="53" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--amber)" text-anchor="start">独立 RAP 工具服务</text><text x="252" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">立即返回 HTTP 200 ACK</text><text x="252" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">后台执行长任务或维护订阅</text><text x="252" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">如 sandbox-local / github-poller</text><text x="252" y="118" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">完成后主动 POST callback_url</text><text x="252" y="134" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">不绑定 Agent 进程存活周期</text><rect x="462" y="34" width="168" height="116" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="472" y="53" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">MCP 兼容桥接</text><text x="472" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">infinity-mcp-bridge</text><text x="472" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">懒初始化 Stdio / HTTP</text><text x="472" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">JSON-RPC 2.0 + SSE</text><text x="472" y="118" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">维护 mcp-session-id</text><text x="472" y="134" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">对核心暴露统一 Tool</text><line x1="206" y1="68" x2="242" y2="68" stroke="var(--forest)" stroke-width="1.2" marker-end="url(#arrow-forest)"/><text x="224" y="60" font-family="'IBM Plex Mono','SFMono-Regular',Consolas,monospace" font-size="8.5" font-weight="600" fill="var(--forest)" text-anchor="middle">POST</text><line x1="242" y1="102" x2="206" y2="102" stroke="var(--amber)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow-amber)"/><text x="224" y="116" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.5" font-weight="600" fill="var(--amber)" text-anchor="middle">回调</text><line x1="430" y1="88" x2="462" y2="88" stroke="var(--muted)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow)"/><line x1="336" y1="150" x2="336" y2="178" stroke="var(--amber)" stroke-width="1.2" marker-end="url(#arrow-amber)"/><text x="346" y="168" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="600" fill="var(--amber)" text-anchor="start">prepare_callback (Daemon 与 Lambda 共用)</text><rect x="10" y="180" width="620" height="102" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="20" y="199" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start">五类 RapCallback 回调的统一分流</text><text x="20" y="216" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">tool_result        -&gt; InputMessage (支持多模态 content + display_as + subscription 标记)</text><text x="20" y="232" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">subscription_event -&gt; 默认自动派生隔离事件子线程；associative: true 内联注入；final: true 清理订阅</text><text x="20" y="248" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">user_choice / oauth -&gt; 经 PrepareResult 透传给 TUI/Web/Slack，不污染模型对话历史</text><text x="20" y="264" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">view_update        -&gt; 旁路显示通道 (如 diff 面板)，Daemon 转发前端，Lambda 接收后直接丢弃</text>
+</svg>
+<figcaption>RAP 响应式工具协议全链路与五类回调分流</figcaption></figure>
+<h2 id="04-rap-protocol--清单发现与即发即忘调用">清单发现与即发即忘调用<a class="anchor" href="#04-rap-protocol--清单发现与即发即忘调用" aria-label="链接到本节">#</a></h2>
+<p>一个标准 RAP 服务本质上就是一个普通的无状态 HTTP 服务，它完全不知道调用方背后跑的是什么大模型，也不保存对话历史。</p>
+<p>接入从工具清单发现开始。运行时向工具服务的 <code>GET /.well-known/rap-toolset</code> 发请求，拿到 <code>ToolsetManifest</code>（<code>crates/rap-protocol/src/lib.rs</code> 第 212 行）：</p>
+<pre><code class="language-rust">pub struct ToolsetManifest {
+    pub name: String,
+    pub description: Option&lt;String&gt;,
+    pub endpoint: String,
+    pub tools: Vec&lt;ToolDef&gt;,
+    #[serde(default, rename = &quot;needsMigration&quot;)]
+    pub needs_migration: bool,
+}
+</code></pre>
+<p>清单里有两个很有工程味的字段。一个是 <code>needsMigration</code>，布尔值，向守护进程声明这个工具服务在本地持有不可丢弃的外部状态（比如 <code>sandbox-local</code> 里的 Jujutsu 书签和工作区），跨主机热迁移会话时必须先通知它搬家。另一个在每条 <code>ToolDef</code> 上，叫 <code>displayScript</code>，允许工具作者附带一段简短的 Rhai 脚本。核心运行时里的 <code>eval_display_script</code>（<code>crates/infinity-agent-core/src/tools/mod.rs</code> 第 117 行）会把模型传入的参数灌进 <code>args</code> 变量里求值，生成人类易读的工具调用摘要（例如 <code>sleep</code> 工具自带脚本把秒数和原因拼成 <code>&quot;Sleeping 30s: wait for CI&quot;</code>），而不用在前端硬编码每种工具的渲染逻辑。</p>
+<p>模型决定调用工具时，核心层经由 <code>invoke_rap_tool</code>（<code>crates/infinity-agent-core/src/tools/rap_tool.rs</code> 第 72 行）向清单里的 <code>endpoint</code>（通常是 <code>/invoke</code>）发一次 HTTP POST，正文是 <code>RapInvocation</code>：</p>
+<ul>
+<li><code>operation</code> 与 <code>arguments</code>，工具名与 JSON 参数。</li>
+<li><code>id: ToolCallId</code> 与 <code>call_id: Option&lt;ProviderCallId&gt;</code>，工具回包时原样带回。</li>
+<li><code>group_id: ThreadId</code> 与 <code>thread_ancestors: Option&lt;Vec&lt;ThreadId&gt;&gt;</code>，标明当前线程以及从根到父线程的完整祖先链（沙箱服务正是靠 <code>thread_ancestors</code> 继承父线程的写权限授权）。</li>
+<li><code>callback_url</code>，异步结果该往哪里投递。</li>
+<li><code>user_id</code>，可选用户身份。</li>
+</ul>
+<p>错误处理策略在本地和云端完全一致：如果 HTTP POST 遇到网络层传输失败，<code>invoke_rap_tool</code> 返回 <code>Err</code>，由运行时兜底回注一条通用失败结果；如果服务端可达但返回了非 <code>2xx</code> 状态码，说明服务端拒绝了调用、绝不会有后续回调，函数直接合成一条包含操作名、URL 和状态码的错误 <code>ToolResult</code> 投回输入队列并返回 <code>Ok(())</code>，让模型马上知情并调整策略，绝不会把线程挂死在永久等待上。只要收到 <code>2xx</code>，调用立刻返回，切片结束，运行时可以安心休眠。</p>
+<h2 id="04-rap-protocol--五类回调与统一转换入口">五类回调与统一转换入口<a class="anchor" href="#04-rap-protocol--五类回调与统一转换入口" aria-label="链接到本节">#</a></h2>
+<p>几百毫秒或几天之后，工具干完活，把一个带 <code>type</code> 标签的 JSON 对象 <code>RapCallback</code> POST 到 <code>callback_url</code>。<code>rap-protocol</code> 定义了五种回调变体：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>变体 (<code>type</code>)</th>
+<th>携带核心字段</th>
+<th>运行时处理去向</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>tool_result</code></td>
+<td><code>id</code>, <code>call_id</code>, <code>text</code> 或多模态 <code>content</code>, <code>display_as</code>, <code>subscription</code></td>
+<td>转为 <code>InputMessage</code> 入队；若 <code>subscription: true</code> 则在 <code>StateStore</code> 登记活跃订阅</td>
+</tr>
+<tr>
+<td><code>subscription_event</code></td>
+<td><code>tool_call_id</code>, <code>text</code>, <code>associative</code>, <code>final</code></td>
+<td>默认派生隔离事件子线程；<code>associative: true</code> 时内联注入；<code>final: true</code> 清理订阅追踪</td>
+</tr>
+<tr>
+<td><code>oauth</code></td>
+<td><code>id</code>, <code>call_id</code>, <code>auth_url</code></td>
+<td>经 <code>PrepareResult::OAuthRequired</code> 透传给前端引导授权，不进模型历史</td>
+</tr>
+<tr>
+<td><code>user_choice</code></td>
+<td><code>id: ChoiceId</code>, <code>prompt</code>, <code>choices</code>, <code>default</code>, <code>response_url</code></td>
+<td>写入 <code>StateStore</code> 挂起列表并透传前端弹窗，用户选完后由客户端 POST 回 <code>response_url</code></td>
+</tr>
+<tr>
+<td><code>view_update</code></td>
+<td><code>group_id</code>, <code>view_type</code>, <code>content</code></td>
+<td>旁路展示通道（如沙箱实时 Diff 视图），守护进程透传给 UI，Lambda 接收后直接返回 200 丢弃</td>
+</tr>
+</tbody></table></div>
+<p>注意 <code>tool_result</code> 里模型视角与人类视角的分离设计：模型看到的是 <code>content</code>（支持文本与 Base64 图像块 <code>RapToolResultContent::Image</code>；如果当前模型不支持图像输入，<code>HistoryManager::get_history</code> 会在发出请求前自动替换成 <code>IMAGE_OMITTED_PLACEHOLDER</code>）或纯 <code>text</code>；而人类在 TUI/Web 上看到的是 <code>display_as</code> 里的结构化 <code>DisplaySegment</code>（支持 <code>Text</code>、<code>Diff</code>、<code>Image</code>），<code>build_display_segments</code> 会把工具提供的美化片段排在前面、原始文本兜底挂在末尾。</p>
+<p>为了防止本地守护进程和云端 AWS Lambda 在回调转换上出现行为漂移，所有平台都强制共用 <code>crates/infinity-rap-bridge/src/callback.rs</code> 里的 <code>prepare_callback</code>（底层调用 <code>convert_callback</code>）。守护进程的本地回调监听器和 <code>infinity-agent-lambda</code> 的 <code>rap-receiver</code> 二进制都只做网络收发，消息语义转换全收口在这一处。</p>
+<h2 id="04-rap-protocol--生命周期通知-关闭-取消与迁移">生命周期通知：关闭、取消与迁移<a class="anchor" href="#04-rap-protocol--生命周期通知-关闭-取消与迁移" aria-label="链接到本节">#</a></h2>
+<p>异步协议一旦放手让工具独立运行，就必须处理三件善后事：线程关了怎么回收外部资源，用户按 Ctrl+S 打断时怎么停掉正在跑的构建，会话搬家到另一台机器时怎么把外部状态一起搬走。</p>
+<p><code>crates/rap-client/src/notifier.rs</code> 的 <code>RapNotifier</code> 封装了这三条尽力而为（best-effort）的 HTTP POST 端点：</p>
+<ul>
+<li><code>POST /close_thread</code>，携带 <code>{ &quot;thread_id&quot;: ... }</code>，在 <code>CloseThreadTool</code> 关闭子线程后广播，比如通知 <code>sandbox-local</code> 执行 <code>jj workspace forget</code> 并删掉缓存目录。</li>
+<li><code>POST /cancel_tool_call</code>，携带 <code>{ &quot;thread_id&quot;: ..., &quot;tool_call_id&quot;: ... }</code>，当用户文本打断挂起工具调用后触发，比如通知 <code>sandbox-core</code> 给正在运行的子进程组发 <code>SIGTERM</code>。</li>
+<li><code>POST /migrate</code>，携带 <code>{ &quot;session_id&quot;: ..., &quot;destination_url&quot;: ... }</code>，由热迁移编排器定向发给声明了 <code>needsMigration: true</code> 的服务，触发状态打包传输。</li>
+</ul>
+<p>前两条通知故意设计成 best-effort，即便某个外部工具服务已经离线或没实现该路由，也只记警告日志，不阻断线程关闭或用户打断。</p>
+<h2 id="04-rap-protocol--仓库内置的两个真实-rap-服务">仓库内置的两个真实 RAP 服务<a class="anchor" href="#04-rap-protocol--仓库内置的两个真实-rap-服务" aria-label="链接到本节">#</a></h2>
+<p>光看协议定义容易抽象，仓库里自带了两个很紧凑的参考实现：</p>
+<ol>
+<li><strong><code>rap-steering-server</code></strong>（348 行），暴露两个操作：扫描项目根目录和家目录里的规则约定文件（<code>INFINITY.md</code>、<code>CLAUDE.md</code>、<code>AGENTS.md</code>、<code>.cursorrules</code>、<code>.claude/skills</code> 等目录）并按规范路径去重符号链接，以及带路径穿越校验的安全读取。</li>
+<li><strong><code>rap-github-event-poller</code></strong>（715 行），展示了标准 RAP 订阅服务的写法。收到订阅调用后，它先登记 <code>(owner/repo, tool_call_id, filters, callback_url)</code> 并立即回传带 <code>subscription: true</code> 的 <code>tool_result</code>；后台轮询任务按仓库共享一个 ETag 和 GitHub 响应头里的 <code>X-Poll-Interval</code>（默认 60 秒），首次轮询只记录 <code>last_seen_id</code> 跳过历史旧事件，此后每出现匹配过滤条件的新事件就通过 <code>send_subscription_event</code> 推送回 Agent 的 <code>callback_url</code>。没有活跃订阅时后台轮询任务靠 <code>tokio::sync::Notify</code> 挂起零开销，线程关闭或取消订阅时移除条目。</li>
+</ol>
+<h2 id="04-rap-protocol--兼容现有-mcp-工具-infinity-mcp-bridge-如何桥接">兼容现有 MCP 工具：infinity-mcp-bridge 如何桥接<a class="anchor" href="#04-rap-protocol--兼容现有-mcp-工具-infinity-mcp-bridge-如何桥接" aria-label="链接到本节">#</a></h2>
+<p>协议再先进，如果不能直接复用现有的 MCP 服务器，落地成本也会太高。<code>crates/infinity-mcp-bridge/src/lib.rs</code>（797 行）在客户端侧做了一层干净的适配。</p>
+<p>它定义了 <code>McpTransport</code> trait，并内置了两种传输实现：<code>StdioMcpTransport</code> 启动本地子进程（带 <code>kill_on_drop(true)</code> 防止孤儿进程），按换行分隔的 JSON-RPC 2.0 读写；<code>HttpMcpTransport</code> 对接 Streamable HTTP MCP 服务，自动处理 <code>initialize</code> + <code>notifications/initialized</code> 握手、维护 <code>mcp-session-id</code> 请求头，并能同时解析普通 JSON 响应与 <code>text/event-stream</code> SSE 响应。</p>
+<p>顶层的 <code>McpToolSet</code> 通过 <code>McpTransportFactory</code> 延迟建立连接，把 MCP 服务器暴露出的每个工具包装成核心运行时认识的标准 <code>Tool</code> 实现。调用发生时，桥接层在后台任务里等待 JSON-RPC 返回，再把结果转换成 <code>InputMessage</code> 投回运行时输入队列。对于本地常驻模式，这意味着任何现有 MCP 工具零改动就能并入 Infinity 的并发线程与统一展示链路；而在无服务器 Lambda 模式下，仓库的 <code>agent/</code> 目录则允许把 MCP 服务包在独立的远程代理层之后，对外呈现为标准无状态 RAP 端点。</p>
+<p>协议层的收发机制清楚了，但还有一个关键问题悬着：当订阅事件不断涌入、或者父 Agent 一口气派生五个子 Agent 并行干活时，上下文不会乱套吗？下一章进入线程树与位置索引压缩。</p>
+</div></section><section class="book-section" id="05-threading-compaction"><header class="chapter-head"><div class="chapter-number">05</div><h1>线程树、上下文继承与位置索引压缩</h1></header><div class="prose"><p>让一个主 Agent 拆出三个子 Agent 并行审查三份代码文件，看起来只是多开几个异步循环。真跑到生产环境，立刻会冒出四类头疼的上下文事故：第一，子线程继承了父线程准备派生三个子线程的思考过程，刚启动就误以为自己是父线程，接着把同样的三个子线程又派生了一遍，引发指数级套娃；第二，父线程派完子线程后继续聊了几十轮、触发了上下文压缩，把当初那条 <code>spawn_thread</code> 调用折进了摘要里，等子线程干完活回来交差，父线程翻遍当前上下文却找不到当初派活的调用 ID，结果直接把子线程的成果丢弃；第三，某个 GitHub 订阅每分钟推十条无关 PR 事件进来，如果全塞进主线程上下文，半小时就能把主线程窗口填满；第四，压缩历史时如果直接删旧行，压缩前就已经派出去、还没读完父历史的子线程，继承到的索引瞬间全部错位。</p>
+<p><code>infinity-agent-core</code> 用一套紧凑的线程树模型和位置索引压缩机制，把这四个坑逐一填平了。</p>
+<h2 id="05-threading-compaction--同步派生与-child-of-线程栈校验">同步派生与 child_of 线程栈校验<a class="anchor" href="#05-threading-compaction--同步派生与-child-of-线程栈校验" aria-label="链接到本节">#</a></h2>
+<p>内置的线程控制由四个工具组成，全部定义在 <code>crates/infinity-agent-core/src/tools/thread.rs</code>：<code>spawn_thread</code>、<code>report_to_parent</code>、<code>close_thread</code> 和 <code>send_message_to_child</code>。</p>
+<p>其中 <code>spawn_thread</code> 专门实现了 <code>supports_sync() == true</code> 和 <code>execute_synchronous</code>。前文提到过，把派生做成切片内同步执行有两个好处：一是省掉一次存储重载，二是彻底避免刚派发出去就被并发事件误判中断的竞态。</p>
+<p>为了挡住上面说的子线程身份错乱重复派生事故，<code>spawn_thread</code> 强制要求模型传入 <code>child_of</code> 参数，内容必须是从根线程到当前线程的完整路径栈（例如根线程传 <code>[&quot;R&quot;]</code>，一级子线程传 <code>[&quot;R&quot;, &quot;A&quot;]</code>）。<code>execute_synchronous</code> 第一步就把模型传进来的 <code>child_of</code> 和运行时掌握的真实 <code>context.thread_stack</code> 做精确比对：</p>
+<pre><code class="language-rust">// crates/infinity-agent-core/src/tools/thread.rs
+if child_of != context.thread_stack {
+    return Some(ToolResult {
+        id: id.as_str().to_owned(),
+        call_id: call_id.map(|c| c.as_str().to_owned()),
+        content: vec![ToolResultContent::Text(Text {
+            text: format!(
+                &quot;Error: child_of {:?} does not match the actual thread stack {:?}. \
+                 You may be confused and think you are in the parent thread, \
+                 but you are not. You are in thread {}. Do NOT spawn threads — \
+                 focus on your assigned task.&quot;,
+                child_of, context.thread_stack, context.group_id
+            ),
+        })],
+    });
+}
+</code></pre>
+<p>这条校验非常管用。如果一个子线程读了继承下来的父线程计划，顺手照抄了父线程的 <code>child_of: [&quot;R&quot;]</code>，运行时会当场把这次调用打回，并把真实的线程栈提醒给它，把它拉回自己的子任务轨道上。</p>
+<h2 id="05-threading-compaction--继承边界-fresh-子代理与自身副本播种">继承边界、Fresh 子代理与自身副本播种<a class="anchor" href="#05-threading-compaction--继承边界-fresh-子代理与自身副本播种" aria-label="链接到本节">#</a></h2>
+<p>派生新线程时，调用方可以在两种继承语义里二选一（<code>crates/infinity-agent-core/src/traits.rs</code> 的 <code>SpawnContext</code>）：</p>
+<ul>
+<li><strong><code>SpawnContext::InheritUpTo(safe_point)</code></strong>（默认），子线程继承父线程（及所有更早祖先）直到 <code>safe_point</code> 为止的对话历史，但看不到父线程在派生之后新增的任何消息。<code>safe_point</code> 由 <code>HistoryManager::safe_spawn_point()</code> 计算，它会刻意截断在两类内容之前：一是尾部所有尚未收到结果的 <code>ToolCall</code>（防止子线程继承到悬空调用），二是所有还在内存里、尚未持久化到 <code>ConversationStore</code> 的 <code>unvalidated_items</code>（因为子线程是从持久化存储加载祖先历史的）。</li>
+<li><strong><code>SpawnContext::Fresh</code></strong>（通过参数 <code>fresh_context: true</code> 开启），子线程以完全空白的历史启动，只看到本次派发给它的自包含指令。源码里把新鲜边界做成可传递的线程属性：<code>ConversationStore::load_history_with_ancestors</code> 从叶节点向根回溯祖先链时，一旦遇到某个标记为 <code>is_fresh_context_thread</code> 的节点，就会把该节点之上所有更早祖先的切片全部裁掉，确保新鲜子代理再派生孙线程时也不会意外泄漏更早的背景噪声。</li>
+</ul>
+<p>这里藏着一个极其讲究的实现细节：哪怕在默认继承模式下，<code>spawn_thread</code> 也会把继承截断点落在<strong>本次 <code>spawn_thread</code> 调用之前</strong>，然后把本次 <code>spawn_thread</code> 调用（保留原始 <code>id</code>、<code>call_id</code> 和参数）<strong>单独复制一份写进子线程自己的存储行里</strong>，再把子线程任务说明作为对应的 <code>ToolResult</code> 投进子线程队列。</p>
+<p>为什么要多此一举自己种一份副本？原因就在父线程压缩。因为父线程随后可能触发上下文压缩，把父线程里的那条 <code>spawn_thread</code> 折进摘要；如果子线程只能通过继承切片看到它，那么当父线程发来 <code>send_message_to_child</code> 消息时，子线程将无法在自身历史里解析原始调用。如今子线程在自己的存储里拥有一份独立副本，配合下面提到的穿透查找，父线程怎么压缩都不影响子线程后续通信。</p>
+<h2 id="05-threading-compaction--合成工具调用与双向通信">合成工具调用与双向通信<a class="anchor" href="#05-threading-compaction--合成工具调用与双向通信" aria-label="链接到本节">#</a></h2>
+<p>大模型 API 通常只认识用户消息、助手消息以及成对出现的工具调用与工具结果，并不理解后台子线程突然发来异步报告这种概念。如果硬把报告伪装成一条普通用户消息塞进去，模型很容易把子代理的汇报错当成人类用户的最新指令。</p>
+<p>Infinity 的统一包装手法是<strong>合成工具调用（synthetic tool call）</strong>。无论是子线程调 <code>report_to_parent</code> 发送中间进度、调 <code>close_thread</code> 汇报最终结论并永久关闭自己，还是父线程调 <code>send_message_to_child</code> 向运行中的子线程追加指示，底层的 <code>prepare_input</code> 都会根据 <code>SyntheticKind</code>（<code>ThreadReport</code>、<code>ParentMessage</code> 或 <code>SubscriptionEvent</code>）先反查出最初的那条调用记录，再往目标线程历史里注入一对结构合法的 <code>receive_event__injected</code> 工具调用与结果：</p>
+<ul>
+<li>合成调用参数包含 <code>original_tool_name</code>、<code>original_tool_call_id</code> 和 <code>original_args</code>，模型一眼就能对齐这是哪次 <code>spawn_thread</code> 或哪次订阅带来的异步消息。</li>
+<li>在持久化结构 <code>InfinityMessage::SubscriptionEvent</code> 中，这对合成调用与结果作为一个变体保存（payload 用 <code>Box</code> 包裹，避免拉大整个 <code>InfinityMessage</code> 枚举体积）。发给模型时 <code>into_messages()</code> 把它展开成两条标准消息；前端重放历史时则直接渲染成干净的订阅或子线程汇报卡片，不会把内部的 <code>receive_event__injected</code> 脏细节暴露给用户。</li>
+</ul>
+<p>那么如果当初父线程的那条 <code>spawn_thread</code> 已经被压缩进了摘要，怎么反查？<code>HistoryManager::find_tool_call</code>（<code>event_processor.rs</code> 第 779 行）先在内存中的当前视图逆向查找；一旦未命中，立刻回退调用 <code>conversation_store.load_history_up_to(&amp;self.thread_id, None, None)</code>，穿透压缩视图直接翻查本线程在持久化存储里的全部原始行。因为压缩只折叠加载出来的视图、从不删除底层原始记录，所以即使父线程休眠并压缩了好几轮，子线程迟到半天的关闭报告依然能精准挂接回原始 <code>spawn_thread</code> 调用。</p>
+<h2 id="05-threading-compaction--订阅事件分流-隔离事件子线程-vs-associative-内联">订阅事件分流：隔离事件子线程 vs associative 内联<a class="anchor" href="#05-threading-compaction--订阅事件分流-隔离事件子线程-vs-associative-内联" aria-label="链接到本节">#</a></h2>
+<p>同样的线程树原语，顺手解决了外部事件流的上下文污染问题。</p>
+<p>当一条来自 RAP 服务的 <code>subscription_event</code> 到达父线程时，<code>prepare_input</code> 会查看事件上的 <code>associative</code> 标志：</p>
+<ul>
+<li><strong>默认模式（<code>associative == false</code>）</strong>：父线程自己不消费原始事件，也不把它写入父历史。<code>prepare_input</code> 直接计算父线程当前的 <code>safe_spawn_point()</code>，自动派生一个临时的事件处理子线程（标记 <code>is_subscription_event = true</code>），往子线程存储里种好合成的 <code>spawn_thread</code> 和 <code>receive_event__injected</code> 引导上下文，再把原始事件正文投进子线程的输入队列。子线程独立分析事件（例如拉取 PR diff 检查改动），觉得重要就调 <code>report_to_parent</code> 或带报告调用 <code>close_thread</code>；如果事件毫无价值，子线程直接空报告关闭，父线程上下文里连一丝痕迹都不会留下。短时间内涌入十条事件，就会派生十个子线程并行消化。</li>
+<li><strong>内联模式（<code>associative == true</code>）</strong>：适用于每一条输出都必须按序进入当前线程自身历史的流式场景（例如 <code>sandbox-core</code> 跑长命令时实时推送的构建日志行）。这类事件跳过派生子线程，直接以 <code>receive_event__injected</code> 注入订阅线程自身历史。</li>
+</ul>
+<p>无论走哪条路，只要事件携带了 <code>final: true</code>，<code>prepare_input</code> 就会同步调用 <code>current_history.remove_subscription</code>，把该订阅从 <code>StateStore</code> 的活跃集合里摘除。</p>
+<h2 id="05-threading-compaction--位置索引压缩-不删旧行-按游标折叠">位置索引压缩：不删旧行，按游标折叠<a class="anchor" href="#05-threading-compaction--位置索引压缩-不删旧行-按游标折叠" aria-label="链接到本节">#</a></h2>
+<p>长对话总有一天会撞上模型上下文窗口。本地驱动 <code>drive_thread</code> 在 <code>handle_step_result</code>（<code>crates/infinity-agent-core/src/system/local/driver.rs</code> 第 384 行）里监控每次补全返回的 <code>usage.total_tokens</code>（刻意用 <code>total_tokens</code> 而不是 <code>input_tokens</code>，避免启用 Prompt Caching 时少算缓存命中部分）。一旦满足：</p>
+<pre><code class="language-rust">total_tokens as usize &gt; context_window * 3 / 4
+</code></pre>
+<p>本地驱动就自动向自己塞入一条 <code>TaggedSyntheticKind::Compaction</code> 合成消息（同时置位 <code>compaction_triggered = true</code> 防止重复触发，直到收到 <code>CompactionComplete</code> 后复位）。</p>
+<p>有趣的是，<strong>上下文压缩本身也是用子线程机制实现的</strong>。<code>prepare_input</code> 收到压缩触发消息后，取当前 <code>safe_spawn_point()</code> 派生一个标记为 <code>is_compaction = true</code> 的子线程，种入名为 <code>__harness_begin_compaction__</code> 的引导调用，要求该子线程把继承到的全部历史总结成摘要，再以摘要作为 <code>report_to_parent</code> 调用 <code>close_thread</code>。</p>
+<p>压缩子线程调用 <code>close_thread</code> 时，<code>CloseThreadTool</code> 识别出 <code>is_compaction == true</code>，不走普通父子汇报流程，而是读取子线程派生时记录的 <code>spawn_order</code>（记作 <code>up_to_order</code>），调用 <code>conversation_store.save_compaction_summary(&amp;parent_id, report_text, up_to_order)</code> 单独存入摘要表，随后向父线程投递一条 <code>TaggedSyntheticKind::CompactionComplete</code> 消息。</p>
+<p>父线程收到通知后调用 <code>HistoryManager::apply_compaction()</code>，核心只是一段精准的相对坐标换算：</p>
+<pre><code class="language-rust">// crates/infinity-agent-core/src/event_processor.rs
+let offset = self
+    .compacted_up_to
+    .borrow()
+    .map_or(0, |prev| prev as usize - 1);
+let up_to =
+    (up_to_order as usize).saturating_sub(offset) + self.ancestor_prefix_len.get();
+</code></pre>
+<p>这段算式把两个边界条件交代得清清楚楚：如果当前线程之前已经压缩过一次，那么旧摘要本身占住了内存历史的槽位 <code>0</code>，所以偏移量要减 1；如果当前线程是个子线程且之前还没压缩过，内存历史最前面还拼着 <code>ancestor_prefix_len</code> 条不属于自己存储表的祖先消息，切分位置必须加上这部分前缀，并在压缩完成后把 <code>ancestor_prefix_len</code> 归零（因为祖先内容已经被吞进新摘要里了）。</p>
+<p>把摘要按 <code>up_to_order</code> 单独建表而不删改原始消息行，带来的直接收益就是历史视图的时序一致性。一个在索引 10 处被派生出来的子线程，哪怕父线程后来在索引 40 处做了压缩，<code>load_history_with_ancestors</code> 为该子线程查父摘要时传入的是 <code>up_to_order &lt;= 10</code>，自然会跳过索引 40 的摘要，照旧精确还原出 0 到 10 的原始父历史；而在索引 50 处派生的新子线程，则会直接拿到索引 40 的摘要加上 40 到 50 的增量行，省下全部重复 token。</p>
+<p>线程树和压缩机制把状态结构理顺了，但在本地单机跑几十个并发线程时，消息什么时候该批处理、什么时候该延迟、什么时候该立刻抢占打断？下一章拆解本地单线程路由器与延迟队列。</p>
+</div></section><section class="book-section" id="06-local-actor-deferral"><header class="chapter-head"><div class="chapter-number">06</div><h1>单线程本地调度器、延迟队列与抢占打断</h1></header><div class="prose"><p>在云端 AWS Lambda 上，每个活跃线程的切片由 SQS FIFO 自动串行调度，跑完进程就销毁，不存在长期驻留的调度器。但把同一套 <code>infinity-agent-core</code> 搬回开发者本机守护进程或者嵌入式应用时，立刻会碰到四个本地运行特有的竞态难题：</p>
+<ol>
+<li>几万个历史线程如果每个都在后台养一个常驻 <code>tokio::spawn</code> 任务，光任务结构体和通道缓存就会吃掉可观内存。</li>
+<li>父线程刚刚派发了一个耗时十秒的 <code>execute_command</code>，跑了一半时另一个子线程发回一条 <code>report_to_parent</code>。如果父线程立刻处理这条汇报，就会因为历史末尾还有未应答的工具调用，被迫给 <code>execute_command</code> 注入一条中断结果，把本来好端端在跑的构建平白无故杀掉。</li>
+<li>用户正在看模型流式吐字，突然发现方向错了，直接敲下一句新指令回车。运行时必须立刻停掉当前流式生成、保存已经吐出来的半截内容，还得确保不能把模型还没响应过的未验证输入提前写坏。</li>
+<li>某个线程刚准备空闲退出，就在释放通道前的一微秒，一条新消息或一个新前端订阅请求撞了进来，怎么保证不丢消息、也不把同一个线程同时拉起两个驱动？</li>
+</ol>
+<p><code>crates/infinity-agent-core/src/system/local/</code> 里的 <code>router.rs</code>、<code>driver.rs</code> 加上 <code>system/defer.rs</code> 与 <code>system/thread.rs</code>，用单线程协作式调度和极克制的状态机把这四件事全部收敛清楚了。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 288" width="640" height="288" role="img" aria-label="本地单线程路由器与线程驱动状态机">
+<title>本地单线程路由器与线程驱动状态机</title>
+<defs><marker id="06-local-actor-deferral--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker><marker id="06-local-actor-deferral--arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--amber)"/></marker><marker id="06-local-actor-deferral--arrow-forest" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--forest)"/></marker></defs>
+<text x="10" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">本地单线程 LocalSet 路由器、延迟队列与抢占状态机</text><rect x="10" y="34" width="286" height="100" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="20" y="53" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--forest)" text-anchor="start">route_loop (单线程 LocalSet)</text><text x="20" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">所有线程驱动直接托管于 FuturesUnordered</text><text x="20" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">准入检查: 非用户文本查 thread_exists 与</text><text x="20" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">is_thread_stopped (存储故障时 fail-open)</text><text x="20" y="118" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">异常经 log_panic 隔离，不拖垮其他线程</text><line x1="296" y1="84" x2="334" y2="84" stroke="var(--forest)" stroke-width="1.2" marker-end="url(#arrow-forest)"/><text x="315" y="74" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="600" fill="var(--forest)" text-anchor="middle">拉起</text><rect x="336" y="34" width="294" height="100" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="346" y="53" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--amber)" text-anchor="start">drive_thread (每活跃线程 1 个 Future)</text><text x="346" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">批量排空同线程通道，调用 filter_deferrable</text><text x="346" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">流式执行中若收到用户文本: cancel() 中断</text><text x="346" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">附加 &lt;interrupt&gt; 前缀并通知 RAP 取消工具</text><text x="346" y="118" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">Token &gt; 75% 上下文窗时触发自动压缩子线程</text><line x1="483" y1="134" x2="483" y2="162" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="10" y="164" width="296" height="88" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="20" y="183" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start">DeferQueue 延迟策略 (本地 vs Lambda)</text><text x="20" y="200" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">尾部有未答非被动工具 (!is_passive()):</text><text x="20" y="216" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">  暂存订阅事件、子线程报告与父线程消息</text><text x="20" y="232" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">sleep 家族标记 is_passive() == true 可打断</text><text x="20" y="248" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">Lambda 默认 NoDeferral，直接按中断处理</text><rect x="326" y="164" width="304" height="88" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="336" y="183" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--forest)" text-anchor="start">check_before_idle (同步原子退出)</text><text x="336" y="200" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">与路由共享 LocalSet，检查期间不让出调度</text><text x="336" y="216" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">有待答非 close_thread 工具 -&gt; AwaitInput</text><text x="336" y="232" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">仅剩活跃订阅或完全空闲 -&gt; Exit 释放内存</text><text x="336" y="248" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">DriverGuard::drop 发出 Idle 生命周期事件</text><line x1="306" y1="208" x2="326" y2="208" stroke="var(--muted)" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrow)"/><text x="10" y="274" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.3" font-weight="400" fill="var(--muted)" text-anchor="start">客户端通过 SubscribeHandle 的 oneshot ACK 确认重放 ReplaySnapshot 安装完成，避免丢失并发事件。</text>
+</svg>
+<figcaption>本地单线程路由器与线程驱动状态机</figcaption></figure>
+<h2 id="06-local-actor-deferral--为什么选择单线程-localset-加-futuresunordered">为什么选择单线程 LocalSet 加 FuturesUnordered<a class="anchor" href="#06-local-actor-deferral--为什么选择单线程-localset-加-futuresunordered" aria-label="链接到本节">#</a></h2>
+<p>翻开 <code>crates/infinity-agent-core/src/system/local/router.rs</code>，整个本地 Actor 系统刻意运行在单线程的 <code>tokio::task::LocalSet</code> 上，而不是多线程工作窃取池。驱动内部大量使用了轻量的 <code>Rc</code>、<code>RefCell</code> 和 <code>Cell</code>（<code>HistoryManager</code> 和 <code>Thread</code> 都不需要 <code>Arc&lt;Mutex&lt;...&gt;&gt;</code> 锁竞争）。更重要的是，单线程 <code>LocalSet</code> 带来了确定性的协作切换点：只要一段函数里没有 <code>.await</code>，路由器 <code>route_loop</code> 和各线程驱动 <code>drive_thread</code> 之间就不会互相抢占，这正是后面无竞态原子退出检查的前提。</p>
+<p>另一个省内存的关键手笔在 <code>route_loop</code>（第 256 至 261 行）：路由器<strong>没有</strong>用 <code>tokio::spawn</code> 给每个线程建独立任务，而是用一个 <code>FuturesUnordered</code> 直接持有所有活跃线程的 <code>drive_thread</code> future，再配一张 <code>workers: HashMap&lt;ThreadId, WorkerChannels&gt;</code> 路由表。</p>
+<p>当某个线程空闲返回时，它的 future 从 <code>FuturesUnordered</code> 中产出 <code>ThreadId</code>，整个驱动状态机连同 <code>HistoryManager</code> 的内存立刻彻底释放，路由器紧接着把 <code>workers</code> 里对应通道已关闭的条目删掉（代码特意检查 <code>w.input_tx.is_closed()</code>，防止误删同一瞬间刚重新拉起的新驱动条目）。为了让单个线程的意外 bug 不至于拖垮整台守护进程，每个驱动 future 外层都包了 <code>rap_protocol::log_panic(&quot;thread_driver&quot;, driver)</code>，用 <code>AssertUnwindSafe(...).catch_unwind()</code> 捕获 panic 并记日志，其余线程照常运转。</p>
+<h2 id="06-local-actor-deferral--准入策略-绝不为幽灵或已停线程唤醒驱动">准入策略：绝不为幽灵或已停线程唤醒驱动<a class="anchor" href="#06-local-actor-deferral--准入策略-绝不为幽灵或已停线程唤醒驱动" aria-label="链接到本节">#</a></h2>
+<p>外部 RAP 服务随时可能迟到几小时推回来一条过期回调，或者针对一个已经被用户手工停止的会话发来订阅事件。如果路由器照单全收、见消息就拉起驱动，就会平白创建出幽灵线程记录，或者把已经停止的代理偷偷叫醒。</p>
+<p><code>route_loop</code>（第 310 至 356 行）在拉起新驱动之前加了一道准入门禁：</p>
+<ul>
+<li><strong>普通用户文本直接放行</strong>（<code>is_user_text_input</code> 为真），因为发新文本正是用户创建新线程和唤醒已停止线程的合法入口。</li>
+<li><strong>订阅客户端请求直接放行</strong>，允许 UI 在线程第一条消息到来之前提前挂载监听。</li>
+<li><strong>其余一切事件型输入</strong>（工具结果、订阅事件、子线程回报、OAuth、用户选择）必须过两关：先查 <code>conversation_store.thread_exists(&amp;thread_id)</code>，不存在则直接丢弃并记日志；再查 <code>state_store.is_thread_stopped(&amp;thread_id)</code>，已停止则直接丢弃。两关遇到存储短暂报错时都采用 <strong>fail-open</strong> 策略（记录警告并放行），宁可让驱动醒来走一遍 <code>prepare_input</code> 吸收脏消息，也不因存储抖动误丢真实的工具回调。</li>
+</ul>
+<h2 id="06-local-actor-deferral--deferqueue-与-is-passive-什么时候该等-什么时候能打断">DeferQueue 与 is_passive：什么时候该等，什么时候能打断<a class="anchor" href="#06-local-actor-deferral--deferqueue-与-is-passive-什么时候该等-什么时候能打断" aria-label="链接到本节">#</a></h2>
+<p>再看前面提到的第二个难题：子线程回报撞上正在执行的工具调用。</p>
+<p><code>crates/infinity-agent-core/src/system/defer.rs</code> 定义了 <code>DeferQueue</code> trait，只有 <code>push</code> 和 <code>drain</code> 两个方法，提供两种内置实现：本地常驻模式用 <code>InMemoryDeferQueue</code> 暂存在内存向量里；无服务器 Lambda 模式用 <code>NoDeferral</code>（<code>push</code> 永远返回 <code>Ok(false)</code>），因为 Lambda 没有驻留进程可存内存，除非调用方自己实现基于 SQS 延迟重投的传输层队列，否则直接接受打断语义。</p>
+<p>真正决定一条事件该不该被延迟的逻辑，在 <code>Thread::pending_active_tool_call</code> 和 <code>Thread::filter_deferrable</code>（<code>crates/infinity-agent-core/src/system/thread.rs</code> 第 216 至 291 行）里，依赖 <code>Tool::is_passive()</code> 这个精细的布尔标记：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>尾部挂起的工具状态</th>
+<th>到来的新消息类型</th>
+<th><code>filter_deferrable</code> 处理动作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>无未应答工具，或挂起的是被动工具（如 <code>sleep</code> / <code>sleep_until</code> / <code>sleep_until_event_or_input</code>）</td>
+<td>任何消息</td>
+<td>立即放行，并排空此前积压的延迟队列一起拼进本批；若原工具在休眠，则按正常中断逻辑唤醒</td>
+</tr>
+<tr>
+<td>挂起的是活跃工具（<code>is_passive() == false</code>，如 <code>execute_command</code>）</td>
+<td>恰好是该工具的 <code>ToolResult</code>，或普通用户文本</td>
+<td>立即放行，并将延迟队列排空追加在后面（保持本批先结算挂起调用、再处理延迟事件的顺序）</td>
+</tr>
+<tr>
+<td>挂起的是活跃工具（<code>is_passive() == false</code>）</td>
+<td>可延迟合成事件（<code>SubscriptionEvent</code>、<code>ThreadReport</code>、<code>ParentMessage</code>）</td>
+<td>压入 <code>DeferQueue</code> 暂存，不打断正在运行的工具调用</td>
+</tr>
+</tbody></table></div>
+<p>这条规则把语义分得极细：<code>sleep</code> 家族工具虽然也在等结果，但它们代表原地待命，标记为 <code>is_passive() == true</code>，允许外部订阅事件或子线程回报随时叫醒；真正在跑构建、改文件的工具属于活跃任务，无关合成事件乖乖在 <code>InMemoryDeferQueue</code> 里排队，等构建结果一到（或者用户主动发话打断）再按顺序接上。</p>
+<h2 id="06-local-actor-deferral--流式抢占打断与优雅关闭">流式抢占打断与优雅关闭<a class="anchor" href="#06-local-actor-deferral--流式抢占打断与优雅关闭" aria-label="链接到本节">#</a></h2>
+<p>本地驱动 <code>drive_thread</code>（<code>crates/infinity-agent-core/src/system/local/driver.rs</code>）用 <code>InFlightStep</code> 把正在执行的 <code>step_no_defer</code> future 和它的 <code>oneshot::Sender&lt;()&gt;</code> 取消句柄绑在同一个结构体里。这样做的好处是所有权天然同步：取消步骤会消费掉整个 <code>InFlightStep</code>，哪怕驱动因为外层关闭被直接 <code>drop</code>，<code>cancel_tx</code> 也会随之释放，内层的 <code>run_completion</code> 立刻收到取消信号。</p>
+<p>当一个步骤正在流式推理中，<code>drive_thread</code> 在 <code>tokio::select! { biased; ... }</code> 里同时监听步骤完成、新输入通道 <code>rx</code> 和新订阅通道 <code>subscribe_rx</code>：</p>
+<ul>
+<li>如果 <code>rx</code> 收到的批次里<strong>包含用户文本</strong>，驱动立即调用 <code>in_flight.take().cancel().await</code> 中断当前补全流。如果此时模型已经吐出部分文本，取消路径会把已生成的半截内容正常 <code>flush_turn</code> 并 <code>sync()</code> 落盘，不会丢掉用户刚才在屏幕上看到的话；如果模型还没吐出第一个字节就取消了，本轮输入留在内存的 <code>unvalidated_items</code> 里不落盘，下一轮连同新的打断消息一起发给模型。接着驱动把批次拆成用户文本和非用户消息两部分，给第一条用户文本加上 <code>&lt;interrupt&gt;</code> 前缀（前端回显 <code>input_event</code> 时会剥掉这个前缀，模型则能明确感知自己被用户中途打断），非用户消息放进 <code>pending_batch</code> 留待后续处理。</li>
+<li>如果 <code>rx</code> 收到的批次里<strong>全是异步事件</strong>（没有用户文本），驱动不打断当前推理，只是顺手塞进 <code>pending_batch</code>，等当前步骤自然跑完再接手。</li>
+<li>如果 <code>rx</code> 关闭（代表整个 <code>RunningSystem::shutdown()</code> 被触发），驱动同样显式 <code>cancel().await</code> 等待当前步骤把已验证历史刷盘完毕再退出。路由器侧也会 <code>drop(workers)</code> 后把 <code>drivers</code> 排空，绝不在持久化中途把进程掀翻。</li>
+</ul>
+<h2 id="06-local-actor-deferral--同步原子退出与订阅安装-ack">同步原子退出与订阅安装 ACK<a class="anchor" href="#06-local-actor-deferral--同步原子退出与订阅安装-ack" aria-label="链接到本节">#</a></h2>
+<p>最后看本地驱动最容易出并发 Bug 的两个边角：空闲退出与中途订阅。</p>
+<p>当 <code>pending_batch</code>、<code>rx</code> 和 <code>defer</code> 队列都为空时，<code>drive_thread</code> 调用一个<strong>完全同步、不含任何 <code>.await</code></strong> 的函数 <code>check_before_idle</code>（<code>driver.rs</code> 第 331 行）：先排空 <code>subscribe_rx</code> 处理所有刚到的订阅请求，再 <code>try_recv()</code> 确认 <code>rx</code> 确实空了；接着检查 <code>thread.awaiting_tool_result()</code>（即历史最后一条是不是除 <code>close_thread</code> 之外的未应答工具调用）。如果是，返回 <code>IdleDecision::AwaitInput</code>，驱动继续挂在 <code>select!</code> 上等工具回包；如果不是（即便线程还挂着活跃订阅，也不必常驻驱动，事件来了路由器会再拉起它），立刻返回 <code>IdleDecision::Exit</code> 退出驱动。</p>
+<p>因为 <code>check_before_idle</code> 里没有让出点，且与 <code>route_loop</code> 共享同一个单线程 <code>LocalSet</code>，所以新消息要么在检查前就已经躺进了 <code>rx</code> 被它当场捞走，要么一定发生在驱动退出、接收端关闭之后，被路由器检测到 <code>is_closed()</code> 并拉起新驱动，绝不存在消息掉进两头裂缝的可能。驱动退出时，<code>DriverGuard::drop</code> 在同一临界区里移除 <code>active_threads</code> 集合成员并向 <code>lifecycle_tx</code> 发出 <code>ThreadLifecycleState::Idle</code>，让外部宿主（例如守护进程）据此精准回收该会话关联的附加资源。</p>
+<p>前端订阅也用同样的严谨手法消除了竞态：<code>SubscribeHandle::subscribe</code> 带一个 <code>oneshot::Sender&lt;()&gt;</code>，直到目标线程驱动把 <code>thread.replay_snapshot()</code> 交给了 <code>observer.on_subscribe</code> 并真正把监听者注册完成，才会发回 ACK。调用方只要 <code>await</code> 完 <code>subscribe()</code> 再发 <code>send_user_text()</code>，就能百分之百保证不会漏收第一批流式事件。</p>
+<p>把本地调度器拆透后，再往下看一个经常被低估的边界：核心运行时是怎么在不认识任何一家大模型 SDK、也不解析一句报错文本的前提下，处理五花八门的限流、超窗、断流和跨进程模型供应的？下一章拆解模型供应协议。</p>
+</div></section><section class="book-section" id="07-provider-error-boundary"><header class="chapter-head"><div class="chapter-number">07</div><h1>模型供应协议、跨进程隔离与错误分类契约</h1></header><div class="prose"><p>做过多模型接入的团队大多写过这种越改越脏的代码：核心 Agent 循环里嵌着一大段 <code>if err.contains(&quot;Throttling&quot;) || err.contains(&quot;429&quot;) || err.contains(&quot;too many requests&quot;)</code>，旁边又叠着一个 120 秒的流式空闲超时定时器。结果一换模型供应商，报错措辞变了，限流被当成致命错误直接放弃；一碰上推理模型思考两分半钟不吐字，核心层的空闲超时把好好的流强行掐断，触发毫无意义的重试，既烧双倍 token 又让用户干等。</p>
+<p>Infinity 在 <code>0.2.0</code>（PR #121）里把这套脆弱的耦合彻底拆干净了。整个模型供应子系统由三个 crate 组成：<code>infinity-provider-protocol</code>（1,280 行）定义协议与跨进程传输，<code>infinity-provider-bedrock</code>（1,445 行）对接 AWS Bedrock ConverseStream，<code>infinity-provider-rig</code>（504 行）基于 <code>rig-core</code> 对接 OpenAI 兼容服务。</p>
+<h2 id="07-provider-error-boundary--errorclass-契约-供应器分类-核心层只看枚举">ErrorClass 契约：供应器分类，核心层只看枚举<a class="anchor" href="#07-provider-error-boundary--errorclass-契约-供应器分类-核心层只看枚举" aria-label="链接到本节">#</a></h2>
+<p>翻开 <code>crates/infinity-provider-protocol/src/completion.rs</code>，核心运行时对模型失败的所有认知，全部收敛在四个枚举变体里：</p>
+<pre><code class="language-rust">pub enum ErrorClass {
+    Transient,       // 瞬时故障：断流、后端抖动、建连超时，可短退避重试
+    Throttled,       // 限流配额不足：需要更长退避后重试
+    ContextOverflow, // 上下文超窗：原样重试必败，必须收缩输入或压缩
+    Fatal,           // 永久错误：非法请求、未知模型、无权限，立刻放弃
+}
+</code></pre>
+<p><code>CompletionError::class()</code> 把四类包装错误也归口到这四个值：<code>RequestError</code> 和 <code>JsonError</code> 属于本地构造或解析出错，归为 <code>Fatal</code>；<code>ResponseError</code> 属于读取流时的传输帧故障，归为 <code>Transient</code>；<code>ProviderError { message, class }</code> 直接携带供应器自己填好的 <code>ErrorClass</code>。</p>
+<p>这样一来，<code>infinity-agent-core</code> 里的 <code>run_completion</code> 彻底不再做任何字符串匹配，也删掉了原本硬编码的 60 秒建连超时和 120 秒流中途停顿定时器。它的重试状态机变得极度干净（<code>event_processor.rs</code> 第 1404 至 1599 行）：</p>
+<ul>
+<li>收到 <code>ErrorClass::Throttled</code> 且未超过 <code>MAX_COMPLETION_RETRIES</code>（10 次）：休眠 <code>THROTTLED_RETRY_DELAY</code>（30 秒，休眠期间仍响应用户 <code>cancel_rx</code> 中断）后重试。</li>
+<li>收到 <code>ErrorClass::Transient</code> 且未超过 10 次：休眠 <code>TRANSIENT_RETRY_DELAY</code>（5 秒，可取消）后重试；若中途已经吐过部分块，先调用 <code>history.discard_turn()</code> 扔掉脏缓冲，再从干净历史重发。</li>
+<li>收到 <code>ErrorClass::ContextOverflow</code>：不走普通退避，直接转交第 3 章拆解过的 <code>recover_from_overflow</code>。</li>
+<li>收到 <code>ErrorClass::Fatal</code>：直接报错退出，一次都不重试。</li>
+</ul>
+<p>超时策略也同步下放给供应器自己决定。核心层自己<strong>零超时</strong>，理由很务实：不同后端的延迟特征天差地别，核心层根本猜不准一次深度推理要思考多久。</p>
+<h2 id="07-provider-error-boundary--bedrock-供应器的真实工程细节">Bedrock 供应器的真实工程细节<a class="anchor" href="#07-provider-error-boundary--bedrock-供应器的真实工程细节" aria-label="链接到本节">#</a></h2>
+<p><code>crates/infinity-provider-bedrock/src/lib.rs</code> 浓缩了不少对接真实生产云服务踩出来的坑，读它的注释比读官方文档还解渴：</p>
+<ol>
+<li><strong>只卡建连，绝不掐活流</strong>，Bedrock 偶尔会出现请求黑洞（发出去既不返回也不报错），因此 <code>BedrockProvider</code> 在 <code>ConverseStream</code> 请求发起阶段加了 60 秒的 <code>REQUEST_INITIATION_TIMEOUT</code>，超时后显式包装成 <code>ErrorClass::Transient</code> 交给核心层重试。一旦流式响应建立，代码里<strong>刻意不设任何中途停顿或读取超时</strong>，宁可相信底层连接与模型思考，也绝不人为掐断正常长推理。</li>
+<li><strong>细粒度工具流 Beta 绕开服务端看门狗</strong>，Bedrock 上调用 Anthropic 模型吐出一个很大的 <code>edit_file</code> 或 <code>create_file</code> 工具参数时，默认情况下后端会在服务端把整段工具输入缓冲校验完才开始下发。这中间长达数十秒的静默空档经常触发 Bedrock 自己的流看门狗，直接报 <code>ModelTimeoutException</code>。因此供应器主动附带了 <code>fine-grained-tool-streaming-2025-05-14</code> Beta 请求头，让工具参数碎片边生成边下发、流永不静默。源码同时坦诚写明了代价：服务端不再替客户端预校验工具 JSON，碎片拼完后可能解析失败，这部分交由 <code>stream.rs</code> 里的 <code>finish_tool_call</code> 单独分类处理。此外还启用了 <code>context-1m-2025-08-07</code> 百万上下文 Beta 标志，并自动在每次请求的最后一条消息末尾追加 Prompt Caching 缓存点。</li>
+<li><strong>集中式错误映射</strong>，<code>classify_bedrock_error</code> 根据 AWS SDK 错误码和消息启发式完成映射：<code>ThrottlingException</code> / <code>ServiceQuotaExceededException</code> 归 <code>Throttled</code>；包含 <code>&quot;too long&quot;</code>、<code>&quot;too large&quot;</code>、<code>&quot;input length&quot;</code> 或同时含 <code>&quot;exceed&quot;</code> 与 <code>&quot;context&quot;</code> 的 <code>ValidationException</code> 归 <code>ContextOverflow</code>；<code>InternalServerException</code>、<code>ServiceUnavailableException</code>、<code>ModelTimeoutException</code>、<code>ModelNotReadyException</code>、<code>ModelStreamErrorException</code>、<code>ModelErrorException</code> 以及 <code>&quot;unexpected end of stream&quot;</code> 归 <code>Transient</code>；其余默认 <code>Fatal</code>。<code>infinity-provider-rig</code> 则在自己 crate 里维护针对 OpenAI 兼容接口的同类映射。</li>
+<li><strong>反套娃的真实集成测试</strong>，除了常规单测，<code>infinity-provider-bedrock</code> 还准备了非默认特性 <code>live-tests</code>（<code>tests/live.rs</code>），直接用本地 AWS 凭证打真实 Bedrock 端点验证超窗分类、未知模型致命错误和正常流式路径。变更记录里特意提到，正是跑真实测试才抓出了开发期一个算错的 token 估算问题，而光靠写死的单元测试字符串对照表永远测不出真实服务改文案。</li>
+</ol>
+<h2 id="07-provider-error-boundary--插件化架构-通过-unix-socket-跨进程运行供应器">插件化架构：通过 Unix Socket 跨进程运行供应器<a class="anchor" href="#07-provider-error-boundary--插件化架构-通过-unix-socket-跨进程运行供应器" aria-label="链接到本节">#</a></h2>
+<p>在 Lambda 部署里，模型供应器直接作为 Rust 库静态链接进二进制即可。但在本地产品 Infinity Code 里，用户希望像装插件一样执行 <code>infinity provider install bedrock --crate infinity-provider-bedrock</code>，随时安装、升级、混用多个不同供应器（比如同时装 Bedrock 和 OpenAI 兼容供应器，在不同线程间实时 <code>/model</code> 切换），而不必把所有云厂商的庞大 SDK 全编进主二进制 <code>infinity-daemon</code>。</p>
+<p><code>crates/infinity-provider-protocol/src/remote.rs</code> 用不到五百行代码搭出了一套极其清爽的跨进程供应器协议：</p>
+<ul>
+<li><strong>启动与发现</strong>：每个独立供应器二进制启动后调用 <code>serve_provider(Arc&lt;dyn ModelProvider&gt;)</code>，在系统临时目录生成一个短路径 Unix Domain Socket（格式 <code>inf-provider-&lt;12位hex&gt;.sock</code>，特意压短路径长度以避开 macOS 上约 104 字节的 Unix Socket 路径上限），把 socket 路径打印到 stdout 交给守护进程读取，然后进入监听循环。</li>
+<li><strong>并发连接模型</strong>：协议使用 <code>LinesCodec</code> 承载换行分隔的 JSON（JSON Lines），<strong>每次请求新建一条独立的 Unix Socket 连接</strong>。这个朴素的选择省掉了在单连接上写多路复用帧 ID、反压和队头阻塞的整套复杂性：十个线程同时推理，就是十条并行的本地 socket 连接，各自独立读写互不干扰。</li>
+<li><strong>两种请求与流式帧</strong>：<code>ProviderRequest::ListModels</code> 返回单行 <code>Models(Vec&lt;ModelEntry&gt;)</code> 或 <code>Error(WireError)</code>；<code>ProviderRequest::InvokeModel</code> 返回 <code>InvokeStarted</code>，随后逐行流式推送 <code>Chunk(Result&lt;StreamChunk, WireError&gt;)</code>，最后以 <code>StreamEnd</code> 收尾。注意流中途的错误也能作为 <code>Chunk(Err(WireError))</code> 沿流透传，与进程内流行为保持完全同构。</li>
+<li><strong>跨进程保留错误分类</strong>：错误在 socket 上包装成 <code>WireError { message, class }</code>，反序列化时如果对方是老版本供应器漏掉了 <code>class</code> 字段，默认兜底为安全的 <code>ErrorClass::Fatal</code>（不盲目重试）。于是 <code>ErrorClass</code> 跨越了进程边界，客户端侧的 <code>RemoteModelProvider</code> 对 <code>infinity-agent-core</code> 呈现出与进程内供应器一模一样的 <code>ModelProvider</code> trait。</li>
+</ul>
+<p>到这里，Agent 怎么运行切片、怎么管历史、怎么调异步工具、怎么分线程、怎么调度本地并发以及怎么连大模型，全都拼装完整了。但对于一个 Coding Agent 来说，最要命的现场还没解决：当三个并发线程同时改写同一个代码仓库时，怎么不把代码改烂，又不让模型一条 <code>rm -rf</code> 误伤开发者的宿主目录？下一章拆解堆叠沙箱子系统。</p>
+</div></section><section class="book-section" id="08-stacked-sandboxes"><header class="chapter-head"><div class="chapter-number">08</div><h1>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</h1></header><div class="prose"><p>让两个并行的编码 Agent 在同一个项目目录里干活，一个负责补单元测试，另一个负责重写 README 并顺手跑 <code>cargo fmt</code>，不出十秒就会撞出经典灾难：文件互相覆盖，未暂存的 <code>git diff</code> 混成一锅粥，开发者的工作树被改得面目全非，甚至模型在子目录里敲了一条不小心的清理命令，顺手把宿主目录里的未提交代码删光了。</p>
+<p>Infinity Code 把代码编辑与命令执行全部做成了一个独立的 RAP 工具服务，由 <code>sandbox-core</code>（3,902 行）、<code>sandbox-local</code>（4,911 行）和 <code>sandbox-remote</code>（534 行）三个 crate 组成。它的核心思路很干净：宿主的真实工作目录永远只读不动，每个 Agent 线程都分配一块隔离的独立工作区，父子线程之间以堆叠方式共享基线、干完再合并，同时在操作系统层用内核沙箱把写权限死死框在沙箱目录内。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 372" width="640" height="372" role="img" aria-label="堆叠沙箱与操作系统级写隔离边界">
+<title>堆叠沙箱与操作系统级写隔离边界</title>
+<defs><marker id="08-stacked-sandboxes--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker><marker id="08-stacked-sandboxes--arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--amber)"/></marker><marker id="08-stacked-sandboxes--arrow-forest" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--forest)"/></marker></defs>
+<text x="10" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="600" fill="var(--ink)" text-anchor="start">堆叠沙箱工作区与操作系统级写隔离边界</text><rect x="10" y="34" width="620" height="48" rx="3" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="20" y="53" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--forest)" text-anchor="start">宿主仓库工作目录 (默认只读，永不直接改写)</text><text x="20" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">沙箱落在 {repo}/.infinity/.sandboxes/，并注入 GIT_CEILING_DIRECTORIES 防止 git 越界识别外层仓</text><line x1="320" y1="82" x2="320" y2="108" stroke="var(--forest)" stroke-width="1.2" marker-end="url(#arrow-forest)"/><rect x="195" y="110" width="250" height="48" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="205" y="129" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--amber)" text-anchor="start">父线程沙箱 sandbox-{root}</text><text x="205" y="146" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">jj workspace add / git worktree add</text><line x1="260" y1="158" x2="162" y2="188" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><line x1="380" y1="158" x2="478" y2="188" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><text x="156" y="174" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="middle">base_thread_id 堆叠</text><text x="484" y="174" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="8.8" font-weight="400" fill="var(--muted)" text-anchor="middle">并行独立工作区</text><rect x="26" y="190" width="266" height="56" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="36" y="209" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start">子线程 A: sandbox-{c1}</text><text x="36" y="226" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">独立修改单测，互不覆盖</text><text x="36" y="242" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">完成后 squash_sandbox 合并回父书签</text><rect x="348" y="190" width="266" height="56" rx="3" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="358" y="209" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--ink)" text-anchor="start">子线程 B: sandbox-{c2}</text><text x="358" y="226" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">独立修改文档，互不覆盖</text><text x="358" y="242" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.5" font-weight="400" fill="var(--muted)" text-anchor="start">完成后 squash_sandbox 合并回父书签</text><rect x="10" y="266" width="620" height="92" rx="3" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="20" y="285" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="600" fill="var(--amber)" text-anchor="start">OS 写隔离层 (sandbox-local) 与越权审批</text><text x="20" y="302" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">Linux:  bwrap --ro-bind / / --bind &lt;tmp&gt; --bind &lt;sandbox&gt; --dev /dev --proc /proc (缺少时 build.rs 编译)</text><text x="20" y="318" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">macOS:  sandbox-exec (allow default) (deny file-write*) + 仅放行沙箱、TMPDIR、sccache 与 /dev/null</text><text x="20" y="334" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">提权写: 请求 write-orig 或 write:/path 时沿 thread_ancestors 查授权，未授权发 RAP UserChoice 确认</text><text x="20" y="350" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="9.2" font-weight="400" fill="var(--muted)" text-anchor="start">边界声明: 读文件系统与网络默认开放，目标防止误改宿主工作区，并非对抗恶意代码的虚拟化容器</text>
+</svg>
+<figcaption>堆叠沙箱与操作系统级写隔离边界</figcaption></figure>
+<h2 id="08-stacked-sandboxes--sandboxbackend-与-modeprovider-把-vcs-策略抽离出核心服务">SandboxBackend 与 ModeProvider：把 VCS 策略抽离出核心服务<a class="anchor" href="#08-stacked-sandboxes--sandboxbackend-与-modeprovider-把-vcs-策略抽离出核心服务" aria-label="链接到本节">#</a></h2>
+<p>打开 <code>crates/sandbox-core/src/sandbox.rs</code>，沙箱层没有把 Jujutsu 或 Git 逻辑硬编码进 HTTP 路由，而是拆出了两层 trait：<code>SandboxBackend</code> 负责底层环境差异（本地目录加 OS 写隔离 vs 云端 AWS EFS 镜像），<code>ModeProvider</code> 负责具体版本控制系统的工作区生命周期（<code>detect</code>、<code>create_sandbox</code>、<code>refresh_sandbox</code>、<code>describe</code>、<code>detect_external_change</code>、<code>push_sandbox</code>、<code>squash</code>、<code>diff_files</code>、<code>cleanup</code> 以及供 <code>Drop</code> 使用的同步 <code>cleanup_blocking</code>）。</p>
+<p>在 <code>crates/sandbox-local/src/backend.rs</code> 里，<code>LocalBackend::new</code> 默认注册了两个对称的内置提供器：<code>LocalJjProvider</code> 在前，<code>LocalGitProvider</code> 垫底（调用方也可以通过 <code>with_provider</code> 往前插自定义提供器）。每次收到 <code>clone_repo</code> 调用时，后端先从请求路径向上回溯找到真实仓库根（哪怕 <code>cwd</code> 落在嵌套子目录也能准确识别），再按注册顺序询问提供器：</p>
+<ul>
+<li><strong>Jujutsu 模式（<code>SandboxMode::Jj</code>，推荐）</strong>，检测到 <code>.jj</code> 目录即接管。<code>LocalJjProvider</code> 在 <code>{repo}/.infinity/.sandboxes/</code> 下建临时目录，执行 <code>jj workspace add -r root()</code>，配置工作区级 <code>user.name</code>/<code>user.email</code>，检出或新建名为 <code>sandbox-{thread_id}</code> 的书签。每次复用缓存工作区前自动跑 <code>jj workspace update-stale</code>；每次写操作完成后调用 <code>jj bookmark set sandbox-{thread_id} -B</code> 推进书签，若是 colocated 仓库还会执行 <code>jj --ignore-working-copy git export</code> 让底层 Git 引用保持同步；每次操作前还会通过 <code>jj_detect_external_bookmark_move</code> 检查书签是不是被用户在外部挪过位置，如果有偏移就在工具结果里附带醒目警告。</li>
+<li><strong>Git 模式（<code>SandboxMode::Git</code>，兜底）</strong>，纯 Git 仓库下自动启用。<code>LocalGitProvider</code> 通过 <code>git worktree add</code> 在 <code>{repo}/.infinity/.sandboxes/</code> 下拉出独立 worktree 并绑定同名分支 <code>sandbox-{thread_id}</code>，每次修改后用 <code>git_amend_all</code> 把改动收拢到分支顶端，销毁时用 <code>git worktree remove</code> 清理，如果顶端提交为空还会顺手删掉空分支。</li>
+<li><strong>直接模式（<code>SandboxMode::Direct</code>）</strong>，通过 <code>open_sandbox_direct</code> 打开原始目录，跳过 <code>ModeProvider</code>。注意直接模式下 <code>sandbox_writable</code> 默认设为 <code>false</code>，命令和文件工具只读不能直接改写原目录，真正要写必须走下面的人工审批流程。</li>
+</ul>
+<h2 id="08-stacked-sandboxes--堆叠与合并-父子并行线程怎么无冲突汇流">堆叠与合并：父子并行线程怎么无冲突汇流<a class="anchor" href="#08-stacked-sandboxes--堆叠与合并-父子并行线程怎么无冲突汇流" aria-label="链接到本节">#</a></h2>
+<p>当根线程启动后，它拿到的工作区挂在书签 <code>sandbox-{root}</code> 上。此时它通过 <code>spawn_thread</code> 派生出两个子线程分别改单测和文档，每个子线程初始化沙箱时传入 <code>base_thread_id = root</code>，于是 <code>CloneContext::base_bookmark</code> 指向 <code>sandbox-{root}</code>。</p>
+<p>这样就形成了<strong>堆叠沙箱（stacked sandboxes）</strong>：子线程 A 拿到 <code>sandbox-{c1}</code>，子线程 B 拿到 <code>sandbox-{c2}</code>，两者的基线都站在父线程的最新改动之上，但各自在独立的目录里修改、编译和跑测试，彼此完全看不见对方的半成品。等子线程 A 报告完成，父线程调用 <code>squash_sandbox</code>（底层在 jj 模式调 <code>jj::squash_from</code>，在 git 模式调 <code>git::squash_from</code>）把 <code>sandbox-{c1}</code> 压缩并回 <code>sandbox-{root}</code>；子线程 B 完成后如法炮制。整个过程中开发者自己的工作副本丝毫未动，最后只需要审一次 <code>sandbox-{root}</code> 的统一 Diff，满意了执行一条 <code>jj squash --from sandbox-{root}</code> 或 <code>git merge sandbox-{root}</code> 即可。子线程关闭时，<code>RapNotifier</code> 发出的 <code>/close_thread</code> 通知会触发 <code>cleanup_sandbox_permanently</code>，自动清理已合并的子工作区与空书签。</p>
+<h2 id="08-stacked-sandboxes--os-级写隔离-macos-sandbox-exec-与-linux-bubblewrap">OS 级写隔离：macOS sandbox-exec 与 Linux Bubblewrap<a class="anchor" href="#08-stacked-sandboxes--os-级写隔离-macos-sandbox-exec-与-linux-bubblewrap" aria-label="链接到本节">#</a></h2>
+<p>光靠把子进程 <code>current_dir</code> 设在沙箱目录里防不住模型越界写文件，一条带相对路径 <code>../../../foo</code> 或绝对路径的 Shell 命令就能改穿宿主仓库。因此 <code>sandbox-local/src/backend.rs</code> 在 <code>spawn_command</code> 里（第 307 至 426 行）引入了操作系统原生的写权限隔离：</p>
+<ul>
+<li><strong>macOS (<code>sandbox-exec</code>)</strong>，动态拼出 SBPL 策略：默认 <code>(allow default)</code> 放行读与常规系统调用，紧接着 <code>(deny file-write*)</code> 封死全盘写权限，然后只用 <code>(allow file-write* (subpath ...))</code> 白名单放行当前沙箱目录（Direct 模式除外）、该沙箱专属的持久化 <code>TMPDIR</code>、<code>sccache</code> 缓存目录、额外授权路径，以及字符设备 <code>/dev/null</code>。</li>
+<li><strong>Linux (<code>bwrap</code> / Bubblewrap)</strong>，用命名空间挂载构造同样的写边界：<code>--ro-bind / /</code> 把整棵根文件系统只读挂载进来，再用 <code>--bind</code> 单独把沙箱目录、<code>TMPDIR</code>、<code>sccache</code> 缓存和额外授权路径绑定为可写，并挂载独立 <code>--dev /dev</code> 与 <code>--proc /proc</code>。</li>
+</ul>
+<p>源码里还有三个很老道的工程细节值得记下来：</p>
+<ol>
+<li><strong>防止 Git 越界向上爬目录</strong>，因为沙箱建在 <code>{repo}/.infinity/.sandboxes/</code> 内部，如果不加干预，在沙箱里跑 <code>git status</code> 或 <code>git rev-parse</code> 可能会一路向上穿透识别到外层宿主仓库。<code>spawn_command</code> 统一给子进程注入环境变量 <code>GIT_CEILING_DIRECTORIES</code>，把天花板钉在沙箱父目录上（<code>sandbox-local/tests/jj_colocated.rs</code> 专门有测试守住这条底线）。</li>
+<li><strong><code>sccache</code> 外部保活</strong>，如果让 <code>cargo build</code> 在沙箱里自己拉起 <code>sccache</code> 守护进程，它会被框在沙箱写权限里。<code>LocalBackend</code> 在每次起沙箱命令前，先在沙箱外调用 <code>ensure_sccache_server()</code> 跑一次 <code>sccache --start-server</code>，同时把 <code>SCCACHE_DIR</code> 加进可写白名单，既保住增量编译缓存又不破坏写隔离。</li>
+<li><strong>Linux 构建前置条件（commit <code>e1a3e4b</code> / PR #188）</strong>，翻开 <code>crates/sandbox-local/build.rs</code>，在 Linux 上编译 <code>sandbox-local</code> 时，构建脚本会先探测系统里有没有 <code>bwrap --version</code>；如果没有，就执行 <code>scripts/install-bwrap.sh</code> 试图从源码现场编译 Bubblewrap，而源码编译需要 <code>git</code>、C 编译器（<code>gcc</code> / <code>build-essential</code>）和 <code>libcap</code> 开发头文件（<code>libcap-dev</code> / <code>libcap-devel</code>）。最新快照 <code>e1a3e4b</code> 正是在文档里把 Debian/Ubuntu 与 Fedora/AL2023 的预装包命令补清楚了。</li>
+</ol>
+<h2 id="08-stacked-sandboxes--越权审批与流式命令执行">越权审批与流式命令执行<a class="anchor" href="#08-stacked-sandboxes--越权审批与流式命令执行" aria-label="链接到本节">#</a></h2>
+<p>如果模型确实需要改写沙箱外的文件（比如执行 <code>git push</code> 或修改用户指定的原仓库路径），<code>execute_command</code> 的参数支持声明 <code>additional_permissions</code>，接受 <code>&quot;write-orig&quot;</code> 或 <code>&quot;write:/path&quot;</code>。</p>
+<p><code>sandbox-core/src/server.rs</code> 的 <code>handle_execute_command_streaming_inner</code>（第 845 至 930 行）会沿着 <code>RapInvocation.thread_ancestors</code> 拼出完整线程链，逐级检查元数据里是不是已经有过授权。如果没有，沙箱服务会挂起当前任务、通过 RAP 的 <code>send_user_choice</code> 往前端弹一个多选项确认框：既可以选择永久授权给根线程或当前子线程（授权会沿祖先链自动向下继承），也可以选 <code>&quot;Yes once&quot;</code> 单次放行，或者 <code>&quot;No&quot;</code> 拒绝。</p>
+<p>命令真正跑起来后，流式执行还有两处关键防护：第一，<code>invoke_handler</code> 在 <code>tokio::spawn</code> 后台任务<strong>之前</strong>就同步把取消通道 <code>oneshot::Sender</code> 登记进 <code>InFlightMap</code>，彻底消灭任务刚启动就收到 <code>/cancel_tool_call</code> 却找不到取消句柄的时间窗口；第二，子进程创建时调用 <code>.process_group(0)</code> 自成进程组，收到取消信号后 <code>kill_process</code> 向负 PID（<code>-pgid</code>）发 <code>SIGTERM</code>，一次清理整棵子进程树（例如 <code>cargo test</code> 派生出的所有编译和测试子进程），同时通过 <code>ViewUpdate</code> 回调把最新文件改动实时推给前端 Diff 面板。</p>
+<h2 id="08-stacked-sandboxes--云端镜像-sandbox-remote-的-efs-后端">云端镜像：sandbox-remote 的 EFS 后端<a class="anchor" href="#08-stacked-sandboxes--云端镜像-sandbox-remote-的-efs-后端" aria-label="链接到本节">#</a></h2>
+<p>当沙箱部署在无服务器 AWS Lambda 上时，没有常驻本地磁盘可以缓存工作区。<code>crates/sandbox-remote/src/backend.rs</code> 实现了另一套 <code>SandboxBackend</code>，叫 <code>EfsBackend</code>：</p>
+<ul>
+<li>共享的 AWS EFS 挂载点（如 <code>/mnt/efs/sandbox-repos</code>）按归一化后的远端 Git URI 存放一份裸 Jujutsu 仓库镜像（<code>jj git clone --no-colocate</code>），多个操作同一仓库的线程共用这份底仓，每次初始化顺手 <code>jj git fetch</code> 同步上游。</li>
+<li>每次工具调用在 Lambda 的瞬时 <code>/tmp</code> 目录里基于 EFS 底仓拉出临时沙箱工作区，改完代码后通过 <code>jj_push_working_copy</code> 把 <code>sandbox-{thread_id}</code> 书签推回 EFS 裸仓，调用结束立刻删除 <code>/tmp</code> 目录。</li>
+<li>回调通道换成了 <code>SigV4CallbackClient</code>（<code>sandbox-remote/src/sigv4_client.rs</code>），给发往 <code>rap-receiver</code> Function URL 的请求自动签发 AWS SigV4 签名。</li>
+</ul>
+<p>不管是本地 <code>LocalBackend</code> 还是云端 <code>EfsBackend</code>，上层 <code>sandbox-core</code> 的路由和核心运行时完全感知不到差异。下一章我们往上走一层，看看本地守护进程怎么把这些沙箱、模型供应器、远程 SSH 开发机和跨主机热迁移统统串起来。</p>
+</div></section><section class="book-section" id="09-daemon-remote-migration"><header class="chapter-head"><div class="chapter-number">09</div><h1>本地守护进程、SSH 远程代理与跨主机热迁移</h1></header><div class="prose"><p>写代码时经常会遇到两种场景：第一种，在笔记本终端里让 Agent 跑一轮大重构，跑了一半想合上终端窗口切去干别的，甚至改用浏览器里的桌面 UI 查看 Diff，回来再接着聊，不能一关终端就把 Agent 和后台构建全杀掉；第二种，起初在笔记本本地开了个会话分析了半天需求，真到要编译庞大 Rust 工作区或者跑 GPU 测试时发现本机算力吃紧，想把整个活生生的会话连同对话历史树、子线程和沙箱里改到一半的代码，原封不动搬到云端那台 64 核开发机上继续跑。</p>
+<p><code>crates/infinity-daemon/</code>（9,215 行）就是为这两个场景设计的控制枢纽。CLI 终端、桌面 Web 界面、Zed 编辑器（ACP）和 Slack 机器人，本质上都是连向同一个守护进程的客户端。</p>
+<h2 id="09-daemon-remote-migration--常驻守护进程与-256-mib-帧边界">常驻守护进程与 256 MiB 帧边界<a class="anchor" href="#09-daemon-remote-migration--常驻守护进程与-256-mib-帧边界" aria-label="链接到本节">#</a></h2>
+<p>守护进程在首次运行 <code>infinity</code> 时自动拉起，把全部本地状态收纳在 <code>~/.infinity/</code> 下：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>~/.infinity/daemon.sock</code></td>
+<td>客户端与守护进程通信的 Unix Domain Socket</td>
+</tr>
+<tr>
+<td><code>~/.infinity/daemon.pid</code></td>
+<td>守护进程 PID 文件</td>
+</tr>
+<tr>
+<td><code>~/.infinity/providers.json</code></td>
+<td>已安装的外部模型供应器二进制注册表</td>
+</tr>
+<tr>
+<td><code>~/.infinity/remotes.json</code></td>
+<td>配置好的 SSH 远程守护进程列表</td>
+</tr>
+<tr>
+<td><code>~/.infinity/sessions.json</code></td>
+<td>会话索引元数据（工作目录、关闭与归档状态）</td>
+</tr>
+<tr>
+<td><code>~/.infinity/.../{thread_id}*.json</code></td>
+<td>按线程拆分的懒加载历史、元数据与视图快照</td>
+</tr>
+</tbody></table></div>
+<p>这里有一个很容易被忽略的传输层细节（<code>crates/infinity-protocol/src/lib.rs</code> 第 175 至 190 行）：tokio 默认的 <code>LengthDelimitedCodec</code> 单帧上限只有 8 MiB。但在 Coding Agent 场景里，一次重放长对话历史或者回传大文件 Diff 很容易冲破 8 MiB，导致客户端莫名断连。<code>infinity-protocol</code> 统一提供了 <code>length_delimited_codec()</code> 工厂函数，把 <code>MAX_FRAME_LENGTH</code> 调到 <strong>256 MiB</strong>，客户端和守护进程两端强制复用，保证帧长上限不会漂移。</p>
+<p>面向浏览器桌面端（<code>infinity-web</code> + <code>infinity-ui</code>），守护进程通过 <code>ws_handler.rs</code> 暴露 WebSocket 接口，默认监听 <code>127.0.0.1:8080</code>（可通过 <code>INFINITY_WS_BIND</code> 与 <code>INFINITY_WS_PORT</code> 调整）；如果编译 CLI 时启用了 <code>--features bundled-web</code>，<code>web_assets.rs</code> 会把静态构建产物直接打包进二进制，开箱即访问，和终端 TUI 共享同一批在线会话。</p>
+<h2 id="09-daemon-remote-migration--懒加载-json-持久化与历史格式兼容">懒加载 JSON 持久化与历史格式兼容<a class="anchor" href="#09-daemon-remote-migration--懒加载-json-持久化与历史格式兼容" aria-label="链接到本节">#</a></h2>
+<p><code>crates/infinity-daemon/src/memory_store.rs</code> 的 <code>PersistentConversationStore</code> 展示了非常克制的组合设计：它内部直接包着核心库的 <code>InMemoryConversationStore</code>，把所有复杂的祖先链、派生截断、压缩游标逻辑全部委托给核心实现，自己在外面只叠了一层<strong>按线程懒加载的 JSON 文件持久化</strong>。</p>
+<p>每个线程在磁盘上拆成三份文件：<code>{thread_id}.json</code> 存消息列表与压缩摘要，<code>{thread_id}.meta.json</code> 存核心 <code>ThreadInfo</code> 与守护进程专用的 <code>ThreadExtras</code>（标题、子线程列表、累计 token、最后更新时间以及该线程独立选中的 <code>selected_model</code>），<code>{thread_id}.views.json</code> 存前端旁路视图（例如沙箱实时推送的 Diff 面板内容）。两张内存标记集合 <code>loaded</code> 和 <code>metadata_loaded</code> 保证打开会话列表时只读轻量的 <code>.meta.json</code>，真正点进某条会话才把完整消息读进内存。</p>
+<p>源码里还保留了干净的向后兼容层：反序列化 <code>ThreadSnapshot</code> 时先尝试新格式（带展示元数据的 <code>InfinityMessage</code>），失败则回退解析旧版的 <code>OldThreadSnapshot</code>（裸 <code>Message</code> 加独立的 <code>display_as</code> 旁路表）并在内存里无损升级；如果老元数据里没有按线程记录的 <code>selected_model</code>，加载时自动用哨兵值识别并回填全局默认模型。</p>
+<h2 id="09-daemon-remote-migration--ssh-远程代理-透明拼装-threadref">SSH 远程代理：透明拼装 ThreadRef<a class="anchor" href="#09-daemon-remote-migration--ssh-远程代理-透明拼装-threadref" aria-label="链接到本节">#</a></h2>
+<p>开发者在 <code>~/.infinity/remotes.json</code> 里登记远程开发机（或者执行 <code>infinity remote add devbox -- ssh -J bastion devbox</code>）。守护进程启动时，<code>crates/infinity-daemon/src/remote.rs</code> 读取 <code>ssh_args</code>，为每台远端建立一条直连远端 <code>~/.infinity/daemon.sock</code> 的 SSH 转发隧道，并在断线时每隔 5 秒自动重连，同时把 <code>connecting</code> / <code>connected</code> / <code>disconnected</code> 状态实时广播给前端 UI。</p>
+<p>多主机代理最巧妙的地方在于客户端几乎零感知：</p>
+<ul>
+<li>远端会话在列表里通过 <code>ThreadRef::prefixed(&amp;remote)</code> 染上前缀（如 <code>devbox/a1b2c3d4</code>），本地会话保持裸 UUID。</li>
+<li>客户端发来针对 <code>devbox/a1b2c3d4</code> 的 <code>Connect</code>、<code>UserInput</code> 或 <code>SwitchModel</code> 时，本地守护进程识别出 <code>remote == Some(&quot;devbox&quot;)</code>，调用 <code>strip(&amp;remote)</code> 剥掉前缀，原样沿 SSH 隧道转发给远端守护进程。</li>
+<li>远端返回的事件流再经由本地守护进程重新打上 <code>devbox/</code> 前缀推回前端。整个过程不需要在远端开放任何公网 HTTP 端口，完全复用开发者已有的 <code>~/.ssh/config</code>、跳板机与密钥认证体系。</li>
+</ul>
+<h2 id="09-daemon-remote-migration--跨主机热迁移-把活会话与沙箱一起搬走">跨主机热迁移：把活会话与沙箱一起搬走<a class="anchor" href="#09-daemon-remote-migration--跨主机热迁移-把活会话与沙箱一起搬走" aria-label="链接到本节">#</a></h2>
+<p>热迁移是 <code>infinity-daemon</code> 里最见分布式系统功底的一块代码，编排逻辑集中在 <code>crates/infinity-daemon/src/migrate.rs</code>（428 行），配合 <code>sandbox-core/src/server.rs</code>（第 1994 至 2250 行）的 <code>/migrate</code> 与 <code>/migrate/import</code> 两个接口完成。</p>
+<p>无论用户是把本地会话搬到远端 <code>devbox</code>、把远端 <code>devbox</code> 搬回本地，还是把一台远端 <code>devbox</code> 直接搬到另一台远端 <code>gpu-server</code>，<strong>永远由本地守护进程充当总编排器</strong>。整个搬迁严格按六个阶段推进：</p>
+<ol>
+<li><strong>停机定格源会话</strong>，先在源主机调用 <code>cleanup_session</code> 停掉正在跑的 Agent 驱动和原会话附属的 RAP 服务，确保对话历史与沙箱文件在打包期间不再发生变化。</li>
+<li><strong>拉起目标端迁移 RAP 服务并打通 SSH 隧道</strong>，<code>boot_dest_and_tunnel</code> 在目标主机的 <code>dest_cwd</code> 下拉起那些在清单里声明了 <code>needsMigration: true</code> 的 RAP 服务（主要是 <code>sandbox-local</code>），拿到监听端口后按源与目标的拓扑动态建转发隧道：<ul>
+<li>本地搬到远端：通过 <code>ssh_forward_port</code> 把远端目标端口正向转发到本机。</li>
+<li>远端搬到本地：通过 <code>ssh_reverse_forward_port</code> 把本机目标端口反向转发到源远端。</li>
+<li>远端 A 搬到远端 B：本地编排器充当中继，先把远端 B 的端口正向转到本机，再从本机反向转到远端 A，形成一条无需 A/B 互通直连的级联隧道。</li>
+</ul>
+</li>
+<li><strong>沙箱打包与 multipart 传输</strong>，源端拉起临时迁移 RAP 服务，通过 <code>RapNotifier::request_migration</code> 通知源端 <code>sandbox-local</code> 向目标 URL 迁移。<code>sandbox-core</code> 的 <code>migrate_inner</code> 收集属于该 <code>root_thread_id</code> 的所有线程沙箱状态：如果是 Jujutsu 仓库，先确保所有工作区都已加载并跑一次 <code>jj git export</code> 把书签全部导出到 Git 引用里；接着调用 <code>git bundle create</code> 把该会话全部线程的 <code>sandbox-{thread_id}</code> 书签打成一个自包含的二进制 bundle 文件；最后连同序列化后的元数据 JSON 通过 HTTP multipart POST 发往目标端的 <code>/migrate/import</code>（目标端路由特意加了 <code>DefaultBodyLimit::disable()</code> 放开请求体限制，源端遇到连接拒绝最多间隔 5 秒重试 5 次）。目标端收到后解包 bundle、还原书签并改写 <code>remote_uri</code> 指向目标仓库路径。</li>
+<li><strong>序列化迁移对话树</strong>，沙箱搬迁成功后，源端调用 <code>serialize_session</code>（远端则通过点对点 <code>ClientMessage::Emigrate</code> 指令）把根线程及所有子线程的完整消息、压缩摘要和元数据打包传回编排器。</li>
+<li><strong>目标端导入并清理临时服务</strong>，销毁刚才拉起的临时目标 RAP 服务，在目标端调用 <code>import_session</code>（或发 <code>ClientMessage::ImportSession</code>）把整棵对话树导入存储，并在 <code>SessionStore</code> 中建好记录、标记为已停机等待下次唤醒。</li>
+<li><strong>归档源会话并拆除隧道</strong>，源端把旧会话标记为已归档（远端通过 <code>EmigrateDone</code> 通知），离开函数作用域时 <code>_tunnel_guards</code> 自动 <code>drop</code>，所有临时 SSH 端口转发全部干净回收，前端收到 <code>DaemonMessage::MigrateComplete { root_thread_id, new_root_thread_id }</code> 切到新坐标。</li>
+</ol>
+<p>这套流程对失败边界也守得很严：<code>migrate_inner</code> 开头就会直接拒绝迁移 <code>SandboxMode::Direct</code>、<code>SandboxMode::Custom</code> 以及横跨多个不同 Git 仓库的会话，避免搬到一半留下残缺状态。</p>
+<p>到这里，本地与跨机私有开发机的完整运行体系已经拆解完毕。下一章把视角切到公有云，看同一份 <code>infinity-agent-core</code> 在完全没有常驻进程、没有本地磁盘、也没有 SSH 隧道的 AWS 无服务器平台上怎么落地。</p>
+</div></section><section class="book-section" id="10-serverless-aws"><header class="chapter-head"><div class="chapter-number">10</div><h1>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</h1></header><div class="prose"><p>把一个本地能跑的 Agent 搬上无服务器平台（Serverless），通常要大动干戈重写一遍状态机：本地内存通道没了，本地文件没了，<code>tokio::time::sleep</code> 超过十五分钟直接被 Lambda 强杀，多个并发回调同时撞进来还会把数据库写花。</p>
+<p>Infinity 最具辨识度的架构验证，就落在 <code>crates/infinity-agent-lambda/</code>（1,894 行）和根目录的 <code>agent/</code>（AWS CDK 栈，1,200 行 TypeScript）里。它没有为云端另写一套执行引擎，而是把同一个 <code>infinity-agent-core</code> 的 <code>AgentSystemBuilder</code> 换上四块云端存储与传输适配器，直接跑在按次计费、空闲缩零的 AWS Lambda 上。</p>
+<h2 id="10-serverless-aws--无锁并发-用-sqs-fifo-替代分布式锁">无锁并发：用 SQS FIFO 替代分布式锁<a class="anchor" href="#10-serverless-aws--无锁并发-用-sqs-fifo-替代分布式锁" aria-label="链接到本节">#</a></h2>
+<p>云端架构的入口只有两条：所有外部事件（用户输入、RAP 工具回调、定时器唤醒、子线程报告）全部汇入同一条 <strong>SQS FIFO 输入队列</strong>；外部工具服务的异步回包则 POST 到一个极薄的 <strong>RAP Receiver Lambda Function URL</strong>（<code>crates/infinity-agent-lambda/src/bin/rap-receiver.rs</code>，仅 136 行）。</p>
+<p><code>rap-receiver</code> 的代码干净得像一段胶水：解开可选的 Base64 请求体，解析 <code>RapCallback</code>，调用与本地守护进程完全共享的 <code>infinity_rap_bridge::prepare_callback</code>。如果是 <code>ViewUpdate</code>（旁路展示通道，无服务器环境没有常驻前端），直接返回 <code>200 {&quot;ok&quot;:true}</code> 丢弃；其余四类回调则直接调用 <code>sqs_client.send_message()</code> 投进输入队列：</p>
+<pre><code class="language-rust">// crates/infinity-agent-lambda/src/bin/rap-receiver.rs
+sqs_client
+    .send_message()
+    .queue_url(input_queue_url)
+    .message_body(enqueue.message_body)
+    .message_group_id(enqueue.group_id.into_inner())
+    .message_deduplication_id(enqueue.dedup_id)
+    .send()
+    .await
+</code></pre>
+<p>这两行队列参数承载了整个云端并发控制的核心保证：</p>
+<ul>
+<li><strong><code>message_group_id</code> 设为 <code>ThreadId</code></strong>，SQS FIFO 保证同一个 <code>MessageGroupId</code> 在同一时刻最多只会被一个 Lambda 实例拉取消费，彻底串行化单线程的读写切片；而一千个不同的 <code>ThreadId</code> 属于一千个不同的消息组，Lambda 会自动并行拉起多个实例水平扩展。核心运行时不需要引入 Redis 锁或数据库悲观锁。</li>
+<li><strong><code>message_deduplication_id</code> 设为 <code>dedup_id</code></strong>，先在队列入口挡掉 5 分钟窗口内的重复投递；超过窗口的重投则由第 3 章的 <code>StateStore</code> 去重集合和历史尾扫兜底。</li>
+</ul>
+<p>当 SQS 触发主 Agent Lambda（<code>crates/infinity-agent-lambda/src/event_handler.rs</code>）时，处理函数把收到的 <code>SqsEvent</code> 记录解析成 <code>(InputMessage, message_id)</code> 批次，交给 <code>AgentSystem::step</code>。即便把 SQS <code>batchSize</code> 调大到一次拉多条横跨不同消息组的记录，<code>step</code> 内部也会按 <code>group_id</code> 自动分组并并发推进各线程切片，完事把最终输出发往 <code>OUTPUT_QUEUE_URL</code>，随后进程退出，等待期间零算力账单。</p>
+<h2 id="10-serverless-aws--双存储分工-aurora-dsql-存历史树-dynamodb-存状态与缓存">双存储分工：Aurora DSQL 存历史树，DynamoDB 存状态与缓存<a class="anchor" href="#10-serverless-aws--双存储分工-aurora-dsql-存历史树-dynamodb-存状态与缓存" aria-label="链接到本节">#</a></h2>
+<p>无服务器切片每次唤醒都要从零重建 <code>HistoryManager</code>，因此云端实现了 <code>ConversationStore</code> 和 <code>StateStore</code> 的持久化版本，刻意拆给两套特征互补的 AWS 存储服务：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>抽象 Trait</th>
+<th>AWS 实现</th>
+<th>数据结构与表设计</th>
+<th>选用考量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ConversationStore</code></td>
+<td><code>DsqlConversationStore</code>（<code>conversation_history.rs</code>）</td>
+<td>Aurora DSQL（兼容 Postgres）：<code>conversation_history(session_id, message_order, message_id, message_data)</code>、<code>thread_hierarchy(thread_id, parent_thread_id, root_thread_id, spawn_message_order, spawn_tool_call_id, closed, is_subscription_event, is_compaction, fresh_context)</code>、<code>compaction_summaries(thread_id, up_to_order, summary)</code></td>
+<td>需要按 <code>message_order</code> 区间切片读取（<code>start_from</code>/<code>up_to</code>）、递归追溯祖先链以及按 <code>up_to_order &lt;= cutoff</code> 查询压缩摘要，关系型范围查询最契合</td>
+</tr>
+<tr>
+<td><code>StateStore</code> 与 <code>ToolsetCache</code></td>
+<td><code>DynamoDbStateStore</code> / <code>DynamoDbToolsetCache</code>（<code>state_store.rs</code>、<code>toolset_cache.rs</code>）</td>
+<td>单表 <code>InfinityAgentsState</code>（主键 <code>session</code>）：存放去重 ID 集合、会话元数据、活跃订阅集合、挂起人工选择项、工具集配置和 RAP 清单缓存</td>
+<td>键值读写频率高、结构松散、冷启动建连零握手开销</td>
+</tr>
+</tbody></table></div>
+<p>读 <code>DsqlConversationStore::new</code>（第 36 至 81 行）能看到几个真实的云端适配细节：它不存静态数据库密码，而是每次冷启动通过 <code>aws_sdk_dsql::auth_token::AuthTokenGenerator</code> 签发临时 IAM 管理员令牌，强制 <code>PgSslMode::Require</code> 走 TLS 建立最大 5 连接的 <code>sqlx</code> Postgres 连接池，并在建表时用了 DSQL 特有的 <code>CREATE INDEX ASYNC IF NOT EXISTS</code>。</p>
+<p>另外，<code>traits.rs</code> 里关于 <code>load_history_up_to</code> 的一段注释解释了一个容易踩坑的边界对齐问题：本地 <code>InMemoryConversationStore</code> 内部用 0-based 数组下标（左闭右开 <code>[a, b)</code>），而 <code>DsqlConversationStore</code> 的 <code>message_order</code> 是 1-based 行号（SQL 条件 <code>message_order &gt; $start AND message_order &lt;= $up_to</code>）。为了不让 <code>spawn_message_order</code> 和压缩 <code>up_to_order</code> 在两种存储间差一位，trait 契约统一规定<strong>所有边界参数一律按前导消息条数（leading-row count）解释</strong>，于是无论 0-based 还是 1-based，<code>(Some(a), Some(b))</code> 取出的都是逻辑上的第 <code>a</code> 到 <code>b-1</code> 条消息。</p>
+<h2 id="10-serverless-aws--持久定时器-900-秒为界的双轨休眠">持久定时器：900 秒为界的双轨休眠<a class="anchor" href="#10-serverless-aws--持久定时器-900-秒为界的双轨休眠" aria-label="链接到本节">#</a></h2>
+<p>本地驱动里的 <code>TokioSleepTool</code> 和 <code>TokioSleepUntilTool</code> 只要 <code>tokio::spawn</code> 一个内存定时器就行，但在 Lambda 上进程两秒后就退出了，内存定时器根本活不到唤醒时刻。</p>
+<p><code>crates/infinity-agent-lambda/src/tools/sleep.rs</code> 用 <code>WakeupScheduler</code> 实现了完全无状态的<strong>持久定时器（durable timers）</strong>，以 SQS 的最大原生延迟 <strong>900 秒（15 分钟）</strong> 为分水岭切出两条路径：</p>
+<ul>
+<li><strong>延迟 <code>&lt;= 0</code> 秒（或目标时间已过）</strong>：直接调用 <code>send_to_input_queue</code> 立即投回主输入队列唤醒。</li>
+<li><strong>延迟 <code>1 ..= 900</code> 秒</strong>：把唤醒消息包进信封发往一条独立的延迟中继队列 <code>delay_queue_url</code>，设置 SQS 原生的 <code>delay_seconds</code>。到期后中继队列触发极轻量的 <code>delay-relay</code> Lambda，把里面的 <code>InputMessage</code> 按原 <code>group_id</code> 和 <code>dedup_id</code> 转发回主 FIFO 输入队列。</li>
+<li><strong>延迟 <code>&gt; 900</code> 秒</strong>：调用 AWS EventBridge Scheduler 的 <code>create_schedule</code>，用 <code>at(YYYY-MM-DDTHH:MM:SS)</code> 创建一个精确触发（<code>FlexibleTimeWindowMode::Off</code>）的一次性调度计划，目标直接指向 <code>input_queue_arn</code> 并附带 <code>SqsParameters { message_group_id }</code>。哪怕 Agent 决定睡到下周一早上九点纽约时间，这期间整个 AWS 账号里没有任何运行中的计算实例。</li>
+</ul>
+<p>而且这两条路径和本地一样完全可打断：<code>SleepTool</code> 和 <code>SleepUntilTool</code> 都标记了 <code>is_passive() == true</code>。如果在休眠期间用户提前发了新消息，切片立刻醒来、给休眠调用注入中断结果继续干活；等几小时后 EventBridge 真的把迟到的唤醒消息投进来时，<code>HistoryManager::match_tool_result</code> 逆向尾扫发现早就跨过了轮次边界，直接当作过期消息静默丢弃，不会惊扰正在进行的新对话。</p>
+<h2 id="10-serverless-aws--云端适配里的显式取舍">云端适配里的显式取舍<a class="anchor" href="#10-serverless-aws--云端适配里的显式取舍" aria-label="链接到本节">#</a></h2>
+<p>对比 <code>infinity-agent-lambda</code> 和 <code>infinity-daemon</code>，也能清楚看到无服务器部署为了换取缩容到零而主动接受的几条限制：</p>
+<ul>
+<li><code>event_handler.rs</code> 传入的是 <code>NoDeferral</code>，这意味着如果某个活跃远程 RAP 工具正在执行时恰好有另一条订阅事件或子线程报告到达主输入队列，Lambda 切片无法在内存里暂存它，会直接按中断处理（除非自行实现传输层延迟重投的 <code>DeferQueue</code>）。</li>
+<li>发起外部 RAP 请求使用 <code>RapHttpClient</code> 自动附带 SigV4 签名，免去在工具函数 URL 上维护静态共享密钥。</li>
+<li><code>event_handler.rs</code> 第 35 行目前把云端模型 ID 硬编码为 <code>global.anthropic.claude-sonnet-4-6</code>（源码注释明确写着 <code>&quot;hardcoded for now&quot;</code>），且不携带本地 <code>drive_thread</code> 里的 75% 自动压缩逻辑。这些现状我们在第 12 章还会集中复盘。</li>
+</ul>
+<p>后台的本地守护进程和云端 Lambda 两条运行底座都看全了，接下来转向最外层：人类开发者和外部团队究竟通过哪些交互壳子接触到 Infinity？下一章拆解终端 TUI、Zed/ACP 编辑器协议，以及用 Hydro 数据流语言写成的 Slack 机器人。</p>
+</div></section><section class="book-section" id="11-clients-and-hydro-dataflow"><header class="chapter-head"><div class="chapter-number">11</div><h1>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</h1></header><div class="prose"><p>很多 Agent 项目把核心状态机和终端 UI 揉成一团：流式输出直接 <code>println!</code>，确认弹窗直接读 <code>stdin</code>，结果后来想加一个桌面 Web 端、接进 Zed 编辑器或者挂到公司 Slack 频道里时，不得不把半套逻辑复制粘贴三遍。</p>
+<p>Infinity 因为从底层把 <code>infinity-daemon</code> 做成了统一的长连接枢纽（Unix Socket + WebSocket），外围接入层反而可以按各自平台的交互习惯独立演进。仓库里目前并存着四套真实前端：<code>infinity-agent-cli</code> 里的终端 TUI、同一二进制里的 <code>infinity acp</code> 编辑器协议服务、<code>infinity-web</code>/<code>infinity-ui</code> 桌面端，以及由 <code>infinity-slack-bot</code> 和 <code>infinity-slack-dataflow</code> 组成的 Slack 机器人。</p>
+<h2 id="11-clients-and-hydro-dataflow--infinity-agent-cli-内联视口-无头派活与插件管理">infinity-agent-cli：内联视口、无头派活与插件管理<a class="anchor" href="#11-clients-and-hydro-dataflow--infinity-agent-cli-内联视口-无头派活与插件管理" aria-label="链接到本节">#</a></h2>
+<p><code>crates/infinity-agent-cli/</code>（10,294 行）是本地开发者的主入口，同时承担了三类工作：</p>
+<ol>
+<li><strong>内联终端 TUI（<code>inline_viewport.rs</code>、<code>terminal.rs</code>、<code>modifier_diff.rs</code>、<code>choice_picker.rs</code>、<code>model_picker.rs</code>、<code>session_picker.rs</code>、<code>quit_picker.rs</code>）</strong>，采用内联视口渲染，不接管全屏备用缓冲区，并针对宽字符、窗口缩放竞态和文本折行写了 8 组 <code>insta</code> + <code>vt100</code>/<code>alacritty_terminal</code> 快照测试。按下 <code>Ctrl+D</code> 退出时，CLI 发送 <code>ClientMessage::SoftDetach</code>：如果代理刚好空闲，守护进程直接收尾关闭；如果代理正在后台忙，守护进程回传 <code>DisconnectNotIdle</code>，CLI 弹出 <code>quit_picker</code> 让用户二选一是脱离挂后台（<code>Disconnect</code>）还是彻底停机（<code>ShutdownSession</code>）。</li>
+<li><strong>脚本化与无头模式</strong>，除了交互式启动，CLI 支持 <code>-i &quot;prompt&quot;</code> 带初始指令进入、<code>-s &lt;session-id&gt;</code> 直连已有会话、<code>--local</code> 跳过守护进程在进程内直跑，以及适合自动化流水线的 <code>-H &quot;prompt&quot;</code> 无头模式：把任务交给后台守护进程立刻返回退出码，稍后再用 <code>/load</code> 或桌面 Web UI 验收沙箱 Diff。</li>
+<li><strong>自举插件管理（<code>install.rs</code>）</strong>，<code>infinity provider install</code>、<code>infinity rap install</code> 和 <code>infinity update</code> 默认从 crates.io（也支持 <code>--git</code> 与 <code>--path</code>）拉取编译外部供应器和 RAP 服务，并自动维护 <code>~/.infinity/providers.json</code> 与 RAP 服务配置表。</li>
+</ol>
+<h2 id="11-clients-and-hydro-dataflow--infinity-acp-把守护进程会话接进-zed-等编辑器">infinity acp：把守护进程会话接进 Zed 等编辑器<a class="anchor" href="#11-clients-and-hydro-dataflow--infinity-acp-把守护进程会话接进-zed-等编辑器" aria-label="链接到本节">#</a></h2>
+<p>现代编辑器正在向 <strong>ACP（Agent Client Protocol）</strong> 收敛，让编辑器侧栏的 Agent 面板可以通过标准 stdio JSON-RPC 接入任意后端代理。执行 <code>infinity acp</code> 启动的就是 <code>crates/infinity-agent-cli/src/acp_server.rs</code>。</p>
+<p><code>acp_server.rs</code> 的架构定位很纯粹：它自己不跑大模型，也不管沙箱，只做 ACP stdio 协议与 <code>infinity-daemon</code> Unix Socket 协议之间的无状态翻译桥。编辑器发来列会话、加载历史、新建会话、发提示词、切模型等指令，桥接层转成对应的 <code>ClientMessage</code> 发给本地守护进程，再把守护进程推回来的流式文本、思考过程、工具调用和 Diff 视图实时映射成 ACP 更新帧送回编辑器面板。</p>
+<p>这里有一条和第 2 章呼应的边界纪律：在 <code>0.2.0</code> 的类型化 ID 重构中，团队特意把外部 ACP 协议侧的会话 ID 保留为原生 <code>String</code>（且保持 <code>acp-sessions.json</code> 持久化格式不变），只在 <code>acp_server.rs</code> 边界处与内部的 <code>ThreadRef</code> 互相转换，不让外部协议的弱类型侵入守护进程内部。</p>
+<h2 id="11-clients-and-hydro-dataflow--用-hydro-数据流写-slack-机器人-infinity-slack-dataflow">用 Hydro 数据流写 Slack 机器人：infinity-slack-dataflow<a class="anchor" href="#11-clients-and-hydro-dataflow--用-hydro-数据流写-slack-机器人-infinity-slack-dataflow" aria-label="链接到本节">#</a></h2>
+<p>仓库里最能体现 UC Berkeley Hydro 团队技术底色的两个 crate，是 <code>infinity-slack-bot</code>（2,371 行）和 <code>infinity-slack-dataflow</code>（1,817 行）。</p>
+<p>Slack 机器人的状态同步一向容易写得支离破碎：一边要消费 Slack Socket Mode 的消息、斜杠命令、按钮点击和 App Home 打开事件，另一边要同时监听守护进程发来的流式分片、人工选择弹窗和会话断开通知；用户点下一个确认按钮时，既要把按钮消息更新成已选状态、停掉旧的流式输出，又要向守护进程发送 <code>AnswerChoice</code>，还得防止随后守护进程回传 <code>UserChoiceComplete</code> 时重复改写同一条 Slack 消息。</p>
+<p>团队没有用一堆互相嵌套的 <code>tokio::select!</code> 和共享通道回调去硬凑，而是直接用自家研发的 Rust 分布式数据流框架 <strong><code>hydro_lang</code></strong>，把整个 Slack 机器人的核心逻辑写成了一个纯粹的、可离线模拟测试的数据流图（<code>crates/infinity-slack-dataflow/src/flow.rs</code>）：</p>
+<pre><code class="language-rust">// crates/infinity-slack-dataflow/src/flow.rs
+pub fn slack_dataflow&lt;&#39;a, P: &#39;a&gt;(
+    slack_events: Stream&lt;SlackEvent, Process&lt;&#39;a, P&gt;, Unbounded&gt;,
+    daemon_events: Stream&lt;DaemonEvent, Process&lt;&#39;a, P&gt;, Unbounded&gt;,
+) -&gt; (
+    Stream&lt;SlackAction, Process&lt;&#39;a, P&gt;, Unbounded&gt;,
+    Stream&lt;DaemonCommand, Process&lt;&#39;a, P&gt;, Unbounded&gt;,
+)
+</code></pre>
+<p>整套业务逻辑就是从两个输入流 <code>(slack_events, daemon_events)</code> 到两个输出流 <code>(slack_actions, daemon_commands)</code> 的声明式变换管线：</p>
+<ul>
+<li><strong>入口过滤与分叉</strong>，先用 <code>filter</code> 过滤机器人自身回声与未授权用户，再通过 <code>partition</code> 逐层把事件无拷贝地拆成四条互斥支路：交互按钮点击、斜杠命令（如 <code>/model</code> 弹 Slack Modal 选择器或纯文本列表）、App Home 首次打开（每用户只钉一次推荐提示词），以及常规聊天消息。</li>
+<li><strong>按钮点击的三路扇出</strong>，一条 <code>button_clicks</code> 流同时派生出三条动作流：<code>button_stop_actions</code> 立刻结束当前活跃流式输出（让模型接下来的新回复落在新消息里），<code>button_update_actions</code> 把原按钮块改写成带勾选标记的确认文本，<code>button_commands</code> 解析 <code>action_id</code>（格式 <code>choice_{choice_id}_{selected_index}</code>），先从共享状态中摘除 <code>choice_messages</code> 防止重复更新，再发出 <code>DaemonCommand::AnswerChoice</code>。</li>
+<li><strong>离线模拟测试</strong>，核心编排完全与真实 Slack HTTP/WebSocket 和守护进程 Socket I/O 解耦（真实网络壳子留在 <code>infinity-slack-bot</code> 里的 <code>slack_io.rs</code> 和 <code>daemon_io.rs</code>），<code>crates/infinity-slack-dataflow/tests/dataflow_sim.rs</code> 可以直接在进程内喂入模拟事件流、断言输出动作流，把整套复杂的多步 Slack 交互逻辑用确定性单元测试覆盖干净。</li>
+</ul>
+<h2 id="11-clients-and-hydro-dataflow--为什么多套前端能共用同一条总线">为什么多套前端能共用同一条总线<a class="anchor" href="#11-clients-and-hydro-dataflow--为什么多套前端能共用同一条总线" aria-label="链接到本节">#</a></h2>
+<p>把 CLI TUI、桌面 Web、ACP 编辑器和 Slack 机器人横向摆在一起，会发现它们共享了同一组极简契约：</p>
+<ul>
+<li>所有前端都不直接操作 <code>ConversationStore</code>，只通过 <code>ClientMessage</code>/<code>DaemonMessage</code>（或 WebSocket 同构 JSON）与守护进程对话。</li>
+<li>所有人机交互中断点（<code>OAuthRequired</code>、<code>UserChoiceRequired</code>、<code>UserChoiceDismissed</code>）都是运行时和 RAP 协议的一等消息，因此 TUI 渲染成方向键选择器、Web 渲染成 <code>ChoicePicker.tsx</code> 卡片、Slack 渲染成 Block Kit 按钮，底层沙箱的 <code>write-orig</code> 审批逻辑一行代码都不用改。</li>
+<li><code>DisplaySegment</code>（<code>Text</code>、<code>Diff</code>、<code>Image</code>）和 <code>ViewUpdate</code> 把模型消费的原始文本与前端展示的富媒体视图分开传输，客户端按自身渲染能力降级即可（例如终端渲染不出图片就自动跳过 <code>Image</code> 片段回退到后续 <code>Text</code> 片段）。</li>
+</ul>
+<p>一路看下来，Infinity 的设计非常连贯，但它绝不是没有边界和短板的银弹。下一章我们专门翻出源码里的 <code>TODO</code>、显式拒绝分支、安全边界与架构代价，做一次冷静的工程复盘。</p>
+</div></section><section class="book-section" id="12-tradeoffs-and-limits"><header class="chapter-head"><div class="chapter-number">12</div><h1>失败模式、安全边界与架构取舍</h1></header><div class="prose"><p>任何一套架构选型都是在用一种约束换另一种自由。只看设计文档很容易觉得无阻塞切片加堆叠沙箱无懈可击，但把源码里的防御断言、降级路径和作者亲手写下的 <code>TODO</code> 翻出来对照，才能看清它真正守住了什么、故意放弃了什么，以及哪些坑还没有填平。</p>
+<h2 id="12-tradeoffs-and-limits--安全边界-本地沙箱防的是误写-不是恶意代码">安全边界：本地沙箱防的是误写，不是恶意代码<a class="anchor" href="#12-tradeoffs-and-limits--安全边界-本地沙箱防的是误写-不是恶意代码" aria-label="链接到本节">#</a></h2>
+<p>把 <code>sandbox-local/src/backend.rs</code> 里的 macOS <code>sandbox-exec</code> 配置和 Linux <code>bwrap</code> 参数摊开看，有一条边界必须先亮明：</p>
+<ul>
+<li><strong>只限写，不限读</strong>：Linux 端是 <code>--ro-bind / /</code>，macOS 端是 <code>(allow default)</code> 再接 <code>(deny file-write*)</code>。沙箱里的子进程能正常读取整台机器上当前用户有权限读的任何文件，包括 <code>~/.ssh/</code>、<code>~/.aws/</code>、<code>.env</code> 和其他项目代码。</li>
+<li><strong>不限网络</strong>：<code>bwrap</code> 没有加 <code>--unshare-net</code>，<code>sandbox-exec</code> 也没有屏蔽网络外连。构建工具下载依赖顺畅无阻，代价是如果模型被提示词注入跑了一段恶意脚本，依然可以把本地凭据外传出去。</li>
+<li><strong>不支持平台的静默降级</strong>：在 macOS 和 Linux 之外的平台（<code>!platform_sandbox_available()</code>），<code>LocalBackend::new</code> 只打印一条 <code>tracing::warn!</code> 后直接裸跑命令。</li>
+</ul>
+<p><code>sandbox-local</code> 解决的工程问题是防止可信开发场景下的并发文件踩踏和误删宿主工作树，它不能替代 Firecracker 微虚拟机或无网隔离容器去运行不可信的第三方代码。如果要在多租户云端跑不受信仓库的任意脚本，必须在 <code>sandbox-remote</code> 之外叠加容器级或微虚机级的网络与读隔离。</p>
+<h2 id="12-tradeoffs-and-limits--溢出恢复的已知盲区-已提交历史本身逼近上限">溢出恢复的已知盲区：已提交历史本身逼近上限<a class="anchor" href="#12-tradeoffs-and-limits--溢出恢复的已知盲区-已提交历史本身逼近上限" aria-label="链接到本节">#</a></h2>
+<p>第 3 章拆解过 <code>HistoryManager</code> 的三阶段溢出恢复：只要超窗元凶在刚进来的 <code>unvalidated_items</code> 里，就能干净地替换占位符或丢弃未验证用户输入。</p>
+<p>但 <code>crates/infinity-agent-core/src/event_processor.rs</code> 第 1439 至 1443 行坦诚留了一段 <code>TODO(deferral)</code>：如果<strong>已经提交落盘的历史本身</strong>就非常接近模型上下文上限（比如本地 75% 自动压缩还没来得及跑完，或者在没有自动压缩的 Lambda 路径上持续累加），此时哪怕进来一条很短的正常消息也会触发 <code>ContextOverflow</code>。<code>recover_from_overflow</code> 只能丢掉刚进来的新输入，根本缩不动已提交历史。理想的修复是派发一个更低阈值的压缩子线程并让当前线程进入延迟等待，等压缩完成后再重放当前消息，但等待进行中的压缩子线程对应的延迟机制目前源码里尚未实现。</p>
+<h2 id="12-tradeoffs-and-limits--本地-vs-serverless-的能力落差">本地 vs Serverless 的能力落差<a class="anchor" href="#12-tradeoffs-and-limits--本地-vs-serverless-的能力落差" aria-label="链接到本节">#</a></h2>
+<p>尽管本地和云端共用同一个 <code>infinity-agent-core</code>，实际行为上仍然存在四处清晰的能力落差：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>机制</th>
+<th>本地常驻（<code>infinity-daemon</code> / <code>LocalAgentSystem</code>）</th>
+<th>无服务器云端（<code>infinity-agent-lambda</code>）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>活跃工具期间到达的合成事件</td>
+<td><code>InMemoryDeferQueue</code> 暂存，等活跃工具结算后按序排空（但进程崩溃会丢内存延迟队列）</td>
+<td>默认 <code>NoDeferral</code>，直接按中断语义给活跃工具注入中断结果</td>
+</tr>
+<tr>
+<td>上下文自动压缩</td>
+<td><code>drive_thread</code> 在 <code>total_tokens &gt; context_window * 3 / 4</code> 时自动触发</td>
+<td><code>event_handler.rs</code> 未接入自动压缩触发器，需外部显式发压缩消息</td>
+</tr>
+<tr>
+<td>模型选择</td>
+<td>支持每线程动态 <code>/model</code> 切换与外部插件供应器</td>
+<td><code>event_handler.rs</code> 第 35 行当前硬编码 <code>global.anthropic.claude-sonnet-4-6</code></td>
+</tr>
+<tr>
+<td>前端实时视图 <code>ViewUpdate</code></td>
+<td>写入 <code>{thread_id}.views.json</code> 并推给 TUI / Web 渲染 Diff</td>
+<td><code>rap-receiver</code> 直接回 <code>200 {&quot;ok&quot;:true}</code> 丢弃</td>
+</tr>
+</tbody></table></div>
+<p>如果准备把 Infinity 真正放上 AWS Lambda 跑复杂的多子线程任务，<code>NoDeferral</code> 和缺少自动压缩是最先需要补齐的两块拼图：前者可以通过在 <code>DeferQueue::push</code> 里把消息带 <code>DelaySeconds</code> 投回 SQS 中继队列来实现传输层持久化延迟；后者则可以在 <code>event_handler.rs</code> 收到 <code>StepOutcome::Completed { usage, context_window }</code> 后复用与本地相同的 75% 阈值判断并往 SQS 投递一条 <code>TaggedSyntheticKind::Compaction</code>。</p>
+<h2 id="12-tradeoffs-and-limits--单线程-localset-与工具侧的隐性限制">单线程 LocalSet 与工具侧的隐性限制<a class="anchor" href="#12-tradeoffs-and-limits--单线程-localset-与工具侧的隐性限制" aria-label="链接到本节">#</a></h2>
+<p>本地调度器选了单线程 <code>tokio::task::LocalSet</code> 换取零锁状态机、极低内存占用和无竞态的同步 <code>check_before_idle</code>。这个取舍的背面是：<strong>所有在 <code>LocalSet</code> 上直接运行的同步代码都不能做重 CPU 计算或阻塞磁盘 I/O</strong>。</p>
+<p>守护进程里的 <code>PersistentConversationStore</code> 目前用 <code>std::sync::Mutex</code> 和同步文件写入来落盘每线程 JSON；当单个线程的历史增长到几兆字节，或者几十个线程同时刷盘时，序列化 JSON 和同步 <code>fs::write</code> 会短暂卡住同一个线程里的所有其他活跃驱动。同样的，第 9 章看到的跨主机热迁移也明确划定了禁区：<code>SandboxMode::Direct</code>、<code>SandboxMode::Custom</code> 以及同一个会话里同时操作了两个以上不同 Git 仓库时，<code>migrate_inner</code> 会直接返回错误拒绝迁移。</p>
+<h2 id="12-tradeoffs-and-limits--何时该用这套架构-何时不必折腾">何时该用这套架构，何时不必折腾<a class="anchor" href="#12-tradeoffs-and-limits--何时该用这套架构-何时不必折腾" aria-label="链接到本节">#</a></h2>
+<p>回头对照全书拆过的机制，Infinity 的适用边界其实非常清楚：</p>
+<ul>
+<li><strong>适合的场景</strong>：需要同时挂载大量长周期、事件驱动 Agent（CI/CD 盯盘、PR 审查、人工审批流、定时巡检）；需要按实际推理切片缩容到零以控制云账单；或者需要在一台开发机上同时开多条并行编码线程，既要互不干扰又要能随时把会话和代码整体迁往远程算力机。</li>
+<li><strong>不必引入的场景</strong>：如果业务只是同步一问一答的短平快 RAG 机器人，所有工具调用都在几百毫秒内返回，既没有跨小时等待也没有多子线程并发编辑，直接用轻量单循环加标准 MCP 服务反而架构更薄、排障链路更短。</li>
+</ul>
+<p>理解了取舍与边界之后，最好的巩固方式是亲手跑一遍核心状态机。下一章不依赖 Rust 工具链、也不依赖任何第三方 Python 包，直接用一份四百多行的标准库 Python 教学实现把 Infinity 的五项核心不变量完整跑通并验证。</p>
+</div></section><section class="book-section" id="13-mini-infinity"><header class="chapter-head"><div class="chapter-number">13</div><h1>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</h1></header><div class="prose"><p>看懂一份五万多行 Rust 运行时的最好办法，是把它的核心不变量抽离出来，用几百行没有外部依赖的代码重新搭一遍，再写一组能把每个边界条件都打疼的单元测试。</p>
+<p>仓库的 <code>examples/mini_infinity.py</code>（零第三方依赖，仅用 Python 3.10+ 标准库）和 <code>examples/test_mini_infinity.py</code>（19 个单元测试）精确复刻了前面章节拆解过的五组核心机制，方便在没有 Rust 编译器、没有 AWS 账号也没有真实大模型 Key 的环境下单步调试。</p>
+<h2 id="13-mini-infinity--教学模型与上游-rust-源码的逐项映射">教学模型与上游 Rust 源码的逐项映射<a class="anchor" href="#13-mini-infinity--教学模型与上游-rust-源码的逐项映射" aria-label="链接到本节">#</a></h2>
+<p>为了防止教学代码跑偏成脱离源码的伪代码，每个类和方法都严格对应上游源码里的真实边界：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th><code>examples/mini_infinity.py</code> 组件</th>
+<th>对应的上游 Rust 模块</th>
+<th>复现的核心不变量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ThreadRef</code></td>
+<td><code>crates/infinity-protocol/src/lib.rs</code></td>
+<td><code>&quot;{remote}/{id}&quot;</code> 复合解析、非法斜杠拒绝、<code>prefixed</code>/<code>strip</code>、本地优先于远程的 <code>Ord</code> 排序</td>
+</tr>
+<tr>
+<td><code>ConversationStore</code> / <code>StateStore</code></td>
+<td><code>crates/infinity-agent-core/src/traits.rs</code>、<code>stores.rs</code></td>
+<td>祖先链回溯、<code>Fresh</code> 上下文截断传递、按 <code>up_to_order</code> 位置索引加载压缩摘要</td>
+</tr>
+<tr>
+<td><code>HistoryManager</code></td>
+<td><code>crates/infinity-agent-core/src/event_processor.rs</code></td>
+<td><code>unvalidated_items</code> -&gt; <code>pending_items</code> -&gt; <code>sync()</code> 三阶段顺序断言、<code>turn_buffer</code> 文本合并与尾推理裁剪、<code>match_tool_result</code> 逆向尾扫去重、<code>safe_spawn_point</code>、<code>recover_from_overflow</code> 与穿透压缩的 <code>find_tool_call</code></td>
+</tr>
+<tr>
+<td><code>MiniInfinityRuntime</code> / <code>DeferQueue</code></td>
+<td><code>crates/infinity-agent-core/src/system/{thread,defer,local/router}.rs</code></td>
+<td>先 <code>sync()</code> 落盘后派发异步工具、<code>spawn_thread</code> 同步回环加 <code>child_of</code> 栈校验、订阅事件自动拆子线程 vs <code>associative</code> 内联加 <code>final</code> 清理、活跃工具延迟队列 vs 被动 <code>sleep</code> 自由打断、未知/已停线程准入拒绝、<code>ErrorClass</code> 驱动重试</td>
+</tr>
+<tr>
+<td><code>StackedSandboxManager</code></td>
+<td><code>crates/sandbox-core/src/server.rs</code>、<code>sandbox-local/src/backend.rs</code></td>
+<td>按 <code>base_thread_id</code> 堆叠子工作区、<code>squash_sandbox</code> 合并回父书签而不触碰宿主文件、沿祖先链检查 <code>write-orig</code> 写权限授权</td>
+</tr>
+</tbody></table></div>
+<h2 id="13-mini-infinity--核心代码走读">核心代码走读<a class="anchor" href="#13-mini-infinity--核心代码走读" aria-label="链接到本节">#</a></h2>
+<p>挑三段最能体现 Infinity 架构精髓的逻辑来看。</p>
+<h3 id="13-mini-infinity--1-三阶段历史与溢出止损">1. 三阶段历史与溢出止损<a class="anchor" href="#13-mini-infinity--1-三阶段历史与溢出止损" aria-label="链接到本节">#</a></h3>
+<p>在 <code>HistoryManager</code> 里，<code>append_known_safe</code> 直接复现了 Rust 版的顺序性断言：在模型尚未验证当前新输入之前，绝不允许提交模型输出；而 <code>sync()</code> 只刷 <code>pending_items</code>，且只把天然不幂等的 <code>user</code> 与 <code>subscription_event</code> 写入持久化去重集：</p>
+<pre><code class="language-python">def append_known_safe(self, message: InfinityMessage, message_id: str) -&gt; None:
+    assert not self.turn_buffer, &quot;bug: append_known_safe with non-empty turn_buffer&quot;
+    assert not self.unvalidated_items, (
+        &quot;bug: committing model output while unvalidated inputs exist&quot;
+    )
+    self.history.append(message)
+    self.pending_items.append((message, message_id))
+
+def recover_from_overflow(self) -&gt; tuple[Literal[&quot;retry&quot;, &quot;dropped&quot;], int]:
+    if len(self.unvalidated_items) == 1 and self.replace_unvalidated_tool_results(
+        TOOL_RESULT_TOO_LARGE_PLACEHOLDER
+    ):
+        return (&quot;retry&quot;, 0)
+    self.replace_unvalidated_tool_results(TOOL_CALL_INTERRUPTED_TEXT)
+    dropped = self.drop_unvalidated_user_inputs()
+    return (&quot;dropped&quot;, dropped)
+</code></pre>
+<p>注意 <code>replace_unvalidated_tool_results</code> 里对已经等于占位符的正文跳过不计的细节：这样如果单条超大工具结果换完占位符再试一次仍然触发溢出，第二次调用会自动落入 <code>dropped</code> 分支，不会无限重试。</p>
+<h3 id="13-mini-infinity--2-落盘屏障与同步回环">2. 落盘屏障与同步回环<a class="anchor" href="#13-mini-infinity--2-落盘屏障与同步回环" aria-label="链接到本节">#</a></h3>
+<p>在 <code>MiniInfinityRuntime.process_one</code> 里，同步工具（<code>spawn_thread</code>）在 <code>while True</code> 补全循环内部直接执行并把结果喂回同一轮切片，而异步工具则跳出循环、<strong>先执行 <code>hm.sync()</code></strong>，再登记派发记录：</p>
+<pre><code class="language-python"># Commit barrier BEFORE dispatching async tool (durability invariant)
+hm.sync()
+persisted_len_before_dispatch = len(self.conv.threads[tid].messages)
+
+if pending_async_call is not None:
+    self.dispatched_async_calls.append(
+        (tid, pending_async_call.tool_call_id, pending_async_call.tool_name,
+         pending_async_call.tool_args, persisted_len_before_dispatch)
+    )
+</code></pre>
+<p>测试用例 <code>test_commit_barrier_persists_tool_call_before_async_dispatch</code> 会断言派发发生那一刻 <code>persisted_len_before_dispatch == 2</code>（用户输入和工具调用均已持久化），直接把落盘屏障做成了可验证断言。</p>
+<h3 id="13-mini-infinity--3-堆叠沙箱与祖先链写授权">3. 堆叠沙箱与祖先链写授权<a class="anchor" href="#13-mini-infinity--3-堆叠沙箱与祖先链写授权" aria-label="链接到本节">#</a></h3>
+<p><code>StackedSandboxManager</code> 用纯内存字典模拟文件系统快照，还原了两个关键约束：第一，父线程和两个并行子线程各自修改互不覆盖，子线程完成后通过 <code>squash_sandbox</code> 把差量合回父书签，宿主 <code>host_files</code> 全程保持原样；第二，<code>check_write_allowed</code> 检查目标路径时，落在自己沙箱内直接放行，落在宿主仓库根目录下则沿着 <code>thread_chain</code> 逐级向上检查是否已授予 <code>write-orig</code>，未授权时返回 <code>needs_user_choice:write-orig</code> 触发前端确认：</p>
+<pre><code class="language-python">def check_write_allowed(self, thread_chain: list[str], target_path: str) -&gt; tuple[bool, str]:
+    norm = str(PurePosixPath(target_path))
+    leaf = self.workspaces[thread_chain[-1]]
+    if norm == leaf.sandbox_root or norm.startswith(leaf.sandbox_root + &quot;/&quot;):
+        return True, &quot;inside_sandbox&quot;
+    if norm == self.repo_root or norm.startswith(self.repo_root + &quot;/&quot;):
+        if any(
+            tid in self.workspaces and self.workspaces[tid].write_orig_granted
+            for tid in thread_chain
+        ):
+            return True, &quot;write_orig_granted&quot;
+        return False, &quot;needs_user_choice:write-orig&quot;
+    ...
+</code></pre>
+<h2 id="13-mini-infinity--运行全部-19-个单元测试">运行全部 19 个单元测试<a class="anchor" href="#13-mini-infinity--运行全部-19-个单元测试" aria-label="链接到本节">#</a></h2>
+<p>在仓库根目录执行标准库 <code>unittest</code> 发现命令即可完成全部核验：</p>
+<pre><code class="language-bash">python3 -m unittest discover -s examples -v
+</code></pre>
+<p>19 条用例覆盖了五大测试类：</p>
+<ul>
+<li><code>TestThreadRef</code>（2 项）：复合解析、前缀增删、本地优先排序与非法输入拦截。</li>
+<li><code>TestHistoryManagerThreePhase</code>（6 项）：未验证项跳过落盘与顺序断言、轮次缓冲合并与尾推理裁剪、无持久 ID 的工具结果尾扫去重、单工具结果溢出重试一次防死循环、含用户输入溢出丢弃并遗忘去重 ID、<code>safe_spawn_point</code> 截断规则。</li>
+<li><code>TestInheritanceAndCompaction</code>（3 项）：位置索引压缩保护早先派生的子线程切片、<code>Fresh</code> 边界向孙线程传递、<code>find_tool_call</code> 穿透压缩视图。</li>
+<li><code>TestRuntimeSliceDeferralAndSubscriptions</code>（6 项）：落盘屏障先于异步派发、<code>spawn_thread</code> 同步回环与 <code>child_of</code> 栈拦截、活跃工具延迟队列 vs 被动 <code>sleep</code> 立即打断、订阅自动子线程 vs <code>associative</code> 内联与 <code>final</code> 清理、未知/已停线程准入拦截、<code>ErrorClass</code> 驱动瞬时/限流重试与致命报错不重试。</li>
+<li><code>TestStackedSandboxes</code>（2 项）：双并行子沙箱压缩汇流且宿主不动、沙箱内写放行与祖先链 <code>write-orig</code> 授权传递。</li>
+</ul>
+<p>这份教学模型有意省略了网络传输、真实 <code>jj</code>/<code>git</code> 命令行调用以及 Tokio 异步调度器，目的是把状态机的核心不变量剥离到肉眼一眼能看穿的厚度。如果你想对照核查书里提到的任何一个上游文件、类型或指标，可以翻到后面的附录索引。</p>
+</div></section><section class="book-section" id="appendix-sources"><header class="chapter-head"><div class="chapter-number">A</div><h1>附录：源码索引、实测统计与核心术语对照</h1></header><div class="prose"><p>本附录汇总全书所依据的 <code>hydro-project/infinity</code> 上游快照信息、21 个 Rust crate 实测规模、关键源码文件路径、本地配置清单以及中英文核心术语对照。</p>
+<h2 id="appendix-sources--上游快照信息">上游快照信息<a class="anchor" href="#appendix-sources--上游快照信息" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>仓库地址</strong>：<code>https://github.com/hydro-project/infinity</code></li>
+<li><strong>固定提交 SHA</strong>：<code>e1a3e4b36e5f6143e03a59a7ad86e1abacfd22e8</code></li>
+<li><strong>提交日期与摘要</strong>：<code>2026-11-05</code>，<code>docs: explain Linux sandbox prerequisites (#188)</code></li>
+<li><strong>上游许可证</strong>：Apache License 2.0（<code>LICENSE.txt</code>；<code>NOTICE</code> 标注版权归 Hydro Contributors 及 Amazon.com, Inc. or its affiliates）</li>
+<li><strong>采集核验日期</strong>：<code>2026-11-22</code></li>
+<li><strong>研究口径</strong>：全部架构拆解与代码引用基于静态源码与官方文档核验，教学模型与 19 项单元测试在离线环境实跑通过；关于 80,000 个空闲 Agent 占约 8.4 GB RSS（约 102 KiB/Agent）的基准数字直接引自上游 <code>crates/infinity-agent-core/examples/agent_scale.rs</code> 与 <code>docs/src/components/MemoryChart.tsx</code>，未在本书编写过程中重新搭建 AWS Lambda 或 Bedrock 生产压测环境。</li>
+</ul>
+<h2 id="appendix-sources--21-个-workspace-crate-规模实测">21 个 Workspace Crate 规模实测<a class="anchor" href="#appendix-sources--21-个-workspace-crate-规模实测" aria-label="链接到本节">#</a></h2>
+<p>统计范围覆盖快照 <code>e1a3e4b36e5f</code> 下 <code>crates/</code> 目录内全部 169 个 <code>.rs</code> 文件（总计 57,969 行 Rust 代码）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Crate</th>
+<th align="right"><code>.rs</code> 文件</th>
+<th align="right">总行数</th>
+<th align="right"><code>src/</code> 文件</th>
+<th align="right"><code>src/</code> 行数</th>
+<th>核心职责</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>infinity-agent-core</code></td>
+<td align="right">29</td>
+<td align="right">15,372</td>
+<td align="right">28</td>
+<td align="right">15,050</td>
+<td>切片执行循环、<code>HistoryManager</code>、本地路由器与驱动、<code>DeferQueue</code>、内置工具</td>
+</tr>
+<tr>
+<td><code>infinity-agent-cli</code></td>
+<td align="right">26</td>
+<td align="right">10,294</td>
+<td align="right">17</td>
+<td align="right">7,195</td>
+<td>内联终端 TUI、无头命令、插件安装器、<code>infinity acp</code> stdio 服务</td>
+</tr>
+<tr>
+<td><code>infinity-daemon</code></td>
+<td align="right">25</td>
+<td align="right">9,215</td>
+<td align="right">20</td>
+<td align="right">7,490</td>
+<td>常驻守护进程、Unix Socket/WS、懒加载 JSON 存储、SSH 远程代理与热迁移</td>
+</tr>
+<tr>
+<td><code>sandbox-local</code></td>
+<td align="right">22</td>
+<td align="right">4,911</td>
+<td align="right">6</td>
+<td align="right">1,066</td>
+<td><code>LocalBackend</code>、<code>LocalJjProvider</code>/<code>LocalGitProvider</code>、<code>sandbox-exec</code> 与 <code>bwrap</code></td>
+</tr>
+<tr>
+<td><code>sandbox-core</code></td>
+<td align="right">9</td>
+<td align="right">3,902</td>
+<td align="right">9</td>
+<td align="right">3,902</td>
+<td><code>SandboxBackend</code>/<code>ModeProvider</code>、Axum RAP 沙箱路由、流式命令与迁移导入导出</td>
+</tr>
+<tr>
+<td><code>infinity-slack-bot</code></td>
+<td align="right">6</td>
+<td align="right">2,371</td>
+<td align="right">5</td>
+<td align="right">2,328</td>
+<td>Slack Socket Mode / Web API 与守护进程 I/O 外壳</td>
+</tr>
+<tr>
+<td><code>infinity-agent-lambda</code></td>
+<td align="right">10</td>
+<td align="right">1,894</td>
+<td align="right">10</td>
+<td align="right">1,894</td>
+<td>SQS Lambda 入口、<code>rap-receiver</code>、DSQL/DynamoDB 存储、SQS/EventBridge 定时器</td>
+</tr>
+<tr>
+<td><code>infinity-slack-dataflow</code></td>
+<td align="right">9</td>
+<td align="right">1,817</td>
+<td align="right">7</td>
+<td align="right">1,342</td>
+<td>基于 <code>hydro_lang</code> 的 Slack 机器人分阶段数据流编排</td>
+</tr>
+<tr>
+<td><code>infinity-provider-bedrock</code></td>
+<td align="right">5</td>
+<td align="right">1,445</td>
+<td align="right">4</td>
+<td align="right">1,350</td>
+<td>AWS Bedrock ConverseStream 供应器、60s 建连超时、错误分类与细粒度工具流</td>
+</tr>
+<tr>
+<td><code>infinity-provider-protocol</code></td>
+<td align="right">5</td>
+<td align="right">1,280</td>
+<td align="right">5</td>
+<td align="right">1,280</td>
+<td><code>ModelProvider</code>、<code>ErrorClass</code>、<code>StreamChunk</code> 及 Unix Socket 跨进程协议</td>
+</tr>
+<tr>
+<td><code>infinity-mcp-bridge</code></td>
+<td align="right">1</td>
+<td align="right">797</td>
+<td align="right">1</td>
+<td align="right">797</td>
+<td>Stdio 与 Streamable HTTP MCP 懒连接传输层与工具桥接</td>
+</tr>
+<tr>
+<td><code>rap-github-event-poller</code></td>
+<td align="right">2</td>
+<td align="right">715</td>
+<td align="right">2</td>
+<td align="right">715</td>
+<td>GitHub 事件订阅轮询 RAP 服务（ETag + <code>X-Poll-Interval</code>）</td>
+</tr>
+<tr>
+<td><code>infinity-rap-bridge</code></td>
+<td align="right">2</td>
+<td align="right">704</td>
+<td align="right">2</td>
+<td align="right">704</td>
+<td>守护进程与 Lambda 共用的 <code>prepare_callback</code> 回调转换器</td>
+</tr>
+<tr>
+<td><code>infinity-protocol</code></td>
+<td align="right">1</td>
+<td align="right">613</td>
+<td align="right">1</td>
+<td align="right">613</td>
+<td><code>ClientMessage</code>/<code>DaemonMessage</code>、<code>ThreadRef</code>、<code>RemoteName</code>、256 MiB 帧编解码</td>
+</tr>
+<tr>
+<td><code>sandbox-remote</code></td>
+<td align="right">5</td>
+<td align="right">534</td>
+<td align="right">5</td>
+<td align="right">534</td>
+<td>面向 AWS Lambda 的 <code>EfsBackend</code> 裸仓沙箱与 SigV4 回调客户端</td>
+</tr>
+<tr>
+<td><code>rap-client</code></td>
+<td align="right">5</td>
+<td align="right">515</td>
+<td align="right">5</td>
+<td align="right">515</td>
+<td>RAP HTTP 客户端、工具清单加载缓存、本地回调监听与 <code>RapNotifier</code></td>
+</tr>
+<tr>
+<td><code>infinity-provider-rig</code></td>
+<td align="right">2</td>
+<td align="right">504</td>
+<td align="right">2</td>
+<td align="right">504</td>
+<td>基于 <code>rig-core</code> 的 OpenAI 兼容模型供应器与错误分类</td>
+</tr>
+<tr>
+<td><code>rap-protocol</code></td>
+<td align="right">1</td>
+<td align="right">392</td>
+<td align="right">1</td>
+<td align="right">392</td>
+<td><code>ThreadId</code>/<code>ToolCallId</code>/<code>ProviderCallId</code>/<code>ChoiceId</code>、RAP 线缆类型与 <code>CallbackClient</code></td>
+</tr>
+<tr>
+<td><code>rap-steering-server</code></td>
+<td align="right">2</td>
+<td align="right">348</td>
+<td align="right">2</td>
+<td align="right">348</td>
+<td>项目与家目录规则文件（<code>INFINITY.md</code>/<code>CLAUDE.md</code>/<code>AGENTS.md</code> 等）读取服务</td>
+</tr>
+<tr>
+<td><code>rap-test-servers</code></td>
+<td align="right">1</td>
+<td align="right">246</td>
+<td align="right">1</td>
+<td align="right">246</td>
+<td>集成测试用模拟 RAP 工具服务</td>
+</tr>
+<tr>
+<td><code>infinity-mdtests</code></td>
+<td align="right">1</td>
+<td align="right">100</td>
+<td align="right">1</td>
+<td align="right">100</td>
+<td>将 <code>docs/docs/infinity-runtime/**/*.md</code> 示例自动作为 Rust 测试执行</td>
+</tr>
+</tbody></table></div>
+<p>配套 TypeScript 子项目规模：<code>agent/</code>（18 文件、1,200 行 AWS CDK）、<code>infinity-ui/</code>（15 文件、2,193 行共享 React 组件）、<code>infinity-web/</code>（6 文件、1,373 行 Vite 桌面端）、<code>docs/</code>（51 篇 <code>.md</code>/<code>.mdx</code> 文档与 10 个交互组件共 3,036 行）。</p>
+<h2 id="appendix-sources--关键源码定位速查">关键源码定位速查<a class="anchor" href="#appendix-sources--关键源码定位速查" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>主题</th>
+<th>上游文件路径</th>
+<th>关键符号</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>类型化 ID 与 RAP 协议</td>
+<td><code>crates/rap-protocol/src/lib.rs</code></td>
+<td><code>ThreadId</code>, <code>ToolCallId</code>, <code>ProviderCallId</code>, <code>ChoiceId</code>, <code>RapInvocation</code>, <code>RapCallback</code>, <code>ToolsetManifest</code></td>
+</tr>
+<tr>
+<td>三阶段历史与切片循环</td>
+<td><code>crates/infinity-agent-core/src/event_processor.rs</code></td>
+<td><code>HistoryManager</code>, <code>prepare_input</code>, <code>run_completion</code>, <code>recover_from_overflow</code>, <code>match_tool_result</code>, <code>safe_spawn_point</code>, <code>find_tool_call</code></td>
+</tr>
+<tr>
+<td>同步线程派生与关闭</td>
+<td><code>crates/infinity-agent-core/src/tools/thread.rs</code></td>
+<td><code>SpawnThreadTool</code>, <code>ReportToParentTool</code>, <code>CloseThreadTool</code>, <code>SendMessageToChildTool</code></td>
+</tr>
+<tr>
+<td>本地路由、驱动与延迟</td>
+<td><code>crates/infinity-agent-core/src/system/local/{router,driver}.rs</code>, <code>system/defer.rs</code></td>
+<td><code>route_loop</code>, <code>drive_thread</code>, <code>check_before_idle</code>, <code>InFlightStep</code>, <code>DeferQueue</code>, <code>InMemoryDeferQueue</code>, <code>NoDeferral</code></td>
+</tr>
+<tr>
+<td>空闲内存扩展基准</td>
+<td><code>crates/infinity-agent-core/examples/agent_scale.rs</code></td>
+<td><code>ScriptedModel</code>, <code>RunCommand</code>, <code>rss_bytes</code>, <code>trim_allocator</code></td>
+</tr>
+<tr>
+<td>供应器错误与跨进程协议</td>
+<td><code>crates/infinity-provider-protocol/src/{completion,remote}.rs</code></td>
+<td><code>ErrorClass</code>, <code>CompletionError</code>, <code>WireError</code>, <code>serve_provider</code>, <code>RemoteModelProvider</code></td>
+</tr>
+<tr>
+<td>统一 RAP 回调转换</td>
+<td><code>crates/infinity-rap-bridge/src/callback.rs</code></td>
+<td><code>prepare_callback</code>, <code>convert_callback</code></td>
+</tr>
+<tr>
+<td>MCP 桥接</td>
+<td><code>crates/infinity-mcp-bridge/src/lib.rs</code></td>
+<td><code>McpTransport</code>, <code>StdioMcpTransport</code>, <code>HttpMcpTransport</code>, <code>McpToolSet</code></td>
+</tr>
+<tr>
+<td>堆叠沙箱与写隔离</td>
+<td><code>crates/sandbox-core/src/{sandbox,server,jj,git}.rs</code>, <code>crates/sandbox-local/src/{backend,providers}.rs</code>, <code>build.rs</code></td>
+<td><code>SandboxBackend</code>, <code>ModeProvider</code>, <code>LocalBackend</code>, <code>LocalJjProvider</code>, <code>LocalGitProvider</code>, <code>migrate_inner</code>, <code>handle_execute_command_streaming_inner</code></td>
+</tr>
+<tr>
+<td>本地守护进程与热迁移</td>
+<td><code>crates/infinity-protocol/src/lib.rs</code>, <code>crates/infinity-daemon/src/{memory_store,remote,migrate}.rs</code></td>
+<td><code>ThreadRef</code>, <code>RemoteName</code>, <code>length_delimited_codec</code>, <code>PersistentConversationStore</code>, <code>orchestrate_migration</code></td>
+</tr>
+<tr>
+<td>AWS 无服务器部署</td>
+<td><code>crates/infinity-agent-lambda/src/{event_handler,conversation_history,bin/rap-receiver,tools/sleep}.rs</code></td>
+<td><code>function_handler</code>, <code>DsqlConversationStore</code>, <code>WakeupScheduler</code>, <code>SleepTool</code>, <code>SleepUntilTool</code></td>
+</tr>
+<tr>
+<td>Slack Hydro 数据流</td>
+<td><code>crates/infinity-slack-dataflow/src/flow.rs</code></td>
+<td><code>slack_dataflow</code></td>
+</tr>
+</tbody></table></div>
+<h2 id="appendix-sources--核心术语对照">核心术语对照<a class="anchor" href="#appendix-sources--核心术语对照" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>英文术语</th>
+<th>本书统一译法</th>
+<th>简要说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Slice</td>
+<td>执行切片</td>
+<td>一次绝不阻塞在外部工具上的有界状态推进单元</td>
+</tr>
+<tr>
+<td>RAP (Reactive Agent Protocol)</td>
+<td>响应式工具协议（RAP）</td>
+<td>基于无状态 HTTP 触发与异步回调的 Agent 工具通信协议</td>
+</tr>
+<tr>
+<td>Turn buffer</td>
+<td>轮次缓冲</td>
+<td>流式推理期间暂存增量输出的缓冲层，提交前可整轮丢弃</td>
+</tr>
+<tr>
+<td>Unvalidated items</td>
+<td>未验证输入</td>
+<td>已入内存但模型尚未产出输出的新输入，<code>sync()</code> 跳过防毒消息落盘</td>
+</tr>
+<tr>
+<td>Stacked sandboxes</td>
+<td>堆叠沙箱</td>
+<td>子线程基于父线程书签拉出的隔离 <code>jj</code>/<code>git</code> 工作区，完成后压缩合并回父书签</td>
+</tr>
+<tr>
+<td>Passive tool</td>
+<td>被动工具</td>
+<td><code>Tool::is_passive() == true</code> 的等待型工具（如 <code>sleep</code> 家族），允许外部事件自由打断</td>
+</tr>
+<tr>
+<td>Associative subscription event</td>
+<td>内联订阅事件</td>
+<td><code>associative: true</code> 的订阅回调，跳过子线程直接注入当前线程历史</td>
+</tr>
+<tr>
+<td>ACP (Agent Client Protocol)</td>
+<td>代理客户端协议（ACP）</td>
+<td>编辑器侧栏与后端 Agent 通信的 stdio 协议，由 <code>infinity acp</code> 提供</td>
+</tr>
+</tbody></table></div>
+<h2 id="appendix-sources--本地核验命令">本地核验命令<a class="anchor" href="#appendix-sources--本地核验命令" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-bash"># 运行本书离线 Python 教学模型与 19 项单元测试
+python3 -m unittest discover -s examples -v
+
+# 重新生成 6 张主题自适应 SVG 架构图
+python3 scripts/make_diagrams.py
+
+# 构建完整静态阅读站、离线合订本、合并 Markdown、EPUB 3 与 PDF
+bash scripts/build.sh
+</code></pre>
+</div></section></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="#00-preface"><span>00</span>前言：为什么一台树莓派能装下七万五千个 Agent</a><a href="#01-blocking-trap"><span>01</span>阻塞式 Agent 的死结与无阻塞切片不变量</a><a href="#02-workspace-topology"><span>02</span>21 个 Crate 的分层版图与类型化 ID 体系</a><a href="#03-slice-and-history"><span>03</span>切片执行循环与三阶段 HistoryManager</a><a href="#04-rap-protocol"><span>04</span>响应式工具协议 RAP：断连回调、订阅与 MCP 桥接</a><a href="#05-threading-compaction"><span>05</span>线程树、上下文继承与位置索引压缩</a><a href="#06-local-actor-deferral"><span>06</span>单线程本地调度器、延迟队列与抢占打断</a><a href="#07-provider-error-boundary"><span>07</span>模型供应协议、跨进程隔离与错误分类契约</a><a href="#08-stacked-sandboxes"><span>08</span>堆叠沙箱：Jujutsu 工作区、Git Worktree 与 OS 写隔离</a><a href="#09-daemon-remote-migration"><span>09</span>本地守护进程、SSH 远程代理与跨主机热迁移</a><a href="#10-serverless-aws"><span>10</span>零闲置云端部署：SQS FIFO、Lambda、Aurora DSQL 与持久定时器</a><a href="#11-clients-and-hydro-dataflow"><span>11</span>多端接入：终端 TUI、ACP 编辑器协议与 Hydro 数据流 Slack 机器人</a><a href="#12-tradeoffs-and-limits"><span>12</span>失败模式、安全边界与架构取舍</a><a href="#13-mini-infinity"><span>13</span>零依赖 Python 教学实现：复现切片、延迟队列与堆叠沙箱</a><a href="#appendix-sources"><span>A</span>附录：源码索引、实测统计与核心术语对照</a></nav>
+</dialog>
+<footer class="site-footer">独立源码研究，非官方文档 · hydro-project/infinity · 快照 e1a3e4b36e5f · 2026-11-05</footer>
+<script>(() => {
+  const root = document.documentElement;
+  const key = 'octop-architecture-reader';
+  let saved = {};
+  try { const value = JSON.parse(localStorage.getItem(key) || '{}'); if (value && typeof value === 'object') saved = value; } catch {}
+  let state = saved;
+  const clamp = (n) => Math.max(17, Math.min(27, n));
+  const save = (patch) => {
+    state = {...state, ...patch};
+    try { localStorage.setItem(key, JSON.stringify(state)); } catch {}
+  };
+
+  let size = clamp(saved.size || 20);
+  root.style.setProperty('--reader-size', size + 'px');
+
+  document.querySelector('[data-font-down]')?.addEventListener('click', () => {
+    size = clamp(size - 1); root.style.setProperty('--reader-size', size + 'px'); save({size});
+  });
+  document.querySelector('[data-font-up]')?.addEventListener('click', () => {
+    size = clamp(size + 1); root.style.setProperty('--reader-size', size + 'px'); save({size});
+  });
+
+  const themeButton = document.querySelector('button[data-theme]');
+  const applyTheme = (theme) => {
+    root.dataset.theme = theme;
+    if (themeButton) themeButton.textContent = theme === 'dark' ? '浅色' : '深色';
+  };
+  applyTheme(saved.theme || 'auto');
+  themeButton?.addEventListener('click', () => {
+    const current = root.dataset.theme;
+    const next = current === 'dark' ? 'light' : 'dark';
+    applyTheme(next); save({theme: next});
+  });
+
+  const pageKey = location.pathname;
+  if (document.body.dataset.chapter === 'true') {
+    const restore = saved.page === pageKey ? Number(saved.y || 0) : 0;
+    if (restore > 120 && !location.hash) requestAnimationFrame(() => scrollTo(0, restore));
+    let timer;
+    addEventListener('scroll', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => save({page: pageKey, y: Math.round(scrollY), title: document.title}), 180);
+      const h = document.documentElement.scrollHeight - innerHeight;
+      root.style.setProperty('--progress', h > 0 ? `${Math.min(100, scrollY / h * 100)}%` : '100%');
+    }, {passive: true});
+  }
+
+  document.querySelectorAll('pre').forEach((pre) => {
+    const button = document.createElement('button');
+    button.className = 'copy'; button.type = 'button'; button.textContent = '复制';
+    button.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(pre.querySelector('code')?.innerText || pre.innerText);
+      button.textContent = '已复制'; setTimeout(() => button.textContent = '复制', 1200);
+    });
+    pre.append(button);
+  });
+
+  const menu = document.querySelector('[data-menu-panel]');
+  document.querySelector('[data-menu-open]')?.addEventListener('click', () => menu?.showModal());
+  document.querySelector('[data-menu-close]')?.addEventListener('click', () => menu?.close());
+  menu?.addEventListener('click', (event) => { if (event.target === menu) menu.close(); });
+})();
+
+/* Progressive reading controls; no network and no dependency on writable storage. */
+(() => {
+  const root = document.documentElement;
+  const themeKey = 'ebook-reader:appearance';
+  const get = key => { try { return localStorage.getItem(key); } catch { return null; } };
+  const put = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
+  let theme = get(themeKey) || root.dataset.theme || 'auto';
+  if (!['auto', 'light', 'dark'].includes(theme)) theme = 'auto';
+  const old = document.querySelector('button[data-theme]');
+  const button = old ? old.cloneNode(true) : document.createElement('button');
+  button.type = 'button';
+  button.dataset.readerTheme = '';
+  button.classList.add('control');
+  if (old) old.replaceWith(button);
+  else {
+    const tools = document.querySelector('.reader-tools,.topbar .tools,.topbar,.bar-inner nav,.tools');
+    if (tools) tools.append(button);
+  }
+  function applyTheme() {
+    root.dataset.theme = theme;
+    button.textContent = {auto:'自动',light:'浅色',dark:'深色'}[theme];
+    button.setAttribute('aria-label', '外观：' + button.textContent + '，点击切换');
+    button.title = '依次切换自动、浅色、深色';
+  }
+  applyTheme();
+  button.addEventListener('click', () => {
+    theme = {auto:'light',light:'dark',dark:'auto'}[theme];
+    applyTheme(); put(themeKey, theme);
+  });
+
+  const bookNav = document.querySelector('.layout>nav.toc');
+  if (bookNav) {
+    const wrapper = document.createElement('details');
+    wrapper.className = 'reader-book-toc';
+    const wide = matchMedia('(min-width:1001px)');
+    wrapper.open = wide.matches;
+    wide.addEventListener('change', event => { wrapper.open = event.matches; });
+    const summary = document.createElement('summary'); summary.textContent = '全书目录';
+    bookNav.before(wrapper); wrapper.append(summary, bookNav);
+  }
+  const rail = document.querySelector('.chapter-rail');
+  if (rail && !document.querySelector('.reader-mobile-toc')) {
+    const list = rail.querySelector('ol');
+    const header = document.querySelector('.chapter-head');
+    if (list && header) {
+      const toc = document.createElement('details');
+      toc.className = 'reader-mobile-toc';
+      const label = document.createElement('summary');
+      label.textContent = '本章目录';
+      toc.append(label, list.cloneNode(true));
+      header.after(toc);
+    }
+  }
+  document.querySelectorAll('table').forEach(table => {
+    if (table.closest('.table-wrap')) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'table-wrap';
+    table.before(wrap); wrap.append(table);
+  });
+  document.querySelectorAll('.table-wrap').forEach(wrap => {
+    wrap.tabIndex = 0;
+    wrap.setAttribute('role', 'region');
+    if (!wrap.hasAttribute('aria-label')) wrap.setAttribute('aria-label', '数据表，可横向滚动');
+  });
+  document.querySelectorAll('pre').forEach(pre => {
+    pre.tabIndex = 0;
+    pre.setAttribute('aria-label', '代码示例，可横向滚动');
+  });
+  document.querySelectorAll('.prose pre,.content pre').forEach(pre => {
+    if (pre.querySelector('button')) return;
+    const copy = document.createElement('button');
+    copy.className = 'copy'; copy.type = 'button'; copy.textContent = '复制';
+    pre.append(copy);
+  });
+  document.querySelectorAll('button.copy').forEach(oldButton => {
+    // Replace the original listener so clipboard rejection always has a recovery.
+    const copy = oldButton.cloneNode(true);
+    oldButton.replaceWith(copy);
+    copy.setAttribute('aria-label', '复制这段代码');
+    copy.setAttribute('aria-live', 'polite');
+    copy.addEventListener('click', async () => {
+      const code = copy.closest('pre')?.querySelector('code');
+      if (!code) return;
+      try {
+        await navigator.clipboard.writeText(code.textContent);
+        copy.textContent = '已复制';
+      } catch {
+        const range = document.createRange(); range.selectNodeContents(code);
+        const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+        copy.textContent = '已选中';
+        copy.title = '浏览器限制复制，请按 Ctrl+C 或长按复制';
+      }
+      setTimeout(() => { copy.textContent = '复制'; }, 1600);
+    });
+  });
+  // Print folded examples too, then restore the reader's disclosure state.
+  let printDetails = [];
+  addEventListener('beforeprint', () => {
+    printDetails = [...new Set([...printDetails, ...document.querySelectorAll('main details:not([open])')])];
+    printDetails.forEach(details => { details.open = true; });
+  });
+  addEventListener('afterprint', () => {
+    printDetails.forEach(details => { details.open = false; });
+    printDetails = [];
+  });
+  const links = [...document.querySelectorAll('.chapter-rail a[href^="#"],.reader-mobile-toc a[href^="#"],nav.toc>a[href^="#"]')];
+  const headings = [...new Set(links.map(link => document.getElementById(decodeURIComponent(link.hash.slice(1)))).filter(Boolean))];
+  if (headings.length && 'IntersectionObserver' in window) {
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) if (entry.isIntersecting) {
+        links.forEach(link => {
+          if (decodeURIComponent(link.hash.slice(1)) === entry.target.id) link.setAttribute('aria-current','location');
+          else link.removeAttribute('aria-current');
+        });
+      }
+    }, {rootMargin:'-10% 0px -65% 0px'});
+    headings.forEach(heading => observer.observe(heading));
+  }
+})();
+</script>
+</body></html>

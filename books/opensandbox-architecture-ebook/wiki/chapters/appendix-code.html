@@ -1,0 +1,1032 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>附录 C：配套教学实现 · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="appendix-code"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#mini-osb-py">mini_osb.py</a></li><li><a href="#test-mini-osb-py">test_mini_osb.py</a></li></ol></details><article class="content"><h1 id="附录-c-配套教学实现">附录 C：配套教学实现</h1><p>以下代码由构建器从 <code>examples/</code> 目录直接同步，完全基于 Python 3.10+ 标准库实现。它复刻了本书讨论的核心机制：生命周期服务、三种后端路由、单主机端口 <code>/proxy/{port}</code>、Pool 预热与 <code>Completed</code> 终态、Docker 续期竞态锁、<code>rootfsOnly</code> 与 <code>full</code> 快照准入、<code>EXECD_INIT=1</code> 进程树管理、egress 尾点归一化与 Credential Vault Exchange。用于离线核验结构不变量，不能替代真实 OpenSandbox 平台。</p>
+<h2 id="mini-osb-py">mini_osb.py</h2><div class="table-wrap"><pre tabindex="0"><code class="hljs"><span class="hljs-comment">#!/usr/bin/env python3</span>
+<span class="hljs-string">&quot;&quot;&quot;mini_osb: A zero-dependency standard-library model of OpenSandbox v1.3.0-rc.2.
+
+This teaching implementation models the core architectural invariants discussed in
+the book without running real containers, Kubernetes clusters, or Firecracker VMs:
+
+    Server (API + factory)            -&gt; server/opensandbox_server/services/factory.py
+    SandboxService interface          -&gt; server/opensandbox_server/services/sandbox_service.py
+    Prefix-based Composite routing    -&gt; server/opensandbox_server/services/composite_service.py
+    Single host port + /proxy/{port}  -&gt; components/execd built-in reverse proxy
+    Pool warm buffer &amp; Completed      -&gt; kubernetes/internal/controller/pool_controller.go
+    Docker per-sandbox lifecycle lock -&gt; server/opensandbox_server/services/docker/docker_service.py
+    RootfsOnly vs Full snapshots      -&gt; server/opensandbox_server/services/fast_sandbox/snapshot_runtime.py
+    execd --init &amp; CommandTimeout     -&gt; components/execd/pkg/runtime/initmode_linux.go
+    Egress rules &amp; Vault Exchange     -&gt; components/egress/pkg/policy/ &amp; oseps/0025
+
+Run:  python3 examples/mini_osb.py
+Test: python3 -m unittest discover -s examples -v
+&quot;&quot;&quot;</span>
+
+<span class="hljs-keyword">from</span> __future__ <span class="hljs-keyword">import</span> annotations
+
+<span class="hljs-keyword">import</span> json
+<span class="hljs-keyword">import</span> threading
+<span class="hljs-keyword">import</span> time
+<span class="hljs-keyword">from</span> dataclasses <span class="hljs-keyword">import</span> dataclass, field
+<span class="hljs-keyword">from</span> enum <span class="hljs-keyword">import</span> Enum
+<span class="hljs-keyword">from</span> typing <span class="hljs-keyword">import</span> <span class="hljs-type">Callable</span>, Iterable
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">State</span>(<span class="hljs-built_in">str</span>, Enum):
+    PENDING = <span class="hljs-string">&quot;Pending&quot;</span>
+    RUNNING = <span class="hljs-string">&quot;Running&quot;</span>
+    PAUSING = <span class="hljs-string">&quot;Pausing&quot;</span>
+    PAUSED = <span class="hljs-string">&quot;Paused&quot;</span>
+    RESUMING = <span class="hljs-string">&quot;Resuming&quot;</span>
+    STOPPING = <span class="hljs-string">&quot;Stopping&quot;</span>
+    TERMINATED = <span class="hljs-string">&quot;Terminated&quot;</span>
+    FAILED = <span class="hljs-string">&quot;Failed&quot;</span>
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">SnapshotMode</span>(<span class="hljs-built_in">str</span>, Enum):
+    FULL = <span class="hljs-string">&quot;full&quot;</span>
+    ROOTFS_ONLY = <span class="hljs-string">&quot;rootfsOnly&quot;</span>
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">SandboxError</span>(<span class="hljs-title class_ inherited__">Exception</span>):
+    <span class="hljs-string">&quot;&quot;&quot;Unified service-layer exception carrying HTTP-style status and code.&quot;&quot;&quot;</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__init__</span>(<span class="hljs-params">self, status: <span class="hljs-built_in">int</span>, code: <span class="hljs-built_in">str</span>, message: <span class="hljs-built_in">str</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-built_in">super</span>().__init__(<span class="hljs-string">f&quot;<span class="hljs-subst">{status}</span> <span class="hljs-subst">{code}</span>: <span class="hljs-subst">{message}</span>&quot;</span>)
+        <span class="hljs-variable language_">self</span>.status, <span class="hljs-variable language_">self</span>.code, <span class="hljs-variable language_">self</span>.message = status, code, message
+
+
+<span class="hljs-meta">@dataclass</span>
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">Sandbox</span>:
+    <span class="hljs-built_in">id</span>: <span class="hljs-built_in">str</span>
+    image: <span class="hljs-built_in">str</span>
+    state: State
+    expires_at: <span class="hljs-built_in">float</span> | <span class="hljs-literal">None</span>
+    entrypoint: <span class="hljs-built_in">list</span>[<span class="hljs-built_in">str</span>]
+    env: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>] = field(default_factory=<span class="hljs-built_in">dict</span>)
+    metadata: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>] = field(default_factory=<span class="hljs-built_in">dict</span>)
+    node: <span class="hljs-built_in">str</span> | <span class="hljs-literal">None</span> = <span class="hljs-literal">None</span>
+    data_plane: <span class="hljs-built_in">tuple</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">int</span>] | <span class="hljs-literal">None</span> = <span class="hljs-literal">None</span>
+    snapshot: <span class="hljs-built_in">str</span> | <span class="hljs-literal">None</span> = <span class="hljs-literal">None</span>
+    phase: <span class="hljs-built_in">str</span> | <span class="hljs-literal">None</span> = <span class="hljs-literal">None</span>
+    reason: <span class="hljs-built_in">str</span> | <span class="hljs-literal">None</span> = <span class="hljs-literal">None</span>
+    message: <span class="hljs-built_in">str</span> | <span class="hljs-literal">None</span> = <span class="hljs-literal">None</span>
+    rootfs_files: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">bytes</span>] = field(default_factory=<span class="hljs-built_in">dict</span>)
+    memory_state: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>] = field(default_factory=<span class="hljs-built_in">dict</span>)
+
+
+<span class="hljs-meta">@dataclass(<span class="hljs-params">frozen=<span class="hljs-literal">True</span></span>)</span>
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">SnapshotRecord</span>:
+    <span class="hljs-built_in">id</span>: <span class="hljs-built_in">str</span>
+    source_sandbox_id: <span class="hljs-built_in">str</span>
+    backend: <span class="hljs-built_in">str</span>
+    mode: SnapshotMode
+    artifact_path: <span class="hljs-built_in">str</span>  <span class="hljs-comment"># &quot;local-oci&quot; | &quot;registry-oci&quot; | &quot;s3-native&quot; | &quot;overlaybd-oci&quot;</span>
+    rootfs_files: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">bytes</span>]
+    memory_state: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>] | <span class="hljs-literal">None</span>
+
+
+<span class="hljs-comment"># --------------------------------------------------------------------------</span>
+<span class="hljs-comment"># Data plane: execd model with OSEP-0018 init mode, SSE events, and timeouts.</span>
+<span class="hljs-comment"># --------------------------------------------------------------------------</span>
+
+<span class="hljs-meta">@dataclass</span>
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">Event</span>:
+    <span class="hljs-string">&quot;&quot;&quot;Models execd ServerStreamEvent (type, text, exit_code, error_name).&quot;&quot;&quot;</span>
+
+    <span class="hljs-built_in">type</span>: <span class="hljs-built_in">str</span>
+    text: <span class="hljs-built_in">str</span> = <span class="hljs-string">&quot;&quot;</span>
+    exit_code: <span class="hljs-built_in">int</span> | <span class="hljs-literal">None</span> = <span class="hljs-literal">None</span>
+    error_name: <span class="hljs-built_in">str</span> | <span class="hljs-literal">None</span> = <span class="hljs-literal">None</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">to_sse</span>(<span class="hljs-params">self</span>) -&gt; <span class="hljs-built_in">str</span>:
+        payload: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">object</span>] = {<span class="hljs-string">&quot;type&quot;</span>: <span class="hljs-variable language_">self</span>.<span class="hljs-built_in">type</span>}
+        <span class="hljs-keyword">if</span> <span class="hljs-variable language_">self</span>.text:
+            payload[<span class="hljs-string">&quot;text&quot;</span>] = <span class="hljs-variable language_">self</span>.text
+        <span class="hljs-keyword">if</span> <span class="hljs-variable language_">self</span>.exit_code <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">None</span>:
+            payload[<span class="hljs-string">&quot;exit_code&quot;</span>] = <span class="hljs-variable language_">self</span>.exit_code
+        <span class="hljs-keyword">if</span> <span class="hljs-variable language_">self</span>.error_name <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">None</span>:
+            payload[<span class="hljs-string">&quot;ename&quot;</span>] = <span class="hljs-variable language_">self</span>.error_name
+        <span class="hljs-keyword">return</span> <span class="hljs-string">f&quot;data: <span class="hljs-subst">{json.dumps(payload, ensure_ascii=<span class="hljs-literal">False</span>)}</span>\n\n&quot;</span>
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">Execd</span>:
+    <span class="hljs-string">&quot;&quot;&quot;In-sandbox daemon modeling commands, staged uploads, and EXECD_INIT=1.&quot;&quot;&quot;</span>
+
+    FORWARDED_SIGNALS = <span class="hljs-built_in">frozenset</span>({<span class="hljs-string">&quot;SIGTERM&quot;</span>, <span class="hljs-string">&quot;SIGHUP&quot;</span>, <span class="hljs-string">&quot;SIGUSR1&quot;</span>, <span class="hljs-string">&quot;SIGUSR2&quot;</span>, <span class="hljs-string">&quot;SIGWINCH&quot;</span>})
+    MAX_SCAN_LINE_BYTES = <span class="hljs-number">16</span> * <span class="hljs-number">1024</span> * <span class="hljs-number">1024</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__init__</span>(<span class="hljs-params">self, init_mode: <span class="hljs-built_in">bool</span> = <span class="hljs-literal">True</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-variable language_">self</span>.init_mode = init_mode
+        <span class="hljs-variable language_">self</span>.files: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">bytes</span>] = {}
+        <span class="hljs-variable language_">self</span>.env: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>] = {<span class="hljs-string">&quot;EXECD_INIT&quot;</span>: <span class="hljs-string">&quot;1&quot;</span>} <span class="hljs-keyword">if</span> init_mode <span class="hljs-keyword">else</span> {}
+        <span class="hljs-variable language_">self</span>.orphans: <span class="hljs-built_in">list</span>[<span class="hljs-built_in">int</span>] = []
+        <span class="hljs-variable language_">self</span>.reaped_pids: <span class="hljs-built_in">list</span>[<span class="hljs-built_in">int</span>] = []
+        <span class="hljs-variable language_">self</span>.forwarded_signals: <span class="hljs-built_in">list</span>[<span class="hljs-built_in">str</span>] = []
+        <span class="hljs-variable language_">self</span>.entrypoint_exit_code: <span class="hljs-built_in">int</span> | <span class="hljs-literal">None</span> = <span class="hljs-literal">None</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">spawn_orphan</span>(<span class="hljs-params">self, pid: <span class="hljs-built_in">int</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-variable language_">self</span>.orphans.append(pid)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">reap_orphans</span>(<span class="hljs-params">self</span>) -&gt; <span class="hljs-built_in">list</span>[<span class="hljs-built_in">int</span>]:
+        <span class="hljs-string">&quot;&quot;&quot;Under EXECD_INIT=1, a single reaper collects reparented orphans.&quot;&quot;&quot;</span>
+        <span class="hljs-keyword">if</span> <span class="hljs-keyword">not</span> <span class="hljs-variable language_">self</span>.init_mode:
+            <span class="hljs-keyword">return</span> []
+        reaped = <span class="hljs-built_in">list</span>(<span class="hljs-variable language_">self</span>.orphans)
+        <span class="hljs-variable language_">self</span>.reaped_pids.extend(reaped)
+        <span class="hljs-variable language_">self</span>.orphans.clear()
+        <span class="hljs-keyword">return</span> reaped
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">deliver_signal</span>(<span class="hljs-params">self, sig: <span class="hljs-built_in">str</span></span>) -&gt; <span class="hljs-built_in">str</span>:
+        <span class="hljs-string">&quot;&quot;&quot;PID 1 shields in-namespace SIGKILL, while forwarding SIGTERM/HUP/USR*.&quot;&quot;&quot;</span>
+        <span class="hljs-keyword">if</span> <span class="hljs-variable language_">self</span>.init_mode <span class="hljs-keyword">and</span> sig == <span class="hljs-string">&quot;SIGKILL&quot;</span>:
+            <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;shielded&quot;</span>
+        <span class="hljs-keyword">if</span> <span class="hljs-variable language_">self</span>.init_mode <span class="hljs-keyword">and</span> sig <span class="hljs-keyword">in</span> <span class="hljs-variable language_">self</span>.FORWARDED_SIGNALS:
+            <span class="hljs-variable language_">self</span>.forwarded_signals.append(sig)
+            <span class="hljs-keyword">if</span> sig == <span class="hljs-string">&quot;SIGTERM&quot;</span>:
+                <span class="hljs-variable language_">self</span>.entrypoint_exit_code = <span class="hljs-number">143</span>
+            <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;forwarded&quot;</span>
+        <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;ignored&quot;</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">run</span>(<span class="hljs-params">self, argv: <span class="hljs-built_in">list</span>[<span class="hljs-built_in">str</span>], *, timeout_ms: <span class="hljs-built_in">int</span> | <span class="hljs-literal">None</span> = <span class="hljs-literal">None</span>, simulated_ms: <span class="hljs-built_in">int</span> = <span class="hljs-number">0</span></span>) -&gt; <span class="hljs-built_in">list</span>[Event]:
+        <span class="hljs-keyword">if</span> <span class="hljs-keyword">not</span> argv:
+            <span class="hljs-keyword">return</span> [Event(<span class="hljs-string">&quot;error&quot;</span>, <span class="hljs-string">&quot;argv must not be empty&quot;</span>, error_name=<span class="hljs-string">&quot;CommandExecError&quot;</span>), Event(<span class="hljs-string">&quot;execution_complete&quot;</span>, exit_code=<span class="hljs-number">2</span>)]
+        <span class="hljs-keyword">if</span> timeout_ms <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">None</span> <span class="hljs-keyword">and</span> simulated_ms &gt; timeout_ms:
+            <span class="hljs-keyword">return</span> [
+                Event(<span class="hljs-string">&quot;error&quot;</span>, <span class="hljs-string">f&quot;command timed out after <span class="hljs-subst">{timeout_ms}</span>ms&quot;</span>, exit_code=-<span class="hljs-number">1</span>, error_name=<span class="hljs-string">&quot;CommandTimeout&quot;</span>),
+            ]
+        out = <span class="hljs-string">&quot; &quot;</span>.join(argv)
+        <span class="hljs-keyword">if</span> argv[<span class="hljs-number">0</span>] == <span class="hljs-string">&quot;false&quot;</span>:
+            <span class="hljs-keyword">return</span> [Event(<span class="hljs-string">&quot;stderr&quot;</span>, <span class="hljs-string">&quot;command failed\n&quot;</span>), Event(<span class="hljs-string">&quot;execution_complete&quot;</span>, exit_code=<span class="hljs-number">1</span>)]
+        <span class="hljs-keyword">if</span> argv[<span class="hljs-number">0</span>] == <span class="hljs-string">&quot;ls&quot;</span>:
+            body = <span class="hljs-string">&quot;\n&quot;</span>.join(<span class="hljs-built_in">sorted</span>(<span class="hljs-variable language_">self</span>.files)) <span class="hljs-keyword">or</span> <span class="hljs-string">&quot;&quot;</span>
+            <span class="hljs-keyword">return</span> [Event(<span class="hljs-string">&quot;stdout&quot;</span>, body + (<span class="hljs-string">&quot;\n&quot;</span> <span class="hljs-keyword">if</span> body <span class="hljs-keyword">else</span> <span class="hljs-string">&quot;&quot;</span>)), Event(<span class="hljs-string">&quot;execution_complete&quot;</span>, exit_code=<span class="hljs-number">0</span>)]
+        <span class="hljs-keyword">return</span> [Event(<span class="hljs-string">&quot;stdout&quot;</span>, <span class="hljs-string">f&quot;<span class="hljs-subst">{out}</span>\n&quot;</span>), Event(<span class="hljs-string">&quot;execution_complete&quot;</span>, exit_code=<span class="hljs-number">0</span>)]
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">write_file</span>(<span class="hljs-params">self, path: <span class="hljs-built_in">str</span>, data: <span class="hljs-built_in">bytes</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-keyword">if</span> <span class="hljs-keyword">not</span> path <span class="hljs-keyword">or</span> <span class="hljs-keyword">not</span> path.strip():
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">400</span>, <span class="hljs-string">&quot;INVALID_PATH&quot;</span>, <span class="hljs-string">&quot;empty path is rejected&quot;</span>)
+        staged = <span class="hljs-string">f&quot;<span class="hljs-subst">{path}</span>.stage&quot;</span>
+        <span class="hljs-variable language_">self</span>.files[staged] = data
+        <span class="hljs-variable language_">self</span>.files[path] = <span class="hljs-variable language_">self</span>.files.pop(staged)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">read_file</span>(<span class="hljs-params">self, path: <span class="hljs-built_in">str</span></span>) -&gt; <span class="hljs-built_in">bytes</span>:
+        <span class="hljs-keyword">if</span> path <span class="hljs-keyword">not</span> <span class="hljs-keyword">in</span> <span class="hljs-variable language_">self</span>.files:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">404</span>, <span class="hljs-string">&quot;FILE_NOT_FOUND&quot;</span>, path)
+        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>.files[path]
+
+
+<span class="hljs-comment"># --------------------------------------------------------------------------</span>
+<span class="hljs-comment"># Egress policy evaluation &amp; Credential Vault Exchange (OSEP-0025).</span>
+<span class="hljs-comment"># --------------------------------------------------------------------------</span>
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">_normalize_host</span>(<span class="hljs-params">host: <span class="hljs-built_in">str</span></span>) -&gt; <span class="hljs-built_in">str</span>:
+    <span class="hljs-string">&quot;&quot;&quot;Normalize trailing root dot (e.g. &#x27;pypi.org.&#x27; -&gt; &#x27;pypi.org&#x27;).&quot;&quot;&quot;</span>
+    <span class="hljs-keyword">return</span> host.strip().lower().rstrip(<span class="hljs-string">&quot;.&quot;</span>)
+
+
+<span class="hljs-meta">@dataclass(<span class="hljs-params">frozen=<span class="hljs-literal">True</span></span>)</span>
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">Rule</span>:
+    action: <span class="hljs-built_in">str</span>  <span class="hljs-comment"># &quot;allow&quot; | &quot;deny&quot;</span>
+    target: <span class="hljs-built_in">str</span>  <span class="hljs-comment"># &quot;pypi.org&quot; / &quot;*.pypi.org&quot; / &quot;pypi.org.&quot;</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">matches</span>(<span class="hljs-params">self, host: <span class="hljs-built_in">str</span></span>) -&gt; <span class="hljs-built_in">bool</span>:
+        norm_target = _normalize_host(<span class="hljs-variable language_">self</span>.target)
+        norm_host = _normalize_host(host)
+        <span class="hljs-keyword">if</span> norm_target.startswith(<span class="hljs-string">&quot;*.&quot;</span>):
+            <span class="hljs-keyword">return</span> norm_host.endswith(norm_target[<span class="hljs-number">1</span>:])
+        <span class="hljs-keyword">return</span> norm_host == norm_target
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">Egress</span>:
+    <span class="hljs-string">&quot;&quot;&quot;Policy precedence: platform deny.always &gt; platform allow.always &gt; user rules.&quot;&quot;&quot;</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__init__</span>(<span class="hljs-params">self, deny_always: Iterable[Rule] = (<span class="hljs-params"></span>), allow_always: Iterable[Rule] = (<span class="hljs-params"></span>)</span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-variable language_">self</span>.deny_always = <span class="hljs-built_in">list</span>(deny_always)
+        <span class="hljs-variable language_">self</span>.allow_always = <span class="hljs-built_in">list</span>(allow_always)
+        <span class="hljs-variable language_">self</span>.rules: <span class="hljs-built_in">list</span>[Rule] = []
+        <span class="hljs-variable language_">self</span>.default_action = <span class="hljs-string">&quot;deny&quot;</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">add</span>(<span class="hljs-params">self, *rules: Rule</span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-variable language_">self</span>.rules.extend(rules)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">decide</span>(<span class="hljs-params">self, host: <span class="hljs-built_in">str</span></span>) -&gt; <span class="hljs-built_in">str</span>:
+        <span class="hljs-keyword">for</span> rule <span class="hljs-keyword">in</span> <span class="hljs-variable language_">self</span>.deny_always:
+            <span class="hljs-keyword">if</span> rule.matches(host):
+                <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;deny&quot;</span>
+        <span class="hljs-keyword">for</span> rule <span class="hljs-keyword">in</span> <span class="hljs-variable language_">self</span>.allow_always:
+            <span class="hljs-keyword">if</span> rule.matches(host):
+                <span class="hljs-keyword">return</span> <span class="hljs-string">&quot;allow&quot;</span>
+        <span class="hljs-keyword">for</span> rule <span class="hljs-keyword">in</span> <span class="hljs-variable language_">self</span>.rules:
+            <span class="hljs-keyword">if</span> rule.matches(host):
+                <span class="hljs-keyword">return</span> rule.action
+        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>.default_action
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">CredentialVaultExchange</span>:
+    <span class="hljs-string">&quot;&quot;&quot;Models OSEP-0025 per-request header-bound dynamic credential resolution.&quot;&quot;&quot;</span>
+
+    MAX_HEADERS = <span class="hljs-number">64</span>
+    MAX_VALUE_BYTES = <span class="hljs-number">8</span> * <span class="hljs-number">1024</span>
+    HOP_BY_HOP_DENYLIST = <span class="hljs-built_in">frozenset</span>({<span class="hljs-string">&quot;connection&quot;</span>, <span class="hljs-string">&quot;proxy-authorization&quot;</span>, <span class="hljs-string">&quot;transfer-encoding&quot;</span>, <span class="hljs-string">&quot;host&quot;</span>})
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__init__</span>(<span class="hljs-params">self, resolver: <span class="hljs-type">Callable</span>[[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>]], <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>]]</span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-variable language_">self</span>._resolver = resolver
+        <span class="hljs-variable language_">self</span>.persisted_secrets: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>] = {}  <span class="hljs-comment"># always empty by invariant</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">resolve_headers</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span>, outbound_headers: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>]</span>) -&gt; <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>]:
+        forwarded: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>] = {}
+        <span class="hljs-keyword">for</span> k, v <span class="hljs-keyword">in</span> outbound_headers.items():
+            <span class="hljs-keyword">if</span> k.lower() <span class="hljs-keyword">in</span> <span class="hljs-variable language_">self</span>.HOP_BY_HOP_DENYLIST:
+                <span class="hljs-keyword">continue</span>
+            <span class="hljs-keyword">if</span> <span class="hljs-built_in">len</span>(v.encode(<span class="hljs-string">&quot;utf-8&quot;</span>)) &gt; <span class="hljs-variable language_">self</span>.MAX_VALUE_BYTES:
+                <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">407</span>, <span class="hljs-string">&quot;VAULT_HEADER_TOO_LARGE&quot;</span>, <span class="hljs-string">f&quot;header <span class="hljs-subst">{k}</span> exceeds 8 KiB&quot;</span>)
+            forwarded[k] = v
+        <span class="hljs-keyword">if</span> <span class="hljs-built_in">len</span>(forwarded) &gt; <span class="hljs-variable language_">self</span>.MAX_HEADERS:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">407</span>, <span class="hljs-string">&quot;VAULT_TOO_MANY_HEADERS&quot;</span>, <span class="hljs-string">&quot;exceeds 64 forwarded headers&quot;</span>)
+        <span class="hljs-comment"># Resolve per request without caching or persisting secrets in the vault.</span>
+        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>._resolver(sandbox_id, forwarded)
+
+
+<span class="hljs-comment"># --------------------------------------------------------------------------</span>
+<span class="hljs-comment"># Control plane: SandboxService interface and three runtime backends.</span>
+<span class="hljs-comment"># --------------------------------------------------------------------------</span>
+
+<span class="hljs-meta">@dataclass</span>
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">CreateRequest</span>:
+    image: <span class="hljs-built_in">str</span>
+    timeout: <span class="hljs-built_in">float</span> | <span class="hljs-literal">None</span> = <span class="hljs-number">600.0</span>
+    entrypoint: <span class="hljs-built_in">list</span>[<span class="hljs-built_in">str</span>] = field(default_factory=<span class="hljs-built_in">list</span>)
+    env: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>] = field(default_factory=<span class="hljs-built_in">dict</span>)
+    metadata: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>] = field(default_factory=<span class="hljs-built_in">dict</span>)
+    now: <span class="hljs-built_in">float</span> = field(default_factory=time.time)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">expires_at</span>(<span class="hljs-params">self</span>) -&gt; <span class="hljs-built_in">float</span> | <span class="hljs-literal">None</span>:
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">None</span> <span class="hljs-keyword">if</span> <span class="hljs-variable language_">self</span>.timeout <span class="hljs-keyword">is</span> <span class="hljs-literal">None</span> <span class="hljs-keyword">else</span> <span class="hljs-variable language_">self</span>.now + <span class="hljs-variable language_">self</span>.timeout
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">SandboxService</span>:
+    <span class="hljs-string">&quot;&quot;&quot;Unified lifecycle interface; API routes never branch on runtime internals.&quot;&quot;&quot;</span>
+
+    id_prefix = <span class="hljs-string">&quot;&quot;</span>
+    backend_name = <span class="hljs-string">&quot;generic&quot;</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__init__</span>(<span class="hljs-params">self</span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-variable language_">self</span>.sandboxes: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, Sandbox] = {}
+        <span class="hljs-variable language_">self</span>.snapshots: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, SnapshotRecord] = {}
+        <span class="hljs-variable language_">self</span>._snap_seq = <span class="hljs-number">0</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">ready</span>(<span class="hljs-params">self, sandbox: Sandbox</span>) -&gt; <span class="hljs-literal">None</span>:
+        sandbox.state = State.RUNNING
+        sandbox.phase = <span class="hljs-string">&quot;Succeed&quot;</span>
+        sandbox.reason = <span class="hljs-string">&quot;Ready&quot;</span>
+        sandbox.message = <span class="hljs-string">&quot;sandbox is running&quot;</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">create</span>(<span class="hljs-params">self, request: CreateRequest</span>) -&gt; Sandbox:
+        <span class="hljs-keyword">raise</span> NotImplementedError
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">get</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span></span>) -&gt; Sandbox:
+        sandbox = <span class="hljs-variable language_">self</span>.sandboxes.get(sandbox_id)
+        <span class="hljs-keyword">if</span> sandbox <span class="hljs-keyword">is</span> <span class="hljs-literal">None</span>:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">404</span>, <span class="hljs-string">&quot;SANDBOX_NOT_FOUND&quot;</span>, sandbox_id)
+        <span class="hljs-keyword">return</span> sandbox
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">list</span>(<span class="hljs-params">self</span>) -&gt; <span class="hljs-built_in">list</span>[Sandbox]:
+        <span class="hljs-keyword">return</span> <span class="hljs-built_in">sorted</span>(<span class="hljs-variable language_">self</span>.sandboxes.values(), key=<span class="hljs-keyword">lambda</span> s: s.<span class="hljs-built_in">id</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">delete</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        sandbox = <span class="hljs-variable language_">self</span>.get(sandbox_id)
+        sandbox.state = State.STOPPING
+        <span class="hljs-variable language_">self</span>.sandboxes.pop(sandbox_id)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">pause</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        sandbox = <span class="hljs-variable language_">self</span>.get(sandbox_id)
+        <span class="hljs-keyword">if</span> sandbox.phase == <span class="hljs-string">&quot;Completed&quot;</span>:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">409</span>, <span class="hljs-string">&quot;SANDBOX_COMPLETED&quot;</span>, <span class="hljs-string">f&quot;cannot pause completed sandbox <span class="hljs-subst">{sandbox_id}</span>&quot;</span>)
+        <span class="hljs-keyword">if</span> sandbox.state == State.PAUSED:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">409</span>, <span class="hljs-string">&quot;SANDBOX_ALREADY_PAUSED&quot;</span>, sandbox_id)
+        <span class="hljs-keyword">if</span> sandbox.state != State.RUNNING:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">409</span>, <span class="hljs-string">&quot;SANDBOX_NOT_RUNNING&quot;</span>, <span class="hljs-string">f&quot;<span class="hljs-subst">{sandbox_id}</span> is <span class="hljs-subst">{sandbox.state.value}</span>&quot;</span>)
+        sandbox.state = State.PAUSING
+        <span class="hljs-comment"># Pause/resume checkpoints remain full-only.</span>
+        sandbox.snapshot = <span class="hljs-string">f&quot;snap-<span class="hljs-subst">{sandbox_id}</span>&quot;</span>
+        sandbox.state = State.PAUSED
+        sandbox.phase = <span class="hljs-string">&quot;Paused&quot;</span>
+        sandbox.node = <span class="hljs-literal">None</span>
+        sandbox.data_plane = <span class="hljs-literal">None</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">resume</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span></span>) -&gt; Sandbox:
+        sandbox = <span class="hljs-variable language_">self</span>.get(sandbox_id)
+        <span class="hljs-keyword">if</span> sandbox.phase == <span class="hljs-string">&quot;Completed&quot;</span>:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">409</span>, <span class="hljs-string">&quot;SANDBOX_COMPLETED&quot;</span>, <span class="hljs-string">f&quot;cannot resume completed sandbox <span class="hljs-subst">{sandbox_id}</span>&quot;</span>)
+        <span class="hljs-keyword">if</span> sandbox.state != State.PAUSED:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">409</span>, <span class="hljs-string">&quot;SANDBOX_NOT_PAUSED&quot;</span>, <span class="hljs-string">f&quot;<span class="hljs-subst">{sandbox_id}</span> is <span class="hljs-subst">{sandbox.state.value}</span>&quot;</span>)
+        <span class="hljs-keyword">if</span> sandbox.snapshot <span class="hljs-keyword">is</span> <span class="hljs-literal">None</span>:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">409</span>, <span class="hljs-string">&quot;SANDBOX_SNAPSHOT_MISSING&quot;</span>, sandbox_id)
+        sandbox.state = State.RESUMING
+        <span class="hljs-variable language_">self</span>._restore(sandbox)
+        <span class="hljs-variable language_">self</span>.ready(sandbox)
+        <span class="hljs-keyword">return</span> sandbox
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">create_snapshot</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span>, mode: SnapshotMode = SnapshotMode.FULL</span>) -&gt; SnapshotRecord:
+        sandbox = <span class="hljs-variable language_">self</span>.get(sandbox_id)
+        <span class="hljs-keyword">if</span> mode == SnapshotMode.ROOTFS_ONLY:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">409</span>, <span class="hljs-string">&quot;UNSUPPORTED_RUNTIME&quot;</span>, <span class="hljs-string">f&quot;<span class="hljs-subst">{self.backend_name}</span> rejects rootfsOnly snapshots&quot;</span>)
+        <span class="hljs-keyword">if</span> sandbox.state != State.RUNNING:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">409</span>, <span class="hljs-string">&quot;SANDBOX_NOT_RUNNING&quot;</span>, <span class="hljs-string">f&quot;<span class="hljs-subst">{sandbox_id}</span> is <span class="hljs-subst">{sandbox.state.value}</span>&quot;</span>)
+        <span class="hljs-variable language_">self</span>._snap_seq += <span class="hljs-number">1</span>
+        snap = SnapshotRecord(
+            <span class="hljs-built_in">id</span>=<span class="hljs-string">f&quot;snap-<span class="hljs-subst">{self.backend_name}</span>-<span class="hljs-subst">{self._snap_seq:04d}</span>&quot;</span>,
+            source_sandbox_id=sandbox_id,
+            backend=<span class="hljs-variable language_">self</span>.backend_name,
+            mode=mode,
+            artifact_path=<span class="hljs-string">&quot;local-oci&quot;</span> <span class="hljs-keyword">if</span> <span class="hljs-variable language_">self</span>.backend_name == <span class="hljs-string">&quot;docker&quot;</span> <span class="hljs-keyword">else</span> <span class="hljs-string">&quot;registry-oci&quot;</span>,
+            rootfs_files=<span class="hljs-built_in">dict</span>(sandbox.rootfs_files),
+            memory_state=<span class="hljs-literal">None</span>,
+        )
+        <span class="hljs-variable language_">self</span>.snapshots[snap.<span class="hljs-built_in">id</span>] = snap
+        <span class="hljs-keyword">return</span> snap
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">_restore</span>(<span class="hljs-params">self, sandbox: Sandbox</span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-keyword">raise</span> NotImplementedError
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">endpoint</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span>, port: <span class="hljs-built_in">int</span></span>) -&gt; <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>]:
+        <span class="hljs-keyword">raise</span> NotImplementedError
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">SingleHostRuntime</span>(<span class="hljs-title class_ inherited__">SandboxService</span>):
+    <span class="hljs-string">&quot;&quot;&quot;Docker backend: single host port + /proxy/{port}, per-sandbox lifecycle lock.&quot;&quot;&quot;</span>
+
+    id_prefix = <span class="hljs-string">&quot;sbx-&quot;</span>
+    backend_name = <span class="hljs-string">&quot;docker&quot;</span>
+    PROXY_PORT = <span class="hljs-number">44772</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__init__</span>(<span class="hljs-params">self, execd_run_as_init: <span class="hljs-built_in">bool</span> = <span class="hljs-literal">True</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-built_in">super</span>().__init__()
+        <span class="hljs-variable language_">self</span>._next_host_port = <span class="hljs-number">40000</span>
+        <span class="hljs-variable language_">self</span>.execd_run_as_init = execd_run_as_init
+        <span class="hljs-variable language_">self</span>._locks_guard = threading.Lock()
+        <span class="hljs-variable language_">self</span>._lifecycle_locks: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, threading.Lock] = {}
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">_sandbox_lifecycle_lock</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span></span>) -&gt; threading.Lock:
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>._locks_guard:
+            lock = <span class="hljs-variable language_">self</span>._lifecycle_locks.get(sandbox_id)
+            <span class="hljs-keyword">if</span> lock <span class="hljs-keyword">is</span> <span class="hljs-literal">None</span>:
+                lock = threading.Lock()
+                <span class="hljs-variable language_">self</span>._lifecycle_locks[sandbox_id] = lock
+            <span class="hljs-keyword">return</span> lock
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">create</span>(<span class="hljs-params">self, request: CreateRequest</span>) -&gt; Sandbox:
+        env = <span class="hljs-built_in">dict</span>(request.env)
+        <span class="hljs-keyword">if</span> <span class="hljs-variable language_">self</span>.execd_run_as_init:
+            env.setdefault(<span class="hljs-string">&quot;EXECD_INIT&quot;</span>, <span class="hljs-string">&quot;1&quot;</span>)
+        sandbox = Sandbox(
+            <span class="hljs-built_in">id</span>=<span class="hljs-string">f&quot;sbx-<span class="hljs-subst">{<span class="hljs-built_in">len</span>(self.sandboxes) + <span class="hljs-number">1</span>:04d}</span>&quot;</span>,
+            image=request.image,
+            state=State.PENDING,
+            expires_at=request.expires_at(),
+            entrypoint=<span class="hljs-built_in">list</span>(request.entrypoint),
+            env=env,
+            metadata=<span class="hljs-built_in">dict</span>(request.metadata),
+        )
+        <span class="hljs-variable language_">self</span>.sandboxes[sandbox.<span class="hljs-built_in">id</span>] = sandbox
+        <span class="hljs-variable language_">self</span>._next_host_port += <span class="hljs-number">1</span>
+        sandbox.data_plane = (<span class="hljs-string">&quot;127.0.0.1&quot;</span>, <span class="hljs-variable language_">self</span>._next_host_port)
+        sandbox.node = <span class="hljs-string">&quot;localhost&quot;</span>
+        <span class="hljs-variable language_">self</span>.ready(sandbox)
+        <span class="hljs-keyword">return</span> sandbox
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">delete</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>._sandbox_lifecycle_lock(sandbox_id):
+            <span class="hljs-built_in">super</span>().delete(sandbox_id)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">renew_expiration</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span>, new_expires_at: <span class="hljs-built_in">float</span>, now: <span class="hljs-built_in">float</span></span>) -&gt; <span class="hljs-built_in">float</span>:
+        <span class="hljs-string">&quot;&quot;&quot;Serialized with per-sandbox lock to prevent renewal-vs-expiry deletion race.&quot;&quot;&quot;</span>
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>._sandbox_lifecycle_lock(sandbox_id):
+            sandbox = <span class="hljs-variable language_">self</span>.get(sandbox_id)
+            <span class="hljs-keyword">if</span> new_expires_at &lt;= now:
+                <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">400</span>, <span class="hljs-string">&quot;INVALID_EXPIRATION&quot;</span>, <span class="hljs-string">&quot;expiresAt must be in the future&quot;</span>)
+            sandbox.expires_at = new_expires_at
+            <span class="hljs-keyword">return</span> sandbox.expires_at
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">expire_if_due</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span>, now: <span class="hljs-built_in">float</span></span>) -&gt; <span class="hljs-built_in">bool</span>:
+        <span class="hljs-string">&quot;&quot;&quot;Expiration deletion acquires the same per-sandbox lifecycle lock.&quot;&quot;&quot;</span>
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>._sandbox_lifecycle_lock(sandbox_id):
+            sandbox = <span class="hljs-variable language_">self</span>.sandboxes.get(sandbox_id)
+            <span class="hljs-keyword">if</span> sandbox <span class="hljs-keyword">is</span> <span class="hljs-literal">None</span> <span class="hljs-keyword">or</span> sandbox.expires_at <span class="hljs-keyword">is</span> <span class="hljs-literal">None</span> <span class="hljs-keyword">or</span> now &lt; sandbox.expires_at:
+                <span class="hljs-keyword">return</span> <span class="hljs-literal">False</span>
+            sandbox.state = State.STOPPING
+            <span class="hljs-variable language_">self</span>.sandboxes.pop(sandbox_id)
+            <span class="hljs-keyword">return</span> <span class="hljs-literal">True</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">create_snapshot</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span>, mode: SnapshotMode = SnapshotMode.FULL</span>) -&gt; SnapshotRecord:
+        sandbox = <span class="hljs-variable language_">self</span>.get(sandbox_id)
+        <span class="hljs-keyword">if</span> mode == SnapshotMode.ROOTFS_ONLY:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">409</span>, <span class="hljs-string">&quot;UNSUPPORTED_RUNTIME&quot;</span>, <span class="hljs-string">&quot;docker rejects rootfsOnly snapshots&quot;</span>)
+        <span class="hljs-comment"># Since 1.2.1, Docker permits full snapshots directly from paused sandboxes too.</span>
+        <span class="hljs-keyword">if</span> sandbox.state <span class="hljs-keyword">not</span> <span class="hljs-keyword">in</span> (State.RUNNING, State.PAUSED):
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">409</span>, <span class="hljs-string">&quot;SANDBOX_INVALID_STATE&quot;</span>, <span class="hljs-string">f&quot;<span class="hljs-subst">{sandbox_id}</span> is <span class="hljs-subst">{sandbox.state.value}</span>&quot;</span>)
+        <span class="hljs-variable language_">self</span>._snap_seq += <span class="hljs-number">1</span>
+        snap = SnapshotRecord(
+            <span class="hljs-built_in">id</span>=<span class="hljs-string">f&quot;snap-docker-<span class="hljs-subst">{self._snap_seq:04d}</span>&quot;</span>,
+            source_sandbox_id=sandbox_id,
+            backend=<span class="hljs-string">&quot;docker&quot;</span>,
+            mode=SnapshotMode.FULL,
+            artifact_path=<span class="hljs-string">&quot;local-oci&quot;</span>,
+            rootfs_files=<span class="hljs-built_in">dict</span>(sandbox.rootfs_files),
+            memory_state=<span class="hljs-literal">None</span>,
+        )
+        <span class="hljs-variable language_">self</span>.snapshots[snap.<span class="hljs-built_in">id</span>] = snap
+        <span class="hljs-keyword">return</span> snap
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">_restore</span>(<span class="hljs-params">self, sandbox: Sandbox</span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-variable language_">self</span>._next_host_port += <span class="hljs-number">1</span>
+        sandbox.data_plane = (<span class="hljs-string">&quot;127.0.0.1&quot;</span>, <span class="hljs-variable language_">self</span>._next_host_port)
+        sandbox.node = <span class="hljs-string">&quot;localhost&quot;</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">endpoint</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span>, port: <span class="hljs-built_in">int</span></span>) -&gt; <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>]:
+        sandbox = <span class="hljs-variable language_">self</span>.get(sandbox_id)
+        <span class="hljs-keyword">if</span> sandbox.state != State.RUNNING <span class="hljs-keyword">or</span> sandbox.data_plane <span class="hljs-keyword">is</span> <span class="hljs-literal">None</span>:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">503</span>, <span class="hljs-string">&quot;SANDBOX_NOT_READY&quot;</span>, sandbox_id)
+        host, proxy_port = sandbox.data_plane
+        <span class="hljs-keyword">if</span> port == <span class="hljs-variable language_">self</span>.PROXY_PORT:
+            <span class="hljs-keyword">return</span> {<span class="hljs-string">&quot;url&quot;</span>: <span class="hljs-string">f&quot;http://<span class="hljs-subst">{host}</span>:<span class="hljs-subst">{proxy_port}</span>&quot;</span>}
+        <span class="hljs-keyword">return</span> {<span class="hljs-string">&quot;url&quot;</span>: <span class="hljs-string">f&quot;http://<span class="hljs-subst">{host}</span>:<span class="hljs-subst">{proxy_port}</span>/proxy/<span class="hljs-subst">{port}</span>&quot;</span>, <span class="hljs-string">&quot;headers&quot;</span>: {}}
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">PoolRuntime</span>(<span class="hljs-title class_ inherited__">SandboxService</span>):
+    <span class="hljs-string">&quot;&quot;&quot;Kubernetes BatchSandbox + Pool with sticky Completed terminal phase.&quot;&quot;&quot;</span>
+
+    id_prefix = <span class="hljs-string">&quot;sbx-&quot;</span>
+    backend_name = <span class="hljs-string">&quot;kubernetes&quot;</span>
+    CAPACITY = <span class="hljs-number">2</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__init__</span>(<span class="hljs-params">self, execd_run_as_init: <span class="hljs-built_in">bool</span> = <span class="hljs-literal">True</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-built_in">super</span>().__init__()
+        <span class="hljs-variable language_">self</span>.execd_run_as_init = execd_run_as_init
+        <span class="hljs-variable language_">self</span>.warm: <span class="hljs-built_in">list</span>[<span class="hljs-built_in">str</span>] = [<span class="hljs-string">f&quot;pod-<span class="hljs-subst">{i}</span>&quot;</span> <span class="hljs-keyword">for</span> i <span class="hljs-keyword">in</span> <span class="hljs-built_in">range</span>(<span class="hljs-number">1</span>, <span class="hljs-variable language_">self</span>.CAPACITY + <span class="hljs-number">1</span>)]
+        <span class="hljs-variable language_">self</span>.allocated: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>] = {}
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">create</span>(<span class="hljs-params">self, request: CreateRequest</span>) -&gt; Sandbox:
+        <span class="hljs-keyword">if</span> <span class="hljs-keyword">not</span> <span class="hljs-variable language_">self</span>.warm:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">429</span>, <span class="hljs-string">&quot;POOL_CAPACITY_EXHAUSTED&quot;</span>, <span class="hljs-string">&quot;no warm pod available&quot;</span>)
+        pod = <span class="hljs-variable language_">self</span>.warm.pop(<span class="hljs-number">0</span>)
+        env = <span class="hljs-built_in">dict</span>(request.env)
+        <span class="hljs-keyword">if</span> <span class="hljs-variable language_">self</span>.execd_run_as_init:
+            env.setdefault(<span class="hljs-string">&quot;EXECD_INIT&quot;</span>, <span class="hljs-string">&quot;1&quot;</span>)
+        sandbox = Sandbox(
+            <span class="hljs-built_in">id</span>=<span class="hljs-string">f&quot;sbx-<span class="hljs-subst">{<span class="hljs-built_in">len</span>(self.sandboxes) + <span class="hljs-number">1</span>:04d}</span>&quot;</span>,
+            image=request.image,
+            state=State.PENDING,
+            expires_at=request.expires_at(),
+            entrypoint=<span class="hljs-built_in">list</span>(request.entrypoint),
+            env=env,
+            metadata=<span class="hljs-built_in">dict</span>(request.metadata),
+            node=pod,
+        )
+        <span class="hljs-variable language_">self</span>.sandboxes[sandbox.<span class="hljs-built_in">id</span>] = sandbox
+        <span class="hljs-variable language_">self</span>.allocated[sandbox.<span class="hljs-built_in">id</span>] = pod
+        sandbox.metadata.setdefault(<span class="hljs-string">&quot;opensandbox.io/task&quot;</span>, json.dumps(sandbox.entrypoint))
+        sandbox.data_plane = (<span class="hljs-string">f&quot;10.0.0.<span class="hljs-subst">{<span class="hljs-built_in">len</span>(self.allocated)}</span>&quot;</span>, <span class="hljs-number">44772</span>)
+        <span class="hljs-variable language_">self</span>.ready(sandbox)
+        <span class="hljs-keyword">return</span> sandbox
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">complete</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span>, exit_code: <span class="hljs-built_in">int</span> = <span class="hljs-number">0</span></span>) -&gt; Sandbox:
+        <span class="hljs-string">&quot;&quot;&quot;Clean exit-0 enters sticky Completed phase -&gt; public Terminated (SANDBOX_COMPLETED).&quot;&quot;&quot;</span>
+        sandbox = <span class="hljs-variable language_">self</span>.get(sandbox_id)
+        <span class="hljs-keyword">if</span> exit_code == <span class="hljs-number">0</span>:
+            sandbox.phase = <span class="hljs-string">&quot;Completed&quot;</span>
+            sandbox.state = State.TERMINATED
+            sandbox.reason = <span class="hljs-string">&quot;SANDBOX_COMPLETED&quot;</span>
+            sandbox.message = <span class="hljs-string">&quot;Sandbox workload completed cleanly (exit 0)&quot;</span>
+        <span class="hljs-keyword">else</span>:
+            sandbox.phase = <span class="hljs-string">&quot;Failed&quot;</span>
+            sandbox.state = State.FAILED
+            sandbox.reason = <span class="hljs-string">&quot;SANDBOX_FAILED&quot;</span>
+            sandbox.message = <span class="hljs-string">f&quot;Main container exited with <span class="hljs-subst">{exit_code}</span>&quot;</span>
+        <span class="hljs-keyword">return</span> sandbox
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">_restore</span>(<span class="hljs-params">self, sandbox: Sandbox</span>) -&gt; <span class="hljs-literal">None</span>:
+        sandbox.node = <span class="hljs-variable language_">self</span>.allocated.get(sandbox.<span class="hljs-built_in">id</span>, <span class="hljs-string">&quot;pod-recycled&quot;</span>)
+        sandbox.data_plane = (<span class="hljs-string">f&quot;10.0.0.<span class="hljs-subst">{<span class="hljs-built_in">len</span>(self.allocated) + <span class="hljs-number">10</span>}</span>&quot;</span>, <span class="hljs-number">44772</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">endpoint</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span>, port: <span class="hljs-built_in">int</span></span>) -&gt; <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>]:
+        sandbox = <span class="hljs-variable language_">self</span>.get(sandbox_id)
+        <span class="hljs-keyword">if</span> sandbox.state != State.RUNNING <span class="hljs-keyword">or</span> sandbox.data_plane <span class="hljs-keyword">is</span> <span class="hljs-literal">None</span>:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">503</span>, <span class="hljs-string">&quot;SANDBOX_NOT_READY&quot;</span>, sandbox_id)
+        host, _ = sandbox.data_plane
+        <span class="hljs-keyword">return</span> {<span class="hljs-string">&quot;url&quot;</span>: <span class="hljs-string">f&quot;http://<span class="hljs-subst">{host}</span>:<span class="hljs-subst">{port}</span>&quot;</span>, <span class="hljs-string">&quot;headers&quot;</span>: {<span class="hljs-string">&quot;OpenSandbox-Ingress-To&quot;</span>: <span class="hljs-string">f&quot;<span class="hljs-subst">{sandbox_id}</span>-<span class="hljs-subst">{port}</span>&quot;</span>}}
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">delete</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-built_in">super</span>().delete(sandbox_id)
+        pod = <span class="hljs-variable language_">self</span>.allocated.pop(sandbox_id, <span class="hljs-literal">None</span>)
+        <span class="hljs-keyword">if</span> pod <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">None</span>:
+            <span class="hljs-variable language_">self</span>.warm.append(pod)
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">TemplateRuntime</span>(<span class="hljs-title class_ inherited__">SandboxService</span>):
+    <span class="hljs-string">&quot;&quot;&quot;Fast Sandbox backend: template-first, supports S3 &amp; OCI rootfsOnly snapshots.&quot;&quot;&quot;</span>
+
+    id_prefix = <span class="hljs-string">&quot;fsb-&quot;</span>
+    backend_name = <span class="hljs-string">&quot;fsb&quot;</span>
+    counter = <span class="hljs-number">0</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__init__</span>(<span class="hljs-params">self, *, node_rootfs_qualified: <span class="hljs-built_in">bool</span> = <span class="hljs-literal">True</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-built_in">super</span>().__init__()
+        <span class="hljs-variable language_">self</span>.node_rootfs_qualified = node_rootfs_qualified
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">create</span>(<span class="hljs-params">self, request: CreateRequest</span>) -&gt; Sandbox:
+        <span class="hljs-keyword">if</span> request.entrypoint <span class="hljs-keyword">or</span> request.env:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">400</span>, <span class="hljs-string">&quot;TEMPLATE_FIELD_REJECTED&quot;</span>, <span class="hljs-string">&quot;entrypoint/env come from the template&quot;</span>)
+        TemplateRuntime.counter += <span class="hljs-number">1</span>
+        template_id = request.metadata[<span class="hljs-string">&quot;templateId&quot;</span>]
+        artifact_path = <span class="hljs-string">&quot;overlaybd-oci&quot;</span> <span class="hljs-keyword">if</span> template_id.startswith(<span class="hljs-string">&quot;oci://&quot;</span>) <span class="hljs-keyword">else</span> <span class="hljs-string">&quot;s3-native&quot;</span>
+        sandbox = Sandbox(
+            <span class="hljs-built_in">id</span>=<span class="hljs-string">f&quot;fsb-<span class="hljs-subst">{TemplateRuntime.counter:04d}</span>&quot;</span>,
+            image=<span class="hljs-string">f&quot;template:<span class="hljs-subst">{template_id}</span>&quot;</span>,
+            state=State.PENDING,
+            expires_at=request.expires_at(),
+            entrypoint=[],
+            metadata={**request.metadata, <span class="hljs-string">&quot;artifact_path&quot;</span>: artifact_path},
+            node=<span class="hljs-string">&quot;fastlet-1&quot;</span>,
+            data_plane=(<span class="hljs-string">&quot;10.30.0.5&quot;</span>, <span class="hljs-number">44772</span>),
+            memory_state={<span class="hljs-string">&quot;pid1&quot;</span>: <span class="hljs-string">&quot;guest-init&quot;</span>, <span class="hljs-string">&quot;ram&quot;</span>: <span class="hljs-string">&quot;warm&quot;</span>},
+        )
+        <span class="hljs-variable language_">self</span>.sandboxes[sandbox.<span class="hljs-built_in">id</span>] = sandbox
+        <span class="hljs-variable language_">self</span>.ready(sandbox)
+        <span class="hljs-keyword">return</span> sandbox
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">create_snapshot</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span>, mode: SnapshotMode = SnapshotMode.FULL</span>) -&gt; SnapshotRecord:
+        sandbox = <span class="hljs-variable language_">self</span>.get(sandbox_id)
+        <span class="hljs-keyword">if</span> sandbox.state != State.RUNNING:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">409</span>, <span class="hljs-string">&quot;SANDBOX_NOT_RUNNING&quot;</span>, <span class="hljs-string">f&quot;<span class="hljs-subst">{sandbox_id}</span> is <span class="hljs-subst">{sandbox.state.value}</span>&quot;</span>)
+        <span class="hljs-keyword">if</span> mode == SnapshotMode.ROOTFS_ONLY <span class="hljs-keyword">and</span> <span class="hljs-keyword">not</span> <span class="hljs-variable language_">self</span>.node_rootfs_qualified:
+            <span class="hljs-comment"># Fail closed: never silently produce a full snapshot on an unqualified node.</span>
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">409</span>, <span class="hljs-string">&quot;NODE_UNQUALIFIED_FOR_ROOTFS_ONLY&quot;</span>, <span class="hljs-string">&quot;fastlet node failed rootfs qualification&quot;</span>)
+        <span class="hljs-variable language_">self</span>._snap_seq += <span class="hljs-number">1</span>
+        snap = SnapshotRecord(
+            <span class="hljs-built_in">id</span>=<span class="hljs-string">f&quot;snap-fsb-<span class="hljs-subst">{self._snap_seq:04d}</span>&quot;</span>,
+            source_sandbox_id=sandbox_id,
+            backend=<span class="hljs-string">&quot;fsb&quot;</span>,
+            mode=mode,
+            artifact_path=sandbox.metadata.get(<span class="hljs-string">&quot;artifact_path&quot;</span>, <span class="hljs-string">&quot;s3-native&quot;</span>),
+            rootfs_files=<span class="hljs-built_in">dict</span>(sandbox.rootfs_files),
+            memory_state=<span class="hljs-literal">None</span> <span class="hljs-keyword">if</span> mode == SnapshotMode.ROOTFS_ONLY <span class="hljs-keyword">else</span> <span class="hljs-built_in">dict</span>(sandbox.memory_state),
+        )
+        <span class="hljs-variable language_">self</span>.snapshots[snap.<span class="hljs-built_in">id</span>] = snap
+        <span class="hljs-keyword">return</span> snap
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">create_from_snapshot</span>(<span class="hljs-params">self, snapshot_id: <span class="hljs-built_in">str</span>, timeout: <span class="hljs-built_in">float</span> | <span class="hljs-literal">None</span> = <span class="hljs-number">600.0</span></span>) -&gt; Sandbox:
+        snap = <span class="hljs-variable language_">self</span>.snapshots.get(snapshot_id)
+        <span class="hljs-keyword">if</span> snap <span class="hljs-keyword">is</span> <span class="hljs-literal">None</span>:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">404</span>, <span class="hljs-string">&quot;SNAPSHOT_NOT_FOUND&quot;</span>, snapshot_id)
+        TemplateRuntime.counter += <span class="hljs-number">1</span>
+        is_cold_boot = snap.mode == SnapshotMode.ROOTFS_ONLY
+        sandbox = Sandbox(
+            <span class="hljs-built_in">id</span>=<span class="hljs-string">f&quot;fsb-<span class="hljs-subst">{TemplateRuntime.counter:04d}</span>&quot;</span>,
+            image=<span class="hljs-string">f&quot;snapshot:<span class="hljs-subst">{snap.<span class="hljs-built_in">id</span>}</span>&quot;</span>,
+            state=State.PENDING,
+            expires_at=<span class="hljs-literal">None</span> <span class="hljs-keyword">if</span> timeout <span class="hljs-keyword">is</span> <span class="hljs-literal">None</span> <span class="hljs-keyword">else</span> time.time() + timeout,
+            entrypoint=[<span class="hljs-string">&quot;rerun-entrypoint&quot;</span>] <span class="hljs-keyword">if</span> is_cold_boot <span class="hljs-keyword">else</span> [],
+            metadata={<span class="hljs-string">&quot;snapshotId&quot;</span>: snap.<span class="hljs-built_in">id</span>, <span class="hljs-string">&quot;snapshotMode&quot;</span>: snap.mode.value, <span class="hljs-string">&quot;restoreType&quot;</span>: <span class="hljs-string">&quot;cold-boot&quot;</span> <span class="hljs-keyword">if</span> is_cold_boot <span class="hljs-keyword">else</span> <span class="hljs-string">&quot;vmstate&quot;</span>},
+            node=<span class="hljs-string">&quot;fastlet-2&quot;</span>,
+            data_plane=(<span class="hljs-string">&quot;10.30.0.9&quot;</span>, <span class="hljs-number">44772</span>),
+            rootfs_files=<span class="hljs-built_in">dict</span>(snap.rootfs_files),
+            memory_state={} <span class="hljs-keyword">if</span> is_cold_boot <span class="hljs-keyword">else</span> <span class="hljs-built_in">dict</span>(snap.memory_state <span class="hljs-keyword">or</span> {}),
+        )
+        <span class="hljs-variable language_">self</span>.sandboxes[sandbox.<span class="hljs-built_in">id</span>] = sandbox
+        <span class="hljs-variable language_">self</span>.ready(sandbox)
+        <span class="hljs-keyword">return</span> sandbox
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">_restore</span>(<span class="hljs-params">self, sandbox: Sandbox</span>) -&gt; <span class="hljs-literal">None</span>:
+        sandbox.node = <span class="hljs-string">&quot;fastlet-2&quot;</span>
+        sandbox.data_plane = (<span class="hljs-string">&quot;10.30.0.9&quot;</span>, <span class="hljs-number">44772</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">endpoint</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span>, port: <span class="hljs-built_in">int</span></span>) -&gt; <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>]:
+        sandbox = <span class="hljs-variable language_">self</span>.get(sandbox_id)
+        <span class="hljs-keyword">if</span> sandbox.state != State.RUNNING <span class="hljs-keyword">or</span> sandbox.data_plane <span class="hljs-keyword">is</span> <span class="hljs-literal">None</span>:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">503</span>, <span class="hljs-string">&quot;SANDBOX_NOT_READY&quot;</span>, sandbox_id)
+        <span class="hljs-keyword">return</span> {<span class="hljs-string">&quot;url&quot;</span>: <span class="hljs-string">f&quot;https://gateway.example.com/f1.<span class="hljs-subst">{sandbox_id}</span>.<span class="hljs-subst">{port}</span>&quot;</span>, <span class="hljs-string">&quot;headers&quot;</span>: {<span class="hljs-string">&quot;OPEN-SANDBOX-ORIGIN&quot;</span>: <span class="hljs-string">&quot;template&quot;</span>}}
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">CompositeService</span>(<span class="hljs-title class_ inherited__">SandboxService</span>):
+    <span class="hljs-string">&quot;&quot;&quot;Single kubernetes runtime.type dispatching container Pods and fsb templates.&quot;&quot;&quot;</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__init__</span>(<span class="hljs-params">self, pod_backend: PoolRuntime, template_backend: TemplateRuntime | <span class="hljs-literal">None</span> = <span class="hljs-literal">None</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-built_in">super</span>().__init__()
+        <span class="hljs-variable language_">self</span>.pod_backend = pod_backend
+        <span class="hljs-variable language_">self</span>.template_backend = template_backend
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">_route</span>(<span class="hljs-params">self, request: CreateRequest</span>) -&gt; SandboxService:
+        <span class="hljs-keyword">if</span> request.metadata.get(<span class="hljs-string">&quot;templateId&quot;</span>) <span class="hljs-keyword">and</span> <span class="hljs-variable language_">self</span>.template_backend <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">None</span>:
+            <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>.template_backend
+        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>.pod_backend
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">create</span>(<span class="hljs-params">self, request: CreateRequest</span>) -&gt; Sandbox:
+        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>._route(request).create(request)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">_backend</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span></span>) -&gt; SandboxService:
+        <span class="hljs-keyword">if</span> sandbox_id.startswith(<span class="hljs-string">&quot;fsb-&quot;</span>) <span class="hljs-keyword">and</span> <span class="hljs-variable language_">self</span>.template_backend <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">None</span>:
+            <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>.template_backend
+        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>.pod_backend
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">get</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span></span>) -&gt; Sandbox:
+        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>._backend(sandbox_id).get(sandbox_id)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">list</span>(<span class="hljs-params">self</span>) -&gt; <span class="hljs-built_in">list</span>[Sandbox]:
+        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>.pod_backend.<span class="hljs-built_in">list</span>() + (<span class="hljs-variable language_">self</span>.template_backend.<span class="hljs-built_in">list</span>() <span class="hljs-keyword">if</span> <span class="hljs-variable language_">self</span>.template_backend <span class="hljs-keyword">else</span> [])
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">delete</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-variable language_">self</span>._backend(sandbox_id).delete(sandbox_id)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">pause</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-variable language_">self</span>._backend(sandbox_id).pause(sandbox_id)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">resume</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span></span>) -&gt; Sandbox:
+        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>._backend(sandbox_id).resume(sandbox_id)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">create_snapshot</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span>, mode: SnapshotMode = SnapshotMode.FULL</span>) -&gt; SnapshotRecord:
+        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>._backend(sandbox_id).create_snapshot(sandbox_id, mode=mode)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">endpoint</span>(<span class="hljs-params">self, sandbox_id: <span class="hljs-built_in">str</span>, port: <span class="hljs-built_in">int</span></span>) -&gt; <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>]:
+        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>._backend(sandbox_id).endpoint(sandbox_id, port)
+
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">create_service</span>(<span class="hljs-params">runtime: <span class="hljs-built_in">str</span></span>) -&gt; SandboxService:
+    <span class="hljs-string">&quot;&quot;&quot;Matches services/factory.py: configuration picks implementation.&quot;&quot;&quot;</span>
+    <span class="hljs-keyword">if</span> runtime == <span class="hljs-string">&quot;docker&quot;</span>:
+        <span class="hljs-keyword">return</span> SingleHostRuntime()
+    <span class="hljs-keyword">if</span> runtime == <span class="hljs-string">&quot;kubernetes&quot;</span>:
+        <span class="hljs-keyword">return</span> CompositeService(PoolRuntime(), TemplateRuntime())
+    <span class="hljs-keyword">raise</span> ValueError(<span class="hljs-string">f&quot;Unsupported runtime: <span class="hljs-subst">{runtime}</span>&quot;</span>)
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">Server</span>:
+    <span class="hljs-string">&quot;&quot;&quot;Minimal control-plane wrapper: auth, startup guard, and absolute TTL expiry.&quot;&quot;&quot;</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__init__</span>(<span class="hljs-params">self, runtime: <span class="hljs-built_in">str</span>, api_key: <span class="hljs-built_in">str</span> | <span class="hljs-literal">None</span> = <span class="hljs-literal">None</span>, now: <span class="hljs-built_in">float</span> | <span class="hljs-literal">None</span> = <span class="hljs-literal">None</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-keyword">if</span> api_key <span class="hljs-keyword">is</span> <span class="hljs-literal">None</span> <span class="hljs-keyword">and</span> runtime != <span class="hljs-string">&quot;docker&quot;</span>:
+            <span class="hljs-keyword">raise</span> SystemExit(<span class="hljs-string">&quot;refusing to start without an API key outside local development&quot;</span>)
+        <span class="hljs-variable language_">self</span>.service = create_service(runtime)
+        <span class="hljs-variable language_">self</span>.api_key = api_key
+        <span class="hljs-variable language_">self</span>.clock = (<span class="hljs-keyword">lambda</span>: now) <span class="hljs-keyword">if</span> <span class="hljs-built_in">isinstance</span>(now, (<span class="hljs-built_in">int</span>, <span class="hljs-built_in">float</span>)) <span class="hljs-keyword">else</span> (now <span class="hljs-keyword">if</span> now <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">None</span> <span class="hljs-keyword">else</span> time.time)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">_auth</span>(<span class="hljs-params">self, key: <span class="hljs-built_in">str</span> | <span class="hljs-literal">None</span></span>) -&gt; <span class="hljs-literal">None</span>:
+        <span class="hljs-keyword">if</span> <span class="hljs-variable language_">self</span>.api_key <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">None</span> <span class="hljs-keyword">and</span> key != <span class="hljs-variable language_">self</span>.api_key:
+            <span class="hljs-keyword">raise</span> SandboxError(<span class="hljs-number">401</span>, <span class="hljs-string">&quot;UNAUTHORIZED&quot;</span>, <span class="hljs-string">&quot;missing or invalid OPEN-SANDBOX-API-KEY&quot;</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">create</span>(<span class="hljs-params">self, key: <span class="hljs-built_in">str</span> | <span class="hljs-literal">None</span>, request: CreateRequest</span>) -&gt; Sandbox:
+        <span class="hljs-variable language_">self</span>._auth(key)
+        request.now = <span class="hljs-variable language_">self</span>.clock()
+        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>.service.create(request)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">get</span>(<span class="hljs-params">self, key: <span class="hljs-built_in">str</span> | <span class="hljs-literal">None</span>, sandbox_id: <span class="hljs-built_in">str</span></span>) -&gt; Sandbox:
+        <span class="hljs-variable language_">self</span>._auth(key)
+        sandbox = <span class="hljs-variable language_">self</span>.service.get(sandbox_id)
+        <span class="hljs-keyword">if</span> sandbox.expires_at <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">None</span> <span class="hljs-keyword">and</span> <span class="hljs-variable language_">self</span>.clock() &gt;= sandbox.expires_at:
+            sandbox.state = State.TERMINATED
+            sandbox.reason = <span class="hljs-string">&quot;Expired&quot;</span>
+        <span class="hljs-keyword">return</span> sandbox
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">endpoint</span>(<span class="hljs-params">self, key: <span class="hljs-built_in">str</span> | <span class="hljs-literal">None</span>, sandbox_id: <span class="hljs-built_in">str</span>, port: <span class="hljs-built_in">int</span></span>) -&gt; <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>]:
+        <span class="hljs-variable language_">self</span>._auth(key)
+        <span class="hljs-keyword">return</span> <span class="hljs-variable language_">self</span>.service.endpoint(sandbox_id, port)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">expire</span>(<span class="hljs-params">self</span>) -&gt; <span class="hljs-built_in">list</span>[<span class="hljs-built_in">str</span>]:
+        now = <span class="hljs-variable language_">self</span>.clock()
+        expired = [
+            sandbox.<span class="hljs-built_in">id</span>
+            <span class="hljs-keyword">for</span> sandbox <span class="hljs-keyword">in</span> <span class="hljs-variable language_">self</span>.service.<span class="hljs-built_in">list</span>()
+            <span class="hljs-keyword">if</span> sandbox.expires_at <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">None</span> <span class="hljs-keyword">and</span> now &gt;= sandbox.expires_at
+        ]
+        <span class="hljs-keyword">for</span> sandbox_id <span class="hljs-keyword">in</span> expired:
+            <span class="hljs-keyword">if</span> <span class="hljs-built_in">isinstance</span>(<span class="hljs-variable language_">self</span>.service, SingleHostRuntime):
+                <span class="hljs-variable language_">self</span>.service.expire_if_due(sandbox_id, now)
+            <span class="hljs-keyword">else</span>:
+                <span class="hljs-variable language_">self</span>.service.delete(sandbox_id)
+        <span class="hljs-keyword">return</span> expired
+
+
+<span class="hljs-keyword">def</span> <span class="hljs-title function_">main</span>() -&gt; <span class="hljs-literal">None</span>:
+    server = Server(<span class="hljs-string">&quot;kubernetes&quot;</span>, api_key=<span class="hljs-string">&quot;demo-key&quot;</span>)
+    sandbox = server.create(<span class="hljs-string">&quot;demo-key&quot;</span>, CreateRequest(image=<span class="hljs-string">&quot;alpine:3.19&quot;</span>, timeout=<span class="hljs-number">60</span>))
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">&quot;created:&quot;</span>, sandbox.<span class="hljs-built_in">id</span>, sandbox.state.value, <span class="hljs-string">&quot;on&quot;</span>, sandbox.node, <span class="hljs-string">&quot;EXECD_INIT=&quot;</span>, sandbox.env.get(<span class="hljs-string">&quot;EXECD_INIT&quot;</span>))
+
+    execd = Execd(init_mode=<span class="hljs-literal">True</span>)
+    execd.spawn_orphan(<span class="hljs-number">4242</span>)
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">&quot;reaped orphans:&quot;</span>, execd.reap_orphans())
+    execd.write_file(<span class="hljs-string">&quot;/tmp/hello.sh&quot;</span>, <span class="hljs-string">b&quot;echo hi\n&quot;</span>)
+    <span class="hljs-keyword">for</span> event <span class="hljs-keyword">in</span> execd.run([<span class="hljs-string">&quot;sh&quot;</span>, <span class="hljs-string">&quot;/tmp/hello.sh&quot;</span>]):
+        <span class="hljs-built_in">print</span>(event.to_sse().strip())
+
+    egress = Egress(deny_always=[Rule(<span class="hljs-string">&quot;deny&quot;</span>, <span class="hljs-string">&quot;metadata.internal&quot;</span>)], allow_always=[Rule(<span class="hljs-string">&quot;allow&quot;</span>, <span class="hljs-string">&quot;pypi.org.&quot;</span>)])
+    egress.add(Rule(<span class="hljs-string">&quot;allow&quot;</span>, <span class="hljs-string">&quot;*.python.org&quot;</span>))
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">&quot;egress pypi.org (trailing dot rule) -&gt;&quot;</span>, egress.decide(<span class="hljs-string">&quot;pypi.org&quot;</span>))
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">&quot;egress evil.example                 -&gt;&quot;</span>, egress.decide(<span class="hljs-string">&quot;evil.example&quot;</span>))
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">&quot;egress metadata.internal            -&gt;&quot;</span>, egress.decide(<span class="hljs-string">&quot;metadata.internal&quot;</span>))
+
+    fsb_sbx = server.create(<span class="hljs-string">&quot;demo-key&quot;</span>, CreateRequest(image=<span class="hljs-string">&quot;ignored&quot;</span>, metadata={<span class="hljs-string">&quot;templateId&quot;</span>: <span class="hljs-string">&quot;s3-python&quot;</span>}))
+    fsb_sbx.rootfs_files[<span class="hljs-string">&quot;/workspace/out.txt&quot;</span>] = <span class="hljs-string">b&quot;ok&quot;</span>
+    snap = server.service.create_snapshot(fsb_sbx.<span class="hljs-built_in">id</span>, mode=SnapshotMode.ROOTFS_ONLY)
+    <span class="hljs-built_in">print</span>(<span class="hljs-string">&quot;fsb snapshot:&quot;</span>, snap.<span class="hljs-built_in">id</span>, snap.mode.value, snap.artifact_path)
+
+
+<span class="hljs-keyword">if</span> __name__ == <span class="hljs-string">&quot;__main__&quot;</span>:
+    main()</code></pre></div><h2 id="test-mini-osb-py">test_mini_osb.py</h2><div class="table-wrap"><pre tabindex="0"><code class="hljs"><span class="hljs-string">&quot;&quot;&quot;Offline unit tests verifying structural invariants modeled in mini_osb.&quot;&quot;&quot;</span>
+
+<span class="hljs-keyword">import</span> unittest
+
+<span class="hljs-keyword">from</span> mini_osb <span class="hljs-keyword">import</span> (
+    CreateRequest,
+    CredentialVaultExchange,
+    Egress,
+    Event,
+    Execd,
+    PoolRuntime,
+    Rule,
+    SandboxError,
+    Server,
+    SingleHostRuntime,
+    SnapshotMode,
+    State,
+    TemplateRuntime,
+    create_service,
+)
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">LifecycleTest</span>(unittest.TestCase):
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_create_is_pending_then_running</span>(<span class="hljs-params">self</span>):
+        service = SingleHostRuntime()
+        sandbox = service.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        <span class="hljs-variable language_">self</span>.assertEqual(sandbox.state, State.RUNNING)
+        <span class="hljs-variable language_">self</span>.assertEqual(sandbox.env.get(<span class="hljs-string">&quot;EXECD_INIT&quot;</span>), <span class="hljs-string">&quot;1&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(service.get(sandbox.<span class="hljs-built_in">id</span>).<span class="hljs-built_in">id</span>, sandbox.<span class="hljs-built_in">id</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_missing_sandbox_is_404</span>(<span class="hljs-params">self</span>):
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> caught:
+            SingleHostRuntime().get(<span class="hljs-string">&quot;sbx-9999&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(caught.exception.status, <span class="hljs-number">404</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_pause_then_resume_keeps_id</span>(<span class="hljs-params">self</span>):
+        service = SingleHostRuntime()
+        sandbox = service.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        service.pause(sandbox.<span class="hljs-built_in">id</span>)
+        paused = service.get(sandbox.<span class="hljs-built_in">id</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(paused.state, State.PAUSED)
+        <span class="hljs-variable language_">self</span>.assertEqual(paused.snapshot, <span class="hljs-string">f&quot;snap-<span class="hljs-subst">{sandbox.<span class="hljs-built_in">id</span>}</span>&quot;</span>)
+        resumed = service.resume(sandbox.<span class="hljs-built_in">id</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(resumed.<span class="hljs-built_in">id</span>, sandbox.<span class="hljs-built_in">id</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(resumed.state, State.RUNNING)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_resume_is_not_generic_restart</span>(<span class="hljs-params">self</span>):
+        service = SingleHostRuntime()
+        sandbox = service.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        service.delete(sandbox.<span class="hljs-built_in">id</span>)
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> caught:
+            service.resume(sandbox.<span class="hljs-built_in">id</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(caught.exception.status, <span class="hljs-number">404</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_pause_twice_conflicts</span>(<span class="hljs-params">self</span>):
+        service = SingleHostRuntime()
+        sandbox = service.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        service.pause(sandbox.<span class="hljs-built_in">id</span>)
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> caught:
+            service.pause(sandbox.<span class="hljs-built_in">id</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(caught.exception.status, <span class="hljs-number">409</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_batchsandbox_clean_exit_is_sticky_completed</span>(<span class="hljs-params">self</span>):
+        service = PoolRuntime()
+        sandbox = service.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        done = service.complete(sandbox.<span class="hljs-built_in">id</span>, exit_code=<span class="hljs-number">0</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(done.phase, <span class="hljs-string">&quot;Completed&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(done.state, State.TERMINATED)
+        <span class="hljs-variable language_">self</span>.assertEqual(done.reason, <span class="hljs-string">&quot;SANDBOX_COMPLETED&quot;</span>)
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> pause_err:
+            service.pause(sandbox.<span class="hljs-built_in">id</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(pause_err.exception.code, <span class="hljs-string">&quot;SANDBOX_COMPLETED&quot;</span>)
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> resume_err:
+            service.resume(sandbox.<span class="hljs-built_in">id</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(resume_err.exception.code, <span class="hljs-string">&quot;SANDBOX_COMPLETED&quot;</span>)
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">EndpointTest</span>(unittest.TestCase):
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_single_host_multiplexes_ports_through_one_mapping</span>(<span class="hljs-params">self</span>):
+        service = SingleHostRuntime()
+        sandbox = service.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        first = service.endpoint(sandbox.<span class="hljs-built_in">id</span>, <span class="hljs-number">8080</span>)[<span class="hljs-string">&quot;url&quot;</span>]
+        second = service.endpoint(sandbox.<span class="hljs-built_in">id</span>, <span class="hljs-number">5900</span>)[<span class="hljs-string">&quot;url&quot;</span>]
+        <span class="hljs-variable language_">self</span>.assertIn(<span class="hljs-string">&quot;/proxy/8080&quot;</span>, first)
+        <span class="hljs-variable language_">self</span>.assertIn(<span class="hljs-string">&quot;/proxy/5900&quot;</span>, second)
+        <span class="hljs-variable language_">self</span>.assertEqual(first.split(<span class="hljs-string">&quot;/proxy/&quot;</span>)[<span class="hljs-number">0</span>], second.split(<span class="hljs-string">&quot;/proxy/&quot;</span>)[<span class="hljs-number">0</span>])
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_kubernetes_endpoint_carries_routing_header</span>(<span class="hljs-params">self</span>):
+        service = PoolRuntime()
+        sandbox = service.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        endpoint = service.endpoint(sandbox.<span class="hljs-built_in">id</span>, <span class="hljs-number">8080</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(endpoint[<span class="hljs-string">&quot;headers&quot;</span>][<span class="hljs-string">&quot;OpenSandbox-Ingress-To&quot;</span>], <span class="hljs-string">f&quot;<span class="hljs-subst">{sandbox.<span class="hljs-built_in">id</span>}</span>-8080&quot;</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_paused_sandbox_has_no_endpoint</span>(<span class="hljs-params">self</span>):
+        service = SingleHostRuntime()
+        sandbox = service.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        service.pause(sandbox.<span class="hljs-built_in">id</span>)
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> caught:
+            service.endpoint(sandbox.<span class="hljs-built_in">id</span>, <span class="hljs-number">8080</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(caught.exception.status, <span class="hljs-number">503</span>)
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">RoutingAndPoolTest</span>(unittest.TestCase):
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_factory_selects_by_configuration_only</span>(<span class="hljs-params">self</span>):
+        <span class="hljs-variable language_">self</span>.assertIsInstance(create_service(<span class="hljs-string">&quot;docker&quot;</span>), SingleHostRuntime)
+        <span class="hljs-variable language_">self</span>.assertEqual(create_service(<span class="hljs-string">&quot;kubernetes&quot;</span>).pod_backend.__class__, PoolRuntime)
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(ValueError):
+            create_service(<span class="hljs-string">&quot;firecracker&quot;</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_pool_is_bounded_capacity</span>(<span class="hljs-params">self</span>):
+        service = PoolRuntime()
+        service.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        service.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> caught:
+            service.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        <span class="hljs-variable language_">self</span>.assertEqual(caught.exception.status, <span class="hljs-number">429</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(caught.exception.code, <span class="hljs-string">&quot;POOL_CAPACITY_EXHAUSTED&quot;</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_released_pod_returns_to_pool</span>(<span class="hljs-params">self</span>):
+        service = PoolRuntime()
+        first = service.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        service.delete(first.<span class="hljs-built_in">id</span>)
+        again = service.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        <span class="hljs-variable language_">self</span>.assertEqual(again.state, State.RUNNING)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_template_requests_reject_per_request_workload</span>(<span class="hljs-params">self</span>):
+        service = TemplateRuntime()
+        request = CreateRequest(image=<span class="hljs-string">&quot;ignored&quot;</span>, metadata={<span class="hljs-string">&quot;templateId&quot;</span>: <span class="hljs-string">&quot;t-1&quot;</span>}, entrypoint=[<span class="hljs-string">&quot;sh&quot;</span>])
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> caught:
+            service.create(request)
+        <span class="hljs-variable language_">self</span>.assertEqual(caught.exception.status, <span class="hljs-number">400</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_composite_routes_by_create_source_and_id_prefix</span>(<span class="hljs-params">self</span>):
+        service = create_service(<span class="hljs-string">&quot;kubernetes&quot;</span>)
+        by_template = service.create(CreateRequest(image=<span class="hljs-string">&quot;ignored&quot;</span>, metadata={<span class="hljs-string">&quot;templateId&quot;</span>: <span class="hljs-string">&quot;t-1&quot;</span>}))
+        by_image = service.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        <span class="hljs-variable language_">self</span>.assertTrue(by_template.<span class="hljs-built_in">id</span>.startswith(<span class="hljs-string">&quot;fsb-&quot;</span>))
+        <span class="hljs-variable language_">self</span>.assertFalse(by_image.<span class="hljs-built_in">id</span>.startswith(<span class="hljs-string">&quot;fsb-&quot;</span>))
+        <span class="hljs-variable language_">self</span>.assertEqual(service.get(by_template.<span class="hljs-built_in">id</span>).<span class="hljs-built_in">id</span>, by_template.<span class="hljs-built_in">id</span>)
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">SnapshotModeTest</span>(unittest.TestCase):
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_docker_and_k8s_reject_rootfs_only_with_409</span>(<span class="hljs-params">self</span>):
+        docker = SingleHostRuntime()
+        d_sbx = docker.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> d_err:
+            docker.create_snapshot(d_sbx.<span class="hljs-built_in">id</span>, mode=SnapshotMode.ROOTFS_ONLY)
+        <span class="hljs-variable language_">self</span>.assertEqual(d_err.exception.status, <span class="hljs-number">409</span>)
+
+        k8s = PoolRuntime()
+        k_sbx = k8s.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> k_err:
+            k8s.create_snapshot(k_sbx.<span class="hljs-built_in">id</span>, mode=SnapshotMode.ROOTFS_ONLY)
+        <span class="hljs-variable language_">self</span>.assertEqual(k_err.exception.status, <span class="hljs-number">409</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_docker_allows_full_snapshot_from_paused_sandbox</span>(<span class="hljs-params">self</span>):
+        docker = SingleHostRuntime()
+        sbx = docker.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        docker.pause(sbx.<span class="hljs-built_in">id</span>)
+        snap = docker.create_snapshot(sbx.<span class="hljs-built_in">id</span>, mode=SnapshotMode.FULL)
+        <span class="hljs-variable language_">self</span>.assertEqual(snap.mode, SnapshotMode.FULL)
+        <span class="hljs-variable language_">self</span>.assertEqual(snap.artifact_path, <span class="hljs-string">&quot;local-oci&quot;</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_fsb_rootfs_only_covers_both_s3_and_oci_and_cold_boots</span>(<span class="hljs-params">self</span>):
+        fsb = TemplateRuntime(node_rootfs_qualified=<span class="hljs-literal">True</span>)
+        s3_sbx = fsb.create(CreateRequest(image=<span class="hljs-string">&quot;ignored&quot;</span>, metadata={<span class="hljs-string">&quot;templateId&quot;</span>: <span class="hljs-string">&quot;s3-base&quot;</span>}))
+        s3_sbx.rootfs_files[<span class="hljs-string">&quot;/workspace/a.py&quot;</span>] = <span class="hljs-string">b&quot;print(1)&quot;</span>
+        s3_snap = fsb.create_snapshot(s3_sbx.<span class="hljs-built_in">id</span>, mode=SnapshotMode.ROOTFS_ONLY)
+        <span class="hljs-variable language_">self</span>.assertEqual(s3_snap.artifact_path, <span class="hljs-string">&quot;s3-native&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertIsNone(s3_snap.memory_state)
+
+        oci_sbx = fsb.create(CreateRequest(image=<span class="hljs-string">&quot;ignored&quot;</span>, metadata={<span class="hljs-string">&quot;templateId&quot;</span>: <span class="hljs-string">&quot;oci://reg/base@sha256:abc&quot;</span>}))
+        oci_snap = fsb.create_snapshot(oci_sbx.<span class="hljs-built_in">id</span>, mode=SnapshotMode.ROOTFS_ONLY)
+        <span class="hljs-variable language_">self</span>.assertEqual(oci_snap.artifact_path, <span class="hljs-string">&quot;overlaybd-oci&quot;</span>)
+
+        restored = fsb.create_from_snapshot(s3_snap.<span class="hljs-built_in">id</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(restored.rootfs_files[<span class="hljs-string">&quot;/workspace/a.py&quot;</span>], <span class="hljs-string">b&quot;print(1)&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(restored.memory_state, {})
+        <span class="hljs-variable language_">self</span>.assertEqual(restored.metadata[<span class="hljs-string">&quot;restoreType&quot;</span>], <span class="hljs-string">&quot;cold-boot&quot;</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_fsb_unqualified_node_fails_closed_instead_of_falling_back_to_full</span>(<span class="hljs-params">self</span>):
+        fsb = TemplateRuntime(node_rootfs_qualified=<span class="hljs-literal">False</span>)
+        sbx = fsb.create(CreateRequest(image=<span class="hljs-string">&quot;ignored&quot;</span>, metadata={<span class="hljs-string">&quot;templateId&quot;</span>: <span class="hljs-string">&quot;s3-base&quot;</span>}))
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> err:
+            fsb.create_snapshot(sbx.<span class="hljs-built_in">id</span>, mode=SnapshotMode.ROOTFS_ONLY)
+        <span class="hljs-variable language_">self</span>.assertEqual(err.exception.status, <span class="hljs-number">409</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(err.exception.code, <span class="hljs-string">&quot;NODE_UNQUALIFIED_FOR_ROOTFS_ONLY&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(<span class="hljs-built_in">len</span>(fsb.snapshots), <span class="hljs-number">0</span>)
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">ExpirationAndLockTest</span>(unittest.TestCase):
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_expiration_is_absolute</span>(<span class="hljs-params">self</span>):
+        clock = [<span class="hljs-number">1000.0</span>]
+        server = Server(<span class="hljs-string">&quot;docker&quot;</span>, api_key=<span class="hljs-literal">None</span>, now=<span class="hljs-keyword">lambda</span>: clock[<span class="hljs-number">0</span>])
+        sandbox = server.create(<span class="hljs-literal">None</span>, CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>, timeout=<span class="hljs-number">30</span>))
+        server.service.pause(sandbox.<span class="hljs-built_in">id</span>)
+        clock[<span class="hljs-number">0</span>] += <span class="hljs-number">31</span>
+        <span class="hljs-variable language_">self</span>.assertEqual(server.expire(), [sandbox.<span class="hljs-built_in">id</span>])
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_expired_sandbox_reports_terminated</span>(<span class="hljs-params">self</span>):
+        clock = [<span class="hljs-number">1000.0</span>]
+        server = Server(<span class="hljs-string">&quot;docker&quot;</span>, api_key=<span class="hljs-literal">None</span>, now=<span class="hljs-keyword">lambda</span>: clock[<span class="hljs-number">0</span>])
+        sandbox = server.create(<span class="hljs-literal">None</span>, CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>, timeout=<span class="hljs-number">10</span>))
+        clock[<span class="hljs-number">0</span>] += <span class="hljs-number">11</span>
+        <span class="hljs-variable language_">self</span>.assertEqual(server.get(<span class="hljs-literal">None</span>, sandbox.<span class="hljs-built_in">id</span>).state, State.TERMINATED)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_docker_renewal_serialized_against_expiration</span>(<span class="hljs-params">self</span>):
+        docker = SingleHostRuntime()
+        sbx = docker.create(CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>, timeout=<span class="hljs-number">10</span>, now=<span class="hljs-number">1000.0</span>))
+        <span class="hljs-comment"># Renewal succeeds before expiry and pushes deadline forward.</span>
+        docker.renew_expiration(sbx.<span class="hljs-built_in">id</span>, new_expires_at=<span class="hljs-number">1050.0</span>, now=<span class="hljs-number">1005.0</span>)
+        <span class="hljs-variable language_">self</span>.assertFalse(docker.expire_if_due(sbx.<span class="hljs-built_in">id</span>, now=<span class="hljs-number">1015.0</span>))
+        <span class="hljs-comment"># Once expired and removed under lock, a late renewal fails cleanly with 404.</span>
+        <span class="hljs-variable language_">self</span>.assertTrue(docker.expire_if_due(sbx.<span class="hljs-built_in">id</span>, now=<span class="hljs-number">1051.0</span>))
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> err:
+            docker.renew_expiration(sbx.<span class="hljs-built_in">id</span>, new_expires_at=<span class="hljs-number">1200.0</span>, now=<span class="hljs-number">1052.0</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(err.exception.status, <span class="hljs-number">404</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_api_key_is_enforced</span>(<span class="hljs-params">self</span>):
+        server = Server(<span class="hljs-string">&quot;kubernetes&quot;</span>, api_key=<span class="hljs-string">&quot;k&quot;</span>)
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> caught:
+            server.create(<span class="hljs-string">&quot;wrong&quot;</span>, CreateRequest(image=<span class="hljs-string">&quot;alpine&quot;</span>))
+        <span class="hljs-variable language_">self</span>.assertEqual(caught.exception.status, <span class="hljs-number">401</span>)
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">DataPlaneAndEgressTest</span>(unittest.TestCase):
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_command_stream_ends_with_exit_code</span>(<span class="hljs-params">self</span>):
+        events = Execd().run([<span class="hljs-string">&quot;echo&quot;</span>, <span class="hljs-string">&quot;hi&quot;</span>])
+        <span class="hljs-variable language_">self</span>.assertEqual(events[-<span class="hljs-number">1</span>].<span class="hljs-built_in">type</span>, <span class="hljs-string">&quot;execution_complete&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(events[-<span class="hljs-number">1</span>].exit_code, <span class="hljs-number">0</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_nonzero_exit_is_reported</span>(<span class="hljs-params">self</span>):
+        events = Execd().run([<span class="hljs-string">&quot;false&quot;</span>])
+        <span class="hljs-variable language_">self</span>.assertEqual(events[-<span class="hljs-number">1</span>].exit_code, <span class="hljs-number">1</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_foreground_timeout_reports_command_timeout</span>(<span class="hljs-params">self</span>):
+        events = Execd().run([<span class="hljs-string">&quot;sleep&quot;</span>, <span class="hljs-string">&quot;30&quot;</span>], timeout_ms=<span class="hljs-number">100</span>, simulated_ms=<span class="hljs-number">250</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(events[<span class="hljs-number">0</span>].<span class="hljs-built_in">type</span>, <span class="hljs-string">&quot;error&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(events[<span class="hljs-number">0</span>].error_name, <span class="hljs-string">&quot;CommandTimeout&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(events[<span class="hljs-number">0</span>].exit_code, -<span class="hljs-number">1</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_execd_init_mode_reaps_orphans_and_shields_sigkill</span>(<span class="hljs-params">self</span>):
+        execd = Execd(init_mode=<span class="hljs-literal">True</span>)
+        execd.spawn_orphan(<span class="hljs-number">101</span>)
+        execd.spawn_orphan(<span class="hljs-number">102</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(execd.reap_orphans(), [<span class="hljs-number">101</span>, <span class="hljs-number">102</span>])
+        <span class="hljs-variable language_">self</span>.assertEqual(execd.deliver_signal(<span class="hljs-string">&quot;SIGKILL&quot;</span>), <span class="hljs-string">&quot;shielded&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(execd.deliver_signal(<span class="hljs-string">&quot;SIGTERM&quot;</span>), <span class="hljs-string">&quot;forwarded&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(execd.entrypoint_exit_code, <span class="hljs-number">143</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_upload_is_atomic_and_rejects_empty_path</span>(<span class="hljs-params">self</span>):
+        execd = Execd()
+        execd.write_file(<span class="hljs-string">&quot;/tmp/a&quot;</span>, <span class="hljs-string">b&quot;old&quot;</span>)
+        execd.write_file(<span class="hljs-string">&quot;/tmp/a&quot;</span>, <span class="hljs-string">b&quot;new&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(execd.read_file(<span class="hljs-string">&quot;/tmp/a&quot;</span>), <span class="hljs-string">b&quot;new&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertNotIn(<span class="hljs-string">&quot;/tmp/a.stage&quot;</span>, execd.files)
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> err:
+            execd.write_file(<span class="hljs-string">&quot;&quot;</span>, <span class="hljs-string">b&quot;bad&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(err.exception.status, <span class="hljs-number">400</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_platform_deny_beats_user_allow</span>(<span class="hljs-params">self</span>):
+        egress = Egress(deny_always=[Rule(<span class="hljs-string">&quot;deny&quot;</span>, <span class="hljs-string">&quot;metadata.internal&quot;</span>)])
+        egress.add(Rule(<span class="hljs-string">&quot;allow&quot;</span>, <span class="hljs-string">&quot;metadata.internal&quot;</span>))
+        <span class="hljs-variable language_">self</span>.assertEqual(egress.decide(<span class="hljs-string">&quot;metadata.internal&quot;</span>), <span class="hljs-string">&quot;deny&quot;</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_default_action_and_trailing_dot_normalization</span>(<span class="hljs-params">self</span>):
+        egress = Egress()
+        egress.add(Rule(<span class="hljs-string">&quot;allow&quot;</span>, <span class="hljs-string">&quot;pypi.org.&quot;</span>), Rule(<span class="hljs-string">&quot;allow&quot;</span>, <span class="hljs-string">&quot;*.python.org.&quot;</span>))
+        <span class="hljs-variable language_">self</span>.assertEqual(egress.decide(<span class="hljs-string">&quot;pypi.org&quot;</span>), <span class="hljs-string">&quot;allow&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(egress.decide(<span class="hljs-string">&quot;pypi.org.&quot;</span>), <span class="hljs-string">&quot;allow&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(egress.decide(<span class="hljs-string">&quot;files.python.org&quot;</span>), <span class="hljs-string">&quot;allow&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(egress.decide(<span class="hljs-string">&quot;python.org&quot;</span>), <span class="hljs-string">&quot;deny&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertEqual(egress.decide(<span class="hljs-string">&quot;example.com&quot;</span>), <span class="hljs-string">&quot;deny&quot;</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_vault_exchange_forwards_bounded_headers_without_persisting</span>(<span class="hljs-params">self</span>):
+        seen: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>] = {}
+
+        <span class="hljs-keyword">def</span> <span class="hljs-title function_">resolver</span>(<span class="hljs-params">sbx_id: <span class="hljs-built_in">str</span>, headers: <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>]</span>) -&gt; <span class="hljs-built_in">dict</span>[<span class="hljs-built_in">str</span>, <span class="hljs-built_in">str</span>]:
+            seen.update(headers)
+            <span class="hljs-keyword">return</span> {<span class="hljs-string">&quot;Authorization&quot;</span>: <span class="hljs-string">f&quot;SigV4-for-<span class="hljs-subst">{sbx_id}</span>&quot;</span>}
+
+        vault = CredentialVaultExchange(resolver)
+        injected = vault.resolve_headers(<span class="hljs-string">&quot;sbx-1&quot;</span>, {<span class="hljs-string">&quot;X-Amz-Date&quot;</span>: <span class="hljs-string">&quot;20261119T000000Z&quot;</span>, <span class="hljs-string">&quot;Host&quot;</span>: <span class="hljs-string">&quot;s3.example.com&quot;</span>})
+        <span class="hljs-variable language_">self</span>.assertEqual(injected[<span class="hljs-string">&quot;Authorization&quot;</span>], <span class="hljs-string">&quot;SigV4-for-sbx-1&quot;</span>)
+        <span class="hljs-variable language_">self</span>.assertIn(<span class="hljs-string">&quot;X-Amz-Date&quot;</span>, seen)
+        <span class="hljs-variable language_">self</span>.assertNotIn(<span class="hljs-string">&quot;Host&quot;</span>, seen)
+        <span class="hljs-variable language_">self</span>.assertEqual(vault.persisted_secrets, {})
+
+        too_many = {<span class="hljs-string">f&quot;X-H-<span class="hljs-subst">{i}</span>&quot;</span>: <span class="hljs-string">&quot;v&quot;</span> <span class="hljs-keyword">for</span> i <span class="hljs-keyword">in</span> <span class="hljs-built_in">range</span>(<span class="hljs-number">65</span>)}
+        <span class="hljs-keyword">with</span> <span class="hljs-variable language_">self</span>.assertRaises(SandboxError) <span class="hljs-keyword">as</span> err:
+            vault.resolve_headers(<span class="hljs-string">&quot;sbx-1&quot;</span>, too_many)
+        <span class="hljs-variable language_">self</span>.assertEqual(err.exception.status, <span class="hljs-number">407</span>)
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">test_sse_frame_is_single_line_json</span>(<span class="hljs-params">self</span>):
+        frame = Event(<span class="hljs-string">&quot;stdout&quot;</span>, <span class="hljs-string">&quot;a\nb&quot;</span>).to_sse()
+        <span class="hljs-variable language_">self</span>.assertTrue(frame.startswith(<span class="hljs-string">&quot;data: {&quot;</span>))
+        <span class="hljs-variable language_">self</span>.assertEqual(frame.count(<span class="hljs-string">&quot;\n\n&quot;</span>), <span class="hljs-number">1</span>)
+
+
+<span class="hljs-keyword">if</span> __name__ == <span class="hljs-string">&quot;__main__&quot;</span>:
+    unittest.main()</code></pre></div></article><nav class="pager" aria-label="篇章导航"><a href="appendix-sources.html"><small>上一篇</small>附录 B：来源、版本与事实边界</a><a href="../index.html">返回目录</a></nav></main><script src="../assets/wiki.js"></script></body></html>

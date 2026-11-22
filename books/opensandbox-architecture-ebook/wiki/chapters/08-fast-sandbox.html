@@ -1,0 +1,153 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="基于 OpenSandbox release-1.3.0-rc.2 源码与官方文档编写的中文架构电子书"><title>Fast Sandbox：模板、Fastlet 与 Firecracker · OpenSandbox 架构解剖</title><link rel="stylesheet" href="../assets/wiki.css"></head><body><a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../index.html">OpenSandbox 架构解剖</a><span class="spacer"></span><a class="control" href="../search.html">搜索</a><button class="control" data-size="-1" aria-label="减小字号">A−</button><button class="control" data-size="1" aria-label="增大字号">A＋</button></header><main id="main" class="book" data-chapter="08-fast-sandbox"><details class="toc"><summary>本篇目录</summary><ol><li><a href="#在-opensandbox-里的位置与组件边界">在 OpenSandbox 里的位置与组件边界</a></li><li><a href="#模板双层结构与不可变制品">模板双层结构与不可变制品</a></li><li><a href="#创建热路径-路由签名与安全加固">创建热路径、路由签名与安全加固</a></li><li><a href="#存储-宿主自检与性能数字的真实边界">存储、宿主自检与性能数字的真实边界</a></li><li><a href="#源码入口">源码入口</a></li></ol></details><article class="content"><h1 id="fast-sandbox-模板-fastlet-与-firecracker">Fast Sandbox：模板、Fastlet 与 Firecracker</h1><p>前面两篇都以容器为调度单位。想把每个沙箱放进独立 KVM microVM、又要把创建延迟压到百毫秒以内，容器的现拉现启思路就撞墙了：现起一台 Linux 虚拟机加初始化用户态，怎么调优都要秒级；而每台 microVM 外再挂一个独立 egress sidecar，节点内存密度马上就垮掉。</p>
+<p>Fast Sandbox 换了一套设计单位：<strong>模板（Template）</strong>。运行时、镜像、入口命令、环境变量和参考机型在创建请求到达之前就已经编成不可变的 golden image；创建请求只表达意图：用哪个模板、归谁、活多久。</p>
+<h2 id="在-opensandbox-里的位置与组件边界">在 OpenSandbox 里的位置与组件边界</h2><p>Fast Sandbox 挂载在 <code>kubernetes</code> 运行时下，作为 <code>CompositeSandboxService</code> 维护的组合分支：创建时看 <code>templateId</code> 或 <code>fsb</code> 快照归属，创建后看 <code>fsb-</code> ID 前缀。</p>
+<p>控制协议分两段：OpenSandbox 服务器通过 FastPath v2 gRPC（默认 <code>:9090</code>；<code>1.3.0-rc.2</code> 支持通过 <code>controller.fastpathHTTPPort</code> 额外开启可选的 HTTP/1.1 gRPC-Web 端口，默认 <code>0</code> 关闭）提交沙箱与快照意图，FastPath 和 Reconciler 到节点上预热 Pod（Fastlet）则走 JSON over HTTP（<code>/api/v2/fastlet/*</code>）。FastPath、Fastlet、CRD 与节点代理的实现位于独立的 <code>opensandbox-group/fast-sandbox</code> 仓库，本仓库拥有控制面适配层、路由与共享 egress 接入。</p>
+<p>九个核心组件的分工如下：</p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>核心职责</th>
+<th>工程落点</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>FastPath</td>
+<td>控制面入口，内存维护候选放置视图</td>
+<td>常数时间选址，重启后从 CR 重建状态</td>
+</tr>
+<tr>
+<td>Reconcilers</td>
+<td>驱动模板构建、池维护、沙箱收敛与快照发布</td>
+<td>单副本运行，无 leader election</td>
+</tr>
+<tr>
+<td><code>sandbox.fast.io</code> CRD</td>
+<td>持久化沙箱意图、放置、策略绑定与观测状态</td>
+<td>意图活过任何控制面进程崩溃</td>
+</tr>
+<tr>
+<td>Fastlet</td>
+<td>宿主机上预热的容器 Pod，内部托管多台 microVM</td>
+<td>预置网络槽位，复用共享 egress 与 DNS</td>
+</tr>
+<tr>
+<td>runtime agent</td>
+<td>节点级 Firecracker 生命周期守护进程（经 Unix socket 控制）</td>
+<td>自检宿主能力后自动给节点打标签</td>
+</tr>
+<tr>
+<td>DART</td>
+<td>节点间 4 MiB 块级 P2P 制品分发守护进程</td>
+<td><code>cache -&gt; peer -&gt; origin</code>，摊薄源站带宽</td>
+</tr>
+<tr>
+<td>共享 egress 进程</td>
+<td>每 Fastlet 一个进程，按源 IP 管理 N 个 subject</td>
+<td>无每沙箱 sidecar 仍坚持 fail-closed</td>
+</tr>
+<tr>
+<td>模板构建器</td>
+<td>把 OCI 镜像与 guest 接线编译成 golden image</td>
+<td>注入 guest init、execd 与 freeze/thaw 能力</td>
+</tr>
+<tr>
+<td>janitor</td>
+<td>清理失败操作遗留的孤儿资源</td>
+<td>负责兜底擦除，收敛负责补齐</td>
+</tr>
+</tbody></table>
+<h2 id="模板双层结构与不可变制品">模板双层结构与不可变制品</h2><p>模板拆成两份状态：服务端数据库（SQLite/PostgreSQL）保存租户私有定义与归属，<code>SandboxTemplate</code> CR 驱动远端构建器异步出包。</p>
+<p>构建器把普通 OCI 镜像编译成内容寻址的不可变 golden image，过程中会写入 guest init、烘进 <code>execd</code> 与 <code>EXECD_INIT=1</code> 拓扑、固化业务 <code>entrypoint</code> 和字面环境变量，并记录目标 Firecracker VMM 版本。从 <code>1.2.1</code> 到 <code>1.3.0-rc.2</code>，模板构建链路增加了三项硬约束：</p>
+<ul>
+<li><strong>强制注入 guest-control 并校验 freeze/thaw</strong>。无论 OCI/OverlayBD 模板还是原生 S3 模板，构建期都会强制注入 guest 控制代理并实测文件系统冻结与解冻，校验不过直接阻断构建；旧版本构建的模板无法原地改元数据凑数，必须重建才能支持 <code>rootfsOnly</code> 快照捕获。</li>
+<li><strong>支持托管多版本 Firecracker（1.16.1 / 1.17.0）</strong>。新构建默认选中宿主机托管目录里安装的最高版本，已有制品恢复时严格按 manifest 记录的精确 VMM 版本启动，宿主机缺失对应二进制时显式失败，绝不静默回退到最新版。</li>
+<li><strong>OCI 制品要求 SHA-256 固定</strong>，模板构建状态同时暴露分阶段时间戳与耗时（镜像拉取、rootfs 准备、guest 就绪、快照与发布），便于定位慢构建。</li>
+</ul>
+<p>因为工作负载在构建期已经定死，创建请求带 <code>entrypoint</code>、<code>env</code>、<code>volumes</code> 或 <code>credentialProxy</code> 都会被适配层直接拒绝；更新模板产出新 digest，已运行沙箱继续沿用接纳时的旧版本。正在实现中的 OSEP-0028 准备为 <code>rootfsOnly</code> 快照创建开放通过 <code>resourceLimits</code> 覆写 CPU 和内存的通道。</p>
+<h2 id="创建热路径-路由签名与安全加固">创建热路径、路由签名与安全加固</h2><p>一次模板创建从提交到就绪沿着四步推进：服务器校验后经 FastPath 提交 intent；FastPath 按镜像缓存亲和、归一化负载、稳定哈希在内存候选池选出 Fastlet；在选中的 Fastlet 上原子分配预置网络槽位（netns、veth、独立网关 IP）并写全 CR（意图、初始策略、pool 引用）；节点 runtime agent 从 vmstate 检查点拉起 Firecracker microVM。</p>
+<p>网络槽位和 CR 都先于 microVM 启动，保证沙箱绝不会出现先通网后补防火墙的时间窗。入向访问由 ingress 的 <code>FastSandboxProvider</code> 承接，服务器本地签发绑定命名空间、沙箱 ID 和端口的 <code>f1.</code> 路由 scope（<code>opensandbox-fsb-route-v1</code>），签发时不调用 FastPath，路由未发布时 ingress 返回 <code>503</code> 加 <code>Retry-After</code> 而非 <code>404</code>，避免向调用方泄漏未就绪与不存在的差别。</p>
+<p><code>1.2.1</code> 至 <code>1.3.0-rc.2</code> 补齐了四块面向生产的运维与安全边界：</p>
+<ul>
+<li><strong>FSEP-0003 Fastlet 控制面鉴权落地</strong>。Fastlet 使用 Kubernetes ServiceAccount 令牌访问控制 API，由控制器通过 JWKS 验签并从自身命名空间派生默认调用者白名单，基础 Chart 同步授予受限的 token-minting Role。升级时必须同步升级 Chart 与镜像，否则开启鉴权的 Fastlet 会 fail-closed 拒连。</li>
+<li><strong>Guest 墙钟恢复校准</strong>。Firecracker microVM 没有硬件 RTC，早期从检查点恢复或崩溃续跑后，guest 内部时钟仍停留在做快照那一刻，直接导致 TLS 证书校验失败、令牌误判过期和定时任务错乱。<code>1.3.0-rc.2</code> 在恢复与崩溃恢复后自动校准 guest 墙钟。</li>
+<li><strong>Fastlet Proxy 资源可配置与单副本硬约束</strong>。<code>controller.fastletProxy.resources</code> 允许在 Helm Chart 中自定义 Fastlet Proxy 的 CPU/内存请求与上限，并计入 <code>ResourceAware</code> 内存预算；同时 <code>ResourceAware</code> 直跑 Firecracker 的 VMM 进程放进有界 cgroup v2 子树，防止单个池内 OOM 波及整个 Fastlet。全功能（<code>--role=all</code>）控制器被 Chart 强制锁死单副本并采用 <code>Recreate</code> 策略，防止两个控制器并发调和同一个 <code>SandboxPool</code>。</li>
+<li><strong>原生 S3 与 OCI 双路径 <code>rootfsOnly</code> 快照</strong>。<code>1.3.0-rc.2</code> 把 <code>rootfsOnly</code> 公开快照扩展到了原生 S3 模板，同时去掉了手工维护的 <code>FAST_SANDBOX_ROOTFS_QUALIFICATION</code> 配置，改为从节点托管 VMM 目录与 StateRoot 自动推导捕获资质；节点不合格时快照直接失败，绝不静默降级生成 <code>full</code> 快照。具体对照见第 13 篇。</li>
+</ul>
+<h2 id="存储-宿主自检与性能数字的真实边界">存储、宿主自检与性能数字的真实边界</h2><p>Fast Sandbox 把存储收束成一种形态：对象存储或 OCI 仓库里的内容寻址制品，加上节点私有的 XFS + reflink CoW 状态根，以及节点间 P2P 分发守护进程 DART。<code>1.2.1</code> 为对象存储模板打开了 free-page reporting 以把 guest 释放的内存还给宿主，为 OCI 存储增加了可复用暖 ublk 设备与本地 checkpoint blob 复用。</p>
+<p>节点准入是全自动的：<code>firecracker-runtime</code> DaemonSet 核验内核 &gt;= 5.10、<code>/dev/kvm</code>、<code>/dev/net/tun</code>、cgroup v2、XFS reflink 探测（失败即拒不降级）、充足的 <code>/dev/shm</code> 以及默认 10 GiB 空闲磁盘和 2 GiB 空闲内存，全部通过才打上 <code>sandbox.fast.io/kvm=true</code> 标签接收调度。每台 VM 分配独立的 veth 与独立网关地址，绕开 <code>arp_ignore=1</code> 下共享网关丢 ARP 的坑；跨 VM 流量从 Pod 视角属于二层桥流量，因此权威防火墙执行点设在 pod-netns 的 forward 链而非 guest 内部。</p>
+<p>上游性能文档记录了 2026-10-08 在 ACK 两节点集群（Firecracker 1.16.1、模板已缓存）的实测：</p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th align="right">成功率</th>
+<th align="right">p50</th>
+<th align="right">p90</th>
+<th align="right">p99</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>SDK 创建，串行 100 次</td>
+<td align="right">100/100</td>
+<td align="right">64.0 ms</td>
+<td align="right">93.8 ms</td>
+<td align="right">108.3 ms</td>
+</tr>
+<tr>
+<td>SDK 创建，并发 10</td>
+<td align="right">100/100</td>
+<td align="right">102.7 ms</td>
+<td align="right">120.1 ms</td>
+<td align="right">125.4 ms</td>
+</tr>
+<tr>
+<td>SDK 创建，并发 20</td>
+<td align="right">51/100</td>
+<td align="right">136.7 ms</td>
+<td align="right">163.0 ms</td>
+<td align="right">197.0 ms</td>
+</tr>
+</tbody></table>
+<p>引用这组数据时必须带着三个前提：SDK 创建口径覆盖整条请求链直到 guest <code>/ping</code> 返回 200（同窗口纯 runtime 创建 p50 为 33.5 到 50.0 ms）；并发 20 一行剔除了 48 次 <code>429 CapacityRejected</code> 和 1 次超时，文档明确说明它不能证明 20 路并发可靠；同节点恢复的纯 runtime 耗时中位数虽仅 35.49 ms，但 SDK 端到端恢复中位数仍高达 62.66 秒，瓶颈落在网关、endpoint 生效与客户端重试等待之间，尚未完全收口。</p>
+<h2 id="源码入口">源码入口</h2><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>看什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>server/opensandbox_server/services/fast_sandbox/snapshot_runtime.py</code></td>
+<td>FastPath 快照提交、去掉 OCI 预检与状态 watch</td>
+</tr>
+<tr>
+<td><code>docs/architecture/fast-sandbox/index.md</code></td>
+<td>九组件全景与控制/数据解耦原则</td>
+</tr>
+<tr>
+<td><code>docs/architecture/fast-sandbox/scheduling.md</code></td>
+<td>候选排序、Fastlet 接纳与 <code>failurePolicy</code></td>
+</tr>
+<tr>
+<td><code>docs/architecture/fast-sandbox/networking.md</code></td>
+<td><code>f1.</code> 签名路由与共享 egress subject 生命周期</td>
+</tr>
+<tr>
+<td><code>docs/architecture/fast-sandbox/checkpoints.md</code></td>
+<td><code>full</code> 检查点、<code>rootfsOnly</code> 与快照发布</td>
+</tr>
+<tr>
+<td><code>docs/architecture/fast-sandbox/firecracker.md</code></td>
+<td>宿主自检地板、每 VM 独立网关与 netfilter 边界</td>
+</tr>
+<tr>
+<td><code>manifests/charts/fast-sandbox/values.yaml</code></td>
+<td><code>fastpathHTTPPort</code>、<code>fastletProxy.resources</code> 与镜像配置</td>
+</tr>
+<tr>
+<td><code>oseps/0028-rootfs-only-create-overrides.md</code></td>
+<td>RootfsOnly 创建期覆写 CPU/内存的设计提案</td>
+</tr>
+</tbody></table>
+</article><nav class="pager" aria-label="篇章导航"><a href="07-kubernetes.html"><small>上一篇</small>Kubernetes 后端：BatchSandbox、预热池与 Completed 终态</a><a href="09-execd.html"><small>下一篇</small>数据平面：execd-as-init、命令流与文件语义</a></nav></main><script src="../assets/wiki.js"></script></body></html>

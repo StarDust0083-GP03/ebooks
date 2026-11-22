@@ -1,0 +1,14 @@
+NOTICE
+
+This publication ("Dim 架构解剖：时间总线、分支路由与全插件运行时") is an independent
+source-grounded technical study and is not an official publication of arcships.
+
+Upstream project analyzed:
+- Repository: https://github.com/arcships/dim
+- Pinned commit: 88a3df3669405730cbee6bfd113a7f75cf520677
+- Workspace version: 0.1.0-alpha.27
+- Snapshot date: 2026-11-22
+- Upstream license: MIT License (with third-party notices for rutis, aimux, grok-build / Ratatui, etc., as documented in the upstream NOTICE file)
+
+All referenced file paths, symbols, event keys, service names, and ADR summaries are
+credited to the upstream arcships/dim authors and contributors.
