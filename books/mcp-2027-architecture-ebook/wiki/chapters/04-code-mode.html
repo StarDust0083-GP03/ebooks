@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 MCP 2026-07-28 正式规范与 2027 官方扩展栈的深度中文架构拆解"><meta name="author" content="独立规范研究">
+<title>Code Mode：终结上下文膨胀与 N 轮串行调用 · MCP 2027</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">MCP</span><span>MCP 2027 架构与工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 04</div><div class="rail-title">Code Mode：终结上下文膨胀与 N 轮串行调用</div><ol><li><a href="#为什么-outputschema-是-code-mode-的前提">为什么 outputSchema 是 Code Mode 的前提</a></li><li><a href="#三种工具调用路线的真实取舍">三种工具调用路线的真实取舍</a></li><li><a href="#落地-code-mode-时绕不开的三个工程细节">落地 Code Mode 时绕不开的三个工程细节</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 04 章</div><h1>Code Mode：终结上下文膨胀与 N 轮串行调用</h1><div class="chapter-meta">MCP Spec 2026-07-28 快照 2026-11-24 · 约 16 分钟</div></header><div class="prose"><p>让一个 Agent 做件日常排障活：先去 Linear 拉出 <code>core</code> 团队所有未关闭的 issue，挑出最高优先级 P0 的那几条，再分别去 Sentry 查它们过去 24 小时的报错次数和 P95 延迟，最后输出一张汇总表。按 2025 年最常见的 plain tool calling 跑法，事情会立刻变得既慢又贵。宿主先把两台 MCP Server 的几十个工具 JSON Schema 全量塞进系统提示；第一轮模型调用 <code>linear.listIssues</code>，返回 20 条带长描述的 issue 原始 JSON，整包灌进对话历史；第二轮模型挑出 3 条 P0，再逐一调用 <code>sentry.getIssueStats</code>，每一条多走一轮推理，又把一大段堆栈和标签写回上下文。把两台服务器的数据拼在一起，实际是拿昂贵的模型上下文窗口当内存，拿串行模型推理当 <code>for</code> 循环。</p>
+<p>Philipp Schmid 在《Why I&#39;m Bullish on MCP for 2027》里把 <strong>Code Mode</strong> 放到了第一条核心变化的位置，并指出这种模式正在成为 OpenCode 2.0、Claude Code、OpenAI Codex、Pi 和 Factory Droid 等新一代客户端的默认执行路径。下面这张图对比了传统串行 tool calling 和 Code Mode 在上下文占用与往返轮次上的差别。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 270" width="660" height="270" role="img" aria-label="传统 Tool Calling 与 Code Mode 上下文和往返开销对比">
+<title>传统 Tool Calling 与 Code Mode 上下文和往返开销对比</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+  </marker>
+</defs>
+<text x="12" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="700" fill="var(--amber)" text-anchor="start">传统串行 Tool Calling (N+1 轮模型推理，中间数据全进上下文)</text><rect x="12" y="28" width="142" height="62" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="22" y="48" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">Turn 1: 模型</text><text x="22" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">调 linear.listIssues</text><text x="22" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">注入 50 个 Schema</text><line x1="154" y1="59" x2="174" y2="59" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="176" y="28" width="146" height="62" rx="4" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="186" y="48" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--amber)" text-anchor="start">20 条 Issue 原文</text><text x="186" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">全部写回对话历史</text><text x="186" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">上下文迅速膨胀</text><line x1="322" y1="59" x2="342" y2="59" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="344" y="28" width="142" height="62" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="354" y="48" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">Turn 2..N: 循环</text><text x="354" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">逐条查 Sentry 统计</text><text x="354" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">每步多一轮推理</text><line x1="486" y1="59" x2="506" y2="59" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="508" y="28" width="140" height="62" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="518" y="48" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">最终汇总</text><text x="518" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">高延迟 + 高 Token</text><text x="518" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">中间载荷污染窗口</text><line x1="12" y1="108" x2="648" y2="108" stroke="var(--line)" stroke-width="0.8" stroke-dasharray="4 4"/><text x="12" y="130" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="700" fill="var(--forest)" text-anchor="start">Code Mode (1 轮生成脚本，沙箱内存过滤 Join，沙箱外持有 OAuth)</text><rect x="12" y="140" width="174" height="92" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="22" y="160" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">Turn 1: 类型化桩代码</text><text x="22" y="178" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">由 inputSchema 与</text><text x="22" y="194" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">outputSchema 自动生成</text><text x="22" y="210" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">模型一次写出异步脚本</text><line x1="186" y1="186" x2="212" y2="186" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="214" y="140" width="224" height="92" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="224" y="160" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">隔离执行沙箱 (无原始凭证)</text><text x="224" y="178" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">Promise.all 并发调多 Server</text><text x="224" y="194" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">structuredContent 内存 Join</text><text x="224" y="210" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">OAuth 2.1 在沙箱外由宿主管</text><line x1="438" y1="186" x2="464" y2="186" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="466" y="140" width="182" height="92" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="476" y="160" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">精简结果回传模型</text><text x="476" y="178" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">仅 P0 摘要进入上下文</text><text x="476" y="194" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">图像/音频独立块保留</text><text x="476" y="210" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">Token 降幅常超一个量级</text><text x="12" y="254" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="400" fill="var(--muted)" text-anchor="start">关键前提: 服务端声明 outputSchema 并返回 structuredContent，模型才能在编码前获知返回结构。</text>
+</svg><figcaption>传统 Tool Calling 与 Code Mode 上下文和往返开销对比</figcaption></figure>
+<p>图里上半部分的普通调用链路中，全量中间数据都必须经过模型上下文窗口，哪怕最终汇报只需要三个字段，前几十 KB 的冗余文本也会跟着后面每一轮推理反复计费。下半部分的 Code Mode 则由宿主提供一个隔离执行沙箱，把远端 MCP 工具映射成带类型的可调用函数，让模型在一轮推理里写出异步脚本，把并发查询、过滤和跨服务器 Join 全部放在便宜的沙箱内存里完成，最后只把精简摘要返回给模型上下文。</p>
+<h2 id="为什么-outputschema-是-code-mode-的前提">为什么 <code>outputSchema</code> 是 Code Mode 的前提<a class="anchor" href="#为什么-outputschema-是-code-mode-的前提" aria-label="链接到本节">#</a></h2>
+<p>早在 2025 年，就有团队尝试让模型直接写 Python 或 TypeScript 去调外部工具，但经常写出一堆字段名猜错的崩溃代码。根源在于旧工具只声明了 <code>inputSchema</code>，没声明返回结构。模型知道该传什么参数，却不知道返回值里列表字段叫 <code>items</code>、<code>issues</code> 还是 <code>data.nodes</code>，也不确定优先级字段是 <code>&quot;P0&quot;</code> 字符串还是数字 <code>1</code>。每次碰到未知结构，模型不得不先发一轮试探调用看一眼输出，再写处理脚本，平白多出往返和试错成本。</p>
+<p>MCP 的 <code>outputSchema</code> 与 <code>structuredContent</code> 把这块拼图补齐了。只要服务端在 <code>tools/list</code> 里同时声明 <code>inputSchema</code> 和 <code>outputSchema</code>，客户端就能在模型动笔前，自动生成强类型桩代码（Typed Stubs），直接暴露给沙箱环境。Philipp Schmid 原文给出了这个最直观的 TypeScript 示例：</p>
+<pre><code class="language-typescript">// Auto-generated from MCP inputSchema + outputSchema
+// interface LinearIssue { identifier: string; title: string; priority: number }
+// interface SentryStats { count24h: number; p95Ms: number }
+//
+// declare const linear: {
+//   listIssues(args: { team: string; state: &quot;open&quot; | &quot;closed&quot; }): Promise&lt;{ items: LinearIssue[] }&gt;;
+// };
+// declare const sentry: {
+//   getIssueStats(args: { query: string }): Promise&lt;SentryStats&gt;;
+// };
+
+// Model writes 1 script instead of N tool-calling turns
+const issues = await linear.listIssues({ team: &quot;core&quot;, state: &quot;open&quot; });
+const p0s = issues.items.filter(i =&gt; i.priority === 1);
+
+const errors = await Promise.all(
+  p0s.map(i =&gt; sentry.getIssueStats({ query: i.identifier }))
+);
+
+// Only the joined summary enters model context
+return p0s.map((i, idx) =&gt; ({
+  id: i.identifier,
+  title: i.title,
+  events24h: errors[idx].count24h,
+}));
+</code></pre>
+<p>这段不到 15 行的脚本体现了 Code Mode 的四个工程收益。<strong>推理轮次从 $N+1$ 压到 1</strong>，原本要串行跑四五轮的查询，现在由 <code>Promise.all</code> 在单次沙箱执行里并发完成，端到端延迟显著下降。<strong>过滤与聚合落在廉价计算层</strong>，在第 14 章的教学基准测试（<code>test_09_code_mode_slashes_turns_and_context_bytes</code>）里，面对 20 条带 600 字节正文的 issue 和对应带堆栈的 Sentry 统计，普通 tool calling 需要 4 轮推理并向模型上下文灌入上万字节原始载荷，Code Mode 只用 1 轮推理，进入上下文的最终摘要体积缩小了超过 20 倍。<strong>静态类型提前挡住字段幻觉</strong>，只要沙箱开启 TypeScript 类型检查或运行前校验，把 <code>i.priority === &quot;p0&quot;</code> 写错成字符串类型在执行前就会报错，根本不需要等到远端接口失败。<strong>提示词里的工具列表大幅瘦身</strong>，宿主无需把 50 个冗长的 JSON Schema 原文塞进系统提示，只需提供精简的类型签名索引，甚至按需动态检索子集。</p>
+<h2 id="三种工具调用路线的真实取舍">三种工具调用路线的真实取舍<a class="anchor" href="#三种工具调用路线的真实取舍" aria-label="链接到本节">#</a></h2>
+<p>工程落地时，普通 tool calling、本地 CLI 管道和 MCP Code Mode 各有适用边界，把三者放在同一张表里对照，选型会非常清晰：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>普通 Tool Calling</th>
+<th>本地 CLI + 管道（<code>jq</code>/<code>curl</code>）</th>
+<th>MCP Code Mode</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>多步跨系统 Join</td>
+<td>每步一轮模型推理，中间数据全进上下文</td>
+<td>沙箱内一次完成，但需要人工或模型手写解析正则</td>
+<td>沙箱内并发执行，按 <code>outputSchema</code> 强类型 Join</td>
+</tr>
+<tr>
+<td>多模态返回</td>
+<td>支持图像、音频、资源块</td>
+<td>标准输出为纯文本字节流，需落盘临时文件拼路径</td>
+<td>同时返回 <code>structuredContent</code> 给代码和独立图像/音频块给模型</td>
+</tr>
+<tr>
+<td>凭证隔离与授权</td>
+<td>宿主托管 OAuth 2.1，模型不见密钥</td>
+<td>依赖磁盘配置文件或环境变量，沙箱内代码可直接读取 API Key</td>
+<td>OAuth 2.1 与作用域控制留在沙箱外，沙箱仅通过受控桥接调工具</td>
+</tr>
+<tr>
+<td>非研发用户可用性</td>
+<td>高，零本地安装</td>
+<td>低，需要终端、包管理器与环境配置</td>
+<td>高，宿主透明提供轻量沙箱（如 JS/Wasm 隔离区）</td>
+</tr>
+<tr>
+<td>适用场景</td>
+<td>单次简单工具调用、快速确认动作</td>
+<td>本地代码库操作、Git、编译测试与系统运维</td>
+<td>跨多台远程 SaaS 的批量过滤、统计聚合与复杂编排</td>
+</tr>
+</tbody></table></div>
+<p>这里最容易被低估的是<strong>沙箱外 OAuth 边界</strong>与<strong>原生多模态</strong>。很多开发者喜欢在本地终端里用 <code>gh</code>、<code>stripe</code>、<code>aws</code> 等 CLI 工具配 <code>SKILL.md</code>，在个人开发机上确实顺手。可一旦把这套方案搬到企业团队或云端托管 Agent，CLI 往往逼着你把宽权限 API Key 塞进容器环境变量。只要沙箱里执行的脚本读了一段带提示注入的外部文档，攻击者一句 <code>env</code> 或 <code>cat ~/.config/...</code> 就能把凭证偷走。</p>
+<p>而在 MCP Code Mode 架构里，代码沙箱本身是无网、无磁盘凭证的纯计算隔离区（例如 V8 Isolate、QuickJS/Wasm 或无密钥子进程）。沙箱里的 <code>linear.listIssues(...)</code> 和 <code>sentry.getIssueStats(...)</code> 只是向沙箱外宿主发起的受控 RPC 桥接；真正的 OAuth 2.1 Access Token、作用域校验、人工审批弹窗和出站 HTTPS 连接全都由沙箱外的 MCP Client 负责。即使沙箱里的脚本被恶意输入诱导，它也看不到任何原始密钥，更无法绕过宿主允许的工具清单去访问任意外网地址。</p>
+<p>多模态场景同样如此。如果一个 BI 或监控 MCP Server 返回了图表 PNG 图像和底层指标数组，Code Mode 脚本可以直接拿 <code>structuredContent</code> 里的数组算同比增长率，同时把 <code>content</code> 里带 <code>type: &quot;image&quot;</code> 的独立块原样透传给多模态模型看图，不用在脚本里折腾 Base64 落盘和文件路径传递。</p>
+<h2 id="落地-code-mode-时绕不开的三个工程细节">落地 Code Mode 时绕不开的三个工程细节<a class="anchor" href="#落地-code-mode-时绕不开的三个工程细节" aria-label="链接到本节">#</a></h2>
+<p>把 Code Mode 真正做稳，服务端和宿主各有几件不能偷懒的事。</p>
+<p>对 <strong>MCP Server 作者</strong>而言，第一件事是把 <code>outputSchema</code> 当成一等公民来写，哪怕返回的是数组或嵌套对象，也要给足准确的字段类型和 <code>required</code> 列表，并保证 <code>structuredContent</code> 严格遵守该 Schema。只返回一坨 Markdown 表格的工具，在 Code Mode 里会退化成难解析的字符串，直接拖累调用成功率。第二件事是注意分页和体积上限：即使沙箱内存比上下文窗口便宜得多，无限制拉取十万条记录照样会触发沙箱 OOM 或执行超时，工具设计时应当提供明确的过滤参数（如 <code>team</code>、<code>state</code>、<code>limit</code>）与分页游标。</p>
+<p>对 <strong>宿主与客户端作者</strong>而言，第一件事是隔离沙箱必须锁死资源配额与出站网络：限制 CPU 时间、内存上限、单次脚本并发 RPC 数量，禁用原生 <code>fetch</code>/文件系统/环境变量访问，所有对外交互只留 MCP 桥接函数这一个窄口。第二件事是把人工确认（Human-in-the-Loop）和写操作拦截依然卡在宿主层：沙箱脚本调用只读工具可以静默并发放行，但一旦触发破坏性写操作或服务端返回 <code>InputRequiredResult</code>，宿主必须能暂停脚本执行、把确认弹窗推给用户，等拿到结果再恢复 Promise，或者直接拒绝并抛异常给脚本处理。第三件事是错误堆栈的回传策略：脚本里某次 <code>tools/call</code> 返回 <code>isError: true</code> 时，宿主应当把这条可执行错误信息映射成可读异常，既允许脚本内 <code>try/catch</code> 自行兜底，也在未捕获时完整还给模型，让模型在下一轮迅速修正脚本。</p>
+<p>当沙箱脚本在执行半途遇到服务端需要人工确认或外部授权，或者普通远程调用需要向用户追问额外参数时，无状态的集群怎么在没有粘性会话的前提下把这一来一回接上？下一章我们拆解 <code>2026-07-28</code> 的多往返请求机制（MRTR）和 URL Mode Elicitation。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="03-primitives-schemas.html"><small>上一章</small><strong>核心原语与强类型契约</strong></a><a class="next" href="05-mrtr-elicitation.html"><small>下一章</small><strong>多往返请求（MRTR）与无状态追问</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：从狂热、退潮到 2027 拐点</a><a href="../chapters/01-evolution.html"><span>01</span>协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></a><a href="../chapters/02-stateless-http.html"><span>02</span>无状态内核与 HTTP 标准化</a><a href="../chapters/03-primitives-schemas.html"><span>03</span>核心原语与强类型契约</a><a href="../chapters/04-code-mode.html"><span>04</span>Code Mode：终结上下文膨胀与 N 轮串行调用</a><a href="../chapters/05-mrtr-elicitation.html"><span>05</span>多往返请求（MRTR）与无状态追问</a><a href="../chapters/06-oauth-auth.html"><span>06</span>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</a><a href="../chapters/07-extensions-framework.html"><span>07</span>扩展机制与治理边界</a><a href="../chapters/08-skills-over-mcp.html"><span>08</span>Skills 进入 MCP：<code>io.modelcontextprotocol/skills</code></a><a href="../chapters/09-tasks-async.html"><span>09</span>长程异步执行：MCP Tasks</a><a href="../chapters/10-events-always-on.html"><span>10</span>常驻与多人协作代理：MCP Events</a><a href="../chapters/11-mcp-apps.html"><span>11</span>产品原生智能体化：MCP Apps</a><a href="../chapters/12-discovery-observability-security.html"><span>12</span>未解难题：发现、可观测性与纵深安全</a><a href="../chapters/13-harness-as-mcp.html"><span>13</span>超越远程工具：把 Harness 做成 MCP Server 与架构反模式</a><a href="../chapters/14-mini-mcp-lab.html"><span>14</span>动手验证：零依赖 Python MCP 2027 教学运行时</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：规范索引、关键 SEP 速查表与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立架构研究，非官方文档 · MCP Spec 2026-07-28 · 快照 2bbace557bbf · 2026-11-27</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 MCP 2026-07-28 正式规范与 2027 官方扩展栈的深度中文架构拆解"><meta name="author" content="独立规范研究">
+<title>前言：从狂热、退潮到 2027 拐点 · MCP 2027</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">MCP</span><span>MCP 2027 架构与工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 00</div><div class="rail-title">前言：从狂热、退潮到 2027 拐点</div><ol><li><a href="#cli-与-mcp-的真实分工">CLI 与 MCP 的真实分工</a></li><li><a href="#全书阅读路线">全书阅读路线</a></li><li><a href="#事实口径与研究边界">事实口径与研究边界</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 00 章</div><h1>前言：从狂热、退潮到 2027 拐点</h1><div class="chapter-meta">MCP Spec 2026-07-28 快照 2026-11-24 · 约 14 分钟</div></header><div class="prose"><p>2025 年下半年，不少工程团队把刚接好的 MCP Server 拆回了命令行脚本。理由很实际：往系统提示里塞进四五十个工具的 JSON Schema，还没开始干活，上下文窗口就吃掉一大截；遇到跨系统的多步查询，模型只能一轮调一个工具，把几百行原始 JSON 反复塞进对话历史，既慢又贵。到了 2026 年初，Agent Skills 流行起来，很多开发者直接转向本地 CLI 配合 <code>SKILL.md</code> 的渐进披露，社区里关于 MCP 过于沉重、迟早被 CLI 取代的争论此起彼伏。</p>
+<p>但如果把视线从开发者本机移到真实生产流量上，数据讲的是另一件事。Philipp Schmid 在 2026 年 11 月 26 日发布的文章《Why I&#39;m Bullish on MCP for 2027》中列出了几组公开业务数据：在 Linear 和 Notion，Agent 创建的 issue（约 240 万条/周）和页面已经占到总量的一半左右，Notion 报告其 MCP 流量增长了 60 倍；在 Atlassian，MCP 每个工作日处理超过 500 万次工具调用，其中 44% 的用户不在研发团队，CLI 对这批非工程角色从来就不是可选项；在 Neon，基于 MCP 的 Agent 用量保持 14% 的周环比增长；连 Apple 也开始为 Pages、Numbers 和 Keynote 内置本地 MCP Server。</p>
+<p>这两股看似矛盾的体验，其实对应着两代不同形态的 MCP。早期引起抱怨的是 2024 年底到 2025 年的有状态协议与原始 tool calling 用法：必须维护连接握手和粘性会话，列表结果无法跨会话缓存，客户端一股脑把全量 Schema 喂给模型，且只能由用户发问后被动拉取。到 <code>2026-07-28</code> 正式规范落地后，协议底层做了大手术，把会话和握手从核心拿掉，补齐了 HTTP 路由头、列表 TTL 缓存、无状态多往返追问和官方扩展机制；客户端侧则演化出 Code Mode、Skills over MCP、MCP Tasks、MCP Events 和 MCP Apps，把原本零散的胶水层收拢到了同一套协议边界里。</p>
+<h2 id="cli-与-mcp-的真实分工">CLI 与 MCP 的真实分工<a class="anchor" href="#cli-与-mcp-的真实分工" aria-label="链接到本节">#</a></h2>
+<p>把 CLI 和 MCP 对立成二选一，往往是因为默认了执行者是坐在终端前的软件工程师。在本地代码仓库里，给 Agent 一个终端、几个命令行工具和几份本地 Markdown 说明书确实够快，零协议封装，管道组合也很顺手。</p>
+<p>一旦业务跨出本机终端，CLI 的短板很快会暴露出来。第一是凭证边界：CLI 和裸 <code>curl</code> 往往要求把长效 API Key 写进磁盘配置文件或环境变量，权限粒度粗，且和 Agent 执行的代码共享同一个进程环境，提示注入一旦突破命令限制就能直接读走密钥。第二是人群覆盖：财务、法务、运营、客服和产品团队的桌面环境里没有终端，也没有人会维护本地包管理器和环境变量，Atlassian 那 44% 的非研发调用量正是靠浏览器 OAuth 登录和零配置远程接入跑起来的。第三是多模态与强类型契约：命令行标准输出本质上是无结构文本流，遇到需要同时返回结构化 JSON、图片、音频或可交互视图的场景，只能靠脆弱的正则解析和临时文件路径硬凑。</p>
+<p>2027 年真正成型的格局，是客户端把 MCP 从远程工具调用层升级成 Agent 运行时协议。本地进程继续用 <code>stdio</code> 或命令行，远程 SaaS、企业内部系统、长程异步任务和事件订阅则通过无状态 Streamable HTTP 与官方扩展接入，再由宿主里的 Code Mode 沙箱把强类型 MCP 接口编译成可执行函数，把两边的优势拼到了一起。</p>
+<h2 id="全书阅读路线">全书阅读路线<a class="anchor" href="#全书阅读路线" aria-label="链接到本节">#</a></h2>
+<p>全书一共分为四个部分，从协议内核一路拆到运行时扩展与多代理编排：</p>
+<ol>
+<li><strong>无状态内核与契约基座（第 1 章至第 3 章）</strong>，复盘 MCP 从 <code>2024-11-05</code> 到 <code>2026-07-28</code> 的五个正式版本，讲清为什么要彻底删除 <code>Mcp-Session-Id</code> 与 <code>initialize</code> 握手、如何用 <code>Mcp-Method</code>/<code>Mcp-Name</code>/<code>x-mcp-header</code> 对齐标准 HTTP 网关、如何用 <code>ttlMs</code> 和 <code>cacheScope</code> 消除子代理列表风暴，以及 <code>outputSchema</code>、<code>structuredContent</code> 与 <code>SEP-1303</code> 如何建立机器可消费的强类型契约。</li>
+<li><strong>执行模型、交互与身份边界（第 4 章至第 6 章）</strong>，对比普通串行 tool calling、CLI 管道与 Code Mode 的上下文开销；拆解 <code>SEP-2322</code> 多往返请求（MRTR）和 <code>SEP-1036</code> URL Mode Elicitation 如何在无粘性会话的集群里完成人工确认与敏感信息录入；梳理 OAuth 2.1、RFC 9728 受保护资源元数据、CIMD URL 客户端注册、企业 IdP 托管授权（ID-JAG）以及 RFC 9207 <code>iss</code> 校验。</li>
+<li><strong>官方扩展栈与 Agent 运行时（第 7 章至第 11 章）</strong>，解析 <code>SEP-2133</code> 与 <code>SEP-3392</code> 的扩展治理生命周期，随后逐章拆解四项决定 2027 形态的核心扩展：Skills over MCP（<code>io.modelcontextprotocol/skills</code>）、MCP Tasks（<code>io.modelcontextprotocol/tasks</code>）、MCP Events（<code>io.modelcontextprotocol/events</code>）以及 MCP Apps（<code>io.modelcontextprotocol/ui</code>）。</li>
+<li><strong>工程缺口、多代理编排与代码核验（第 12 章至第 14 章）</strong>，直面发现机制（Registry 与 Server Cards <code>SEP-2127</code>）、意图可观测性和纵深安全（Prompt Injection、Untrusted Webhook、沙箱与 iframe、本地安装 <code>SEP-1024</code>）的现实短板；展开 Phil Schmid 提出的 Harness-as-MCP-Server 协作架构与 <code>ask_agent</code> 反模式；最后用零依赖 Python 标准库代码和 21 个单元测试，把全书最关键的协议不变量在本地跑通。</li>
+</ol>
+<h2 id="事实口径与研究边界">事实口径与研究边界<a class="anchor" href="#事实口径与研究边界" aria-label="链接到本节">#</a></h2>
+<p>本书是一份独立架构研究，不是 MCP 官方文档。为了保证每条协议细节经得起核查，全书严格区分三类信息来源：</p>
+<ul>
+<li><strong>上游行业数据与趋势判断</strong>：引用自 Philipp Schmid 2026 年 11 月 26 日文章 <code>https://www.philschmid.de/mcp-2027</code>，文中涉及具体公司数据或作者观点处均明确归属来源。</li>
+<li><strong>官方规范与 SEP 条款</strong>：全部核对自 <code>modelcontextprotocol/modelcontextprotocol</code> 仓库固定快照（提交 <code>2bbace557bbf2cb5d03d6f9b48905415cd7607b0</code>，提交日期 <code>2026-11-24</code>），并明确标注每项能力处于 <code>2026-07-28</code> 正式核心规范、Stable 扩展、Beta 扩展还是 <code>draft</code> 草案阶段。</li>
+<li><strong>离线教学模型</strong>：第 14 章及 <code>examples/</code> 目录下的 Python 运行时与 21 个单元测试用来验证协议状态机、签名校验与边界拦截逻辑，不代表线上集群压测或第三方商业服务实测。</li>
+</ul>
+<p>所有源码路径、SEP 速查表与本地核验命令汇总在附录和 <code>sources/UPSTREAM.md</code> 中，读者可以随时对照官方快照反向校验。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a class="next" href="01-evolution.html"><small>下一章</small><strong>协议演进史：从 2024-11-05 到 2026-07-28</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：从狂热、退潮到 2027 拐点</a><a href="../chapters/01-evolution.html"><span>01</span>协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></a><a href="../chapters/02-stateless-http.html"><span>02</span>无状态内核与 HTTP 标准化</a><a href="../chapters/03-primitives-schemas.html"><span>03</span>核心原语与强类型契约</a><a href="../chapters/04-code-mode.html"><span>04</span>Code Mode：终结上下文膨胀与 N 轮串行调用</a><a href="../chapters/05-mrtr-elicitation.html"><span>05</span>多往返请求（MRTR）与无状态追问</a><a href="../chapters/06-oauth-auth.html"><span>06</span>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</a><a href="../chapters/07-extensions-framework.html"><span>07</span>扩展机制与治理边界</a><a href="../chapters/08-skills-over-mcp.html"><span>08</span>Skills 进入 MCP：<code>io.modelcontextprotocol/skills</code></a><a href="../chapters/09-tasks-async.html"><span>09</span>长程异步执行：MCP Tasks</a><a href="../chapters/10-events-always-on.html"><span>10</span>常驻与多人协作代理：MCP Events</a><a href="../chapters/11-mcp-apps.html"><span>11</span>产品原生智能体化：MCP Apps</a><a href="../chapters/12-discovery-observability-security.html"><span>12</span>未解难题：发现、可观测性与纵深安全</a><a href="../chapters/13-harness-as-mcp.html"><span>13</span>超越远程工具：把 Harness 做成 MCP Server 与架构反模式</a><a href="../chapters/14-mini-mcp-lab.html"><span>14</span>动手验证：零依赖 Python MCP 2027 教学运行时</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：规范索引、关键 SEP 速查表与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立架构研究，非官方文档 · MCP Spec 2026-07-28 · 快照 2bbace557bbf · 2026-11-27</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

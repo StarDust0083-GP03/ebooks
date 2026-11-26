@@ -17,6 +17,22 @@ SITE_DIR = ROOT / "_site"
 
 CATALOG = [
     {
+        "slug": "mcp-2027-architecture-ebook",
+        "title": "MCP 2027：从远程工具调用到 Agent 运行时协议",
+        "subtitle": "从 philschmid.de/mcp-2027 到 2026-07-28 无状态规范、Code Mode、Skills、Tasks、Events 与 MCP Apps",
+        "category": "runtime",
+        "category_label": "Agent 运行时架构",
+        "upstream": "philschmid.de/mcp-2027 + modelcontextprotocol",
+        "upstream_url": "https://www.philschmid.de/mcp-2027",
+        "version": "2026-07-28 · 2bbace55",
+        "updated": "2026-11-27",
+        "stats": "16 节 · 6 幅 SVG · 21 项单测",
+        "summary": "以 Philipp Schmid 的 2027 判断为引线，对照官方 2026-07-28 规范与 25 项核心 SEP，拆解无状态 HTTP 头路由、Code Mode 与强类型输出、MRTR 追问、OAuth 2.1/CIMD、Skills SHA-256 同步、Tasks、Events、MCP Apps 与 Harness 即 MCP Server。",
+        "layout": "wiki",
+        "pdf": "exports/mcp-2027-architecture.pdf",
+        "epub": "exports/mcp-2027-architecture.epub",
+    },
+    {
         "slug": "dim-architecture-ebook",
         "title": "Dim 架构解剖",
         "subtitle": "Rust 事件驱动时间线、rutis 跨语言插件与分支路由",
@@ -634,7 +650,7 @@ a {{ color: inherit; }}
     <aside class="hero-ledger">
       <dl>
         <dt>收录书目</dt><dd>{len(books)} 本</dd>
-        <dt>最近更新</dt><dd>2026-11-22</dd>
+        <dt>最近更新</dt><dd>2026-11-27</dd>
         <dt>部署形态</dt><dd>统一单仓 · 全相对路径</dd>
       </dl>
     </aside>

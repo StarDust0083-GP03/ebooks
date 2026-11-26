@@ -1,6 +1,6 @@
 # 源码驱动技术电子书书架
 
-集中托管全部 12 本源码驱动中文技术电子书的统一仓库与 GitHub Pages 阅读站。每本书保留各自的固定上游快照、Markdown 书稿、内联 SVG 架构图、离线单文件合订本、EPUB 3 / PDF 导出以及零依赖教学实现代码。
+集中托管全部 13 本源码驱动中文技术电子书的统一仓库与 GitHub Pages 阅读站。每本书保留各自的固定上游快照、Markdown 书稿、内联 SVG 架构图、离线单文件合订本、EPUB 3 / PDF 导出以及零依赖教学实现代码。
 
 - 统一在线阅读书架：<https://stardust0083-gp03.github.io/ebooks/>
 
@@ -10,6 +10,7 @@
 
 | 书名 | 上游项目 | 固定快照 | 目录 |
 | --- | --- | --- | --- |
+| **MCP 2027：从远程工具调用到 Agent 运行时协议** | [philschmid.de/mcp-2027](https://www.philschmid.de/mcp-2027) / [modelcontextprotocol](https://github.com/modelcontextprotocol/modelcontextprotocol) | `2026-07-28` (`2bbace55`) | `books/mcp-2027-architecture-ebook/` |
 | **Dim 架构解剖** | [arcships/dim](https://github.com/arcships/dim) | `0.1.0-alpha.27` (`88a3df36`) | `books/dim-architecture-ebook/` |
 | **Prime Agent 架构解剖** | [PrimeIntellect-ai/prime-agent](https://github.com/PrimeIntellect-ai/prime-agent) | `v0.10.5` (`783acb5d`) | `books/prime-agent-architecture-ebook/` |
 | **Infinity 架构解剖** | [hydro-project/infinity](https://github.com/hydro-project/infinity) | `e1a3e4b3` | `books/infinity-architecture-ebook/` |
@@ -40,7 +41,7 @@ python3 scripts/build_bookshelf.py --verify
 python3 -m http.server 8000 --directory _site --bind 127.0.0.1
 ```
 
-推送到 `main` 分支后，`.github/workflows/pages.yml` 会自动聚合全部 12 本书并部署至 GitHub Pages。
+推送到 `main` 分支后，`.github/workflows/pages.yml` 会自动聚合全部 13 本书并部署至 GitHub Pages。
 
 ## 许可
 

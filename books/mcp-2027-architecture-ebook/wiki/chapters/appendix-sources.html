@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 MCP 2026-07-28 正式规范与 2027 官方扩展栈的深度中文架构拆解"><meta name="author" content="独立规范研究">
+<title>附录：规范索引、关键 SEP 速查表与核验命令 · MCP 2027</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">MCP</span><span>MCP 2027 架构与工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Appendix</div><div class="rail-title">附录：规范索引、关键 SEP 速查表与核验命令</div><ol><li><a href="#一手来源与固定快照">一手来源与固定快照</a></li><li><a href="#官方仓库核心文档路径索引">官方仓库核心文档路径索引</a></li><li><a href="#关键-sep-速查表">关键 SEP 速查表</a></li><li><a href="#核心术语对照">核心术语对照</a></li><li><a href="#本书构建与核验命令">本书构建与核验命令</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">附录 A</div><h1>附录：规范索引、关键 SEP 速查表与核验命令</h1><div class="chapter-meta">MCP Spec 2026-07-28 快照 2026-11-24 · 约 20 分钟</div></header><div class="prose"><p>本附录汇总全书引用的一手源文档路径、关键 SEP 编号速查表、核心术语对照，以及本书构建与核验命令，方便读者随时对照上游仓库复查任意细节。</p>
+<h2 id="一手来源与固定快照">一手来源与固定快照<a class="anchor" href="#一手来源与固定快照" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>主引文章</strong>：Philipp Schmid，《Why I&#39;m Bullish on MCP for 2027》，发布日期 <code>2026-11-26</code>，URL <code>https://www.philschmid.de/mcp-2027</code>。</li>
+<li><strong>官方规范仓库</strong>：<code>https://github.com/modelcontextprotocol/modelcontextprotocol</code></li>
+<li><strong>固定提交 SHA</strong>：<code>2bbace557bbf2cb5d03d6f9b48905415cd7607b0</code></li>
+<li><strong>提交日期</strong>：<code>2026-11-24 21:51:25 +0000</code>（<code>docs: fix small errors in the 2026-07-28 and draft specification (#3586)</code>）</li>
+</ul>
+<h2 id="官方仓库核心文档路径索引">官方仓库核心文档路径索引<a class="anchor" href="#官方仓库核心文档路径索引" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>主题领域</th>
+<th>仓库内相对路径</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>核心变更日志（<code>2026-07-28</code> 与草案）</td>
+<td><code>docs/specification/2026-07-28/changelog.mdx</code>、<code>docs/specification/draft/changelog.mdx</code></td>
+</tr>
+<tr>
+<td>历史版本变更日志</td>
+<td><code>docs/specification/2025-03-26/changelog.mdx</code>、<code>2025-06-18/changelog.mdx</code>、<code>2025-11-25/changelog.mdx</code></td>
+</tr>
+<tr>
+<td>架构与设计原则</td>
+<td><code>docs/specification/2026-07-28/architecture/index.mdx</code></td>
+</tr>
+<tr>
+<td>Streamable HTTP 与 stdio 传输</td>
+<td><code>docs/specification/2026-07-28/basic/transports/streamable-http.mdx</code>、<code>stdio.mdx</code></td>
+</tr>
+<tr>
+<td>发现与列表缓存</td>
+<td><code>docs/specification/2026-07-28/server/discover.mdx</code>、<code>server/utilities/caching.mdx</code></td>
+</tr>
+<tr>
+<td>三大核心原语</td>
+<td><code>docs/specification/2026-07-28/server/tools.mdx</code>、<code>resources.mdx</code>、<code>prompts.mdx</code></td>
+</tr>
+<tr>
+<td>多往返请求（MRTR）与追问</td>
+<td><code>docs/specification/2026-07-28/basic/patterns/mrtr.mdx</code>、<code>client/elicitation.mdx</code></td>
+</tr>
+<tr>
+<td>授权、发现、注册与安全考量</td>
+<td><code>docs/specification/2026-07-28/basic/authorization/index.mdx</code>、<code>authorization-server-discovery.mdx</code>、<code>client-registration.mdx</code>、<code>security-considerations.mdx</code></td>
+</tr>
+<tr>
+<td>弃用特性注册表</td>
+<td><code>docs/specification/2026-07-28/deprecated.mdx</code></td>
+</tr>
+<tr>
+<td>扩展总览与客户端支持矩阵</td>
+<td><code>docs/extensions/overview.mdx</code>、<code>docs/extensions/client-matrix.mdx</code></td>
+</tr>
+<tr>
+<td>五大官方扩展概览</td>
+<td><code>docs/extensions/skills/overview.mdx</code>、<code>tasks/overview.mdx</code>、<code>events/overview.mdx</code>、<code>apps/overview.mdx</code>、<code>auth/enterprise-managed-authorization.mdx</code>、<code>auth/oauth-client-credentials.mdx</code></td>
+</tr>
+<tr>
+<td>安全最佳实践</td>
+<td><code>docs/docs/2026-07-28/tutorials/security/security_best_practices.mdx</code></td>
+</tr>
+<tr>
+<td>MCP Registry 与路线图</td>
+<td><code>docs/registry/about.mdx</code>、<code>docs/development/roadmap.mdx</code></td>
+</tr>
+</tbody></table></div>
+<h2 id="关键-sep-速查表">关键 SEP 速查表<a class="anchor" href="#关键-sep-速查表" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>SEP 编号</th>
+<th>标题概要</th>
+<th>轨道与状态</th>
+<th>在全书对应的主要章节</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>SEP-414</td>
+<td><code>_meta</code> 透传 OpenTelemetry Trace 上下文</td>
+<td>Standards Track / Final</td>
+<td>第 1 章、第 12 章</td>
+</tr>
+<tr>
+<td>SEP-985</td>
+<td>对齐 RFC 9728 受保护资源元数据发现</td>
+<td>Standards Track / Final</td>
+<td>第 6 章</td>
+</tr>
+<tr>
+<td>SEP-986</td>
+<td>工具名称字符与长度规范</td>
+<td>Standards Track / Final</td>
+<td>第 3 章</td>
+</tr>
+<tr>
+<td>SEP-990</td>
+<td>企业 IdP 策略管控（Enterprise-Managed Auth / ID-JAG）</td>
+<td>Extensions Track / Final（Stable）</td>
+<td>第 6 章</td>
+</tr>
+<tr>
+<td>SEP-991</td>
+<td>基于 HTTPS URL 的客户端注册（CIMD）</td>
+<td>Standards Track / Final</td>
+<td>第 6 章</td>
+</tr>
+<tr>
+<td>SEP-1024</td>
+<td>本地 MCP Server 一键安装的客户端安全同意要求</td>
+<td>Standards Track / Final</td>
+<td>第 12 章</td>
+</tr>
+<tr>
+<td>SEP-1036</td>
+<td>URL Mode Elicitation 安全带外交互</td>
+<td>Standards Track / Final</td>
+<td>第 5 章</td>
+</tr>
+<tr>
+<td>SEP-1046</td>
+<td>OAuth 2.0 Client Credentials 机器对机器授权</td>
+<td>Extensions Track / Final（Stable）</td>
+<td>第 6 章</td>
+</tr>
+<tr>
+<td>SEP-1303</td>
+<td>输入参数校验错误归入工具执行错误（<code>isError: true</code>）</td>
+<td>Standards Track / Final</td>
+<td>第 3 章、第 14 章</td>
+</tr>
+<tr>
+<td>SEP-1613 / SEP-2106</td>
+<td>默认 JSON Schema 2020-12 及全关键字与任意 JSON <code>structuredContent</code></td>
+<td>Standards Track / Final</td>
+<td>第 3 章</td>
+</tr>
+<tr>
+<td>SEP-1865</td>
+<td>MCP Apps 交互式界面（<code>io.modelcontextprotocol/ui</code>）</td>
+<td>Extensions Track / Final（Stable）</td>
+<td>第 11 章</td>
+</tr>
+<tr>
+<td>SEP-2127</td>
+<td>MCP Server Cards 预连接 HTTP 发现</td>
+<td>Extensions Track / Final（Beta）</td>
+<td>第 12 章</td>
+</tr>
+<tr>
+<td>SEP-2133 / SEP-3392</td>
+<td>官方扩展机制与四阶段成熟度生命周期</td>
+<td>Standards/Process / Final</td>
+<td>第 7 章</td>
+</tr>
+<tr>
+<td>SEP-2164</td>
+<td>资源未找到错误码统一调整为 <code>-32602</code></td>
+<td>Standards Track / Final</td>
+<td>第 2 章</td>
+</tr>
+<tr>
+<td>SEP-2207</td>
+<td>OIDC 风格 Refresh Token 与 <code>offline_access</code> 指南</td>
+<td>Standards Track / Final</td>
+<td>第 6 章</td>
+</tr>
+<tr>
+<td>SEP-2243</td>
+<td>Streamable HTTP 标准请求头镜像与 <code>x-mcp-header</code></td>
+<td>Standards Track / Final</td>
+<td>第 2 章、第 14 章</td>
+</tr>
+<tr>
+<td>SEP-2322</td>
+<td>多往返请求（MRTR，<code>InputRequiredResult</code> + <code>requestState</code>）</td>
+<td>Standards Track / Final</td>
+<td>第 5 章、第 14 章</td>
+</tr>
+<tr>
+<td>SEP-2468</td>
+<td>授权响应 RFC 9207 <code>iss</code> 参数校验防 Mix-Up</td>
+<td>Standards Track / Final</td>
+<td>第 6 章</td>
+</tr>
+<tr>
+<td>SEP-2549</td>
+<td>列表与读取结果的 <code>ttlMs</code> 与 <code>cacheScope</code> 缓存规范</td>
+<td>Standards Track / Final</td>
+<td>第 2 章、第 14 章</td>
+</tr>
+<tr>
+<td>SEP-2567</td>
+<td>无会话 MCP 与显式状态句柄模式</td>
+<td>Standards Track / Final</td>
+<td>第 1 章、第 2 章</td>
+</tr>
+<tr>
+<td>SEP-2575</td>
+<td>无状态 MCP（移除 <code>initialize</code>、新增 <code>server/discover</code> 与 <code>subscriptions/listen</code>）</td>
+<td>Standards Track / Final</td>
+<td>第 1 章、第 2 章</td>
+</tr>
+<tr>
+<td>SEP-2577 / SEP-2596</td>
+<td>弃用 Roots/Sampling/Logging 及 12 个月特性弃用生命周期</td>
+<td>Standards Track / Final</td>
+<td>第 1 章</td>
+</tr>
+<tr>
+<td>SEP-2640</td>
+<td>Skills over MCP（<code>io.modelcontextprotocol/skills</code>）</td>
+<td>Extensions Track / Final（Beta）</td>
+<td>第 8 章、第 14 章</td>
+</tr>
+<tr>
+<td>SEP-2663</td>
+<td>MCP Tasks 异步任务扩展（<code>io.modelcontextprotocol/tasks</code>）</td>
+<td>Extensions Track / Final（Beta → Core）</td>
+<td>第 9 章、第 14 章</td>
+</tr>
+<tr>
+<td>SEP-3415</td>
+<td>MCP Events 事件订阅扩展（<code>io.modelcontextprotocol/events</code>）</td>
+<td>Extensions Track / Final（Beta）</td>
+<td>第 10 章、第 14 章</td>
+</tr>
+</tbody></table></div>
+<h2 id="核心术语对照">核心术语对照<a class="anchor" href="#核心术语对照" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>Streamable HTTP</strong>：MCP 的标准远程 HTTP 传输绑定，单一路径接收 POST，按单次请求选择返回普通 JSON 或绑定到该请求的 SSE 响应流。</li>
+<li><strong>MRTR（Multi Round-Trip Requests）</strong>：多往返请求模式。服务端通过返回 <code>resultType: &quot;input_required&quot;</code> 和不透明 <code>requestState</code> 暂停请求并索要输入，客户端收集完后换新 JSON-RPC <code>id</code> 重试，无需粘性会话。</li>
+<li><strong>Code Mode</strong>：由 Agent 宿主提供无原始凭证隔离沙箱，依据 MCP <code>inputSchema</code> 与 <code>outputSchema</code> 生成类型化函数桩，让模型一次编写脚本在沙箱内存里并发调用、过滤与 Join 多台服务器数据。</li>
+<li><strong>CIMD（Client ID Metadata Documents）</strong>：以客户端自托管的 HTTPS 元数据 URL 直接作为 <code>client_id</code> 的 OAuth 注册方式，取代已弃用的 RFC 7591 动态客户端注册。</li>
+<li><strong>ID-JAG（Identity Assertion JWT Authorization Grant）</strong>：企业托管授权扩展中，客户端拿企业 SSO 身份断言向企业 IdP 通过 RFC 8693 换取的授权断言，再通过 JWT Bearer Grant 换取目标 MCP Server 的访问令牌。</li>
+<li><strong>Explicit State Handles（显式状态句柄）</strong>：无会话架构下由创建类工具返回、由模型在后续工具参数中显式传递的不透明资源标识（如 <code>basket_id</code>）。</li>
+</ul>
+<h2 id="本书构建与核验命令">本书构建与核验命令<a class="anchor" href="#本书构建与核验命令" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-bash"># 1. 运行零依赖教学运行时 21 项单元测试
+python3 -m unittest discover -s examples -v
+
+# 2. 重新生成 6 张内联 SVG 架构图（含文字溢出与符号检查）
+python3 scripts/make_diagrams.py
+
+# 3. 构建多页静态阅读站、全文索引、离线单文件 HTML 与合并 Markdown
+node wiki/build.mjs
+
+# 4. 生成 EPUB 3 与印刷级 PDF
+python3 scripts/make_epub.py
+chromium --headless=new --disable-gpu --no-sandbox --no-pdf-header-footer \
+  --print-to-pdf=exports/mcp-2027-architecture.pdf wiki/book.html
+
+# 5. 校验站点全部内部链接、图片与导出包
+python3 scripts/check_links.py
+</code></pre>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="14-mini-mcp-lab.html"><small>上一章</small><strong>动手验证：零依赖 Python MCP 2027 教学运行时</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：从狂热、退潮到 2027 拐点</a><a href="../chapters/01-evolution.html"><span>01</span>协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></a><a href="../chapters/02-stateless-http.html"><span>02</span>无状态内核与 HTTP 标准化</a><a href="../chapters/03-primitives-schemas.html"><span>03</span>核心原语与强类型契约</a><a href="../chapters/04-code-mode.html"><span>04</span>Code Mode：终结上下文膨胀与 N 轮串行调用</a><a href="../chapters/05-mrtr-elicitation.html"><span>05</span>多往返请求（MRTR）与无状态追问</a><a href="../chapters/06-oauth-auth.html"><span>06</span>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</a><a href="../chapters/07-extensions-framework.html"><span>07</span>扩展机制与治理边界</a><a href="../chapters/08-skills-over-mcp.html"><span>08</span>Skills 进入 MCP：<code>io.modelcontextprotocol/skills</code></a><a href="../chapters/09-tasks-async.html"><span>09</span>长程异步执行：MCP Tasks</a><a href="../chapters/10-events-always-on.html"><span>10</span>常驻与多人协作代理：MCP Events</a><a href="../chapters/11-mcp-apps.html"><span>11</span>产品原生智能体化：MCP Apps</a><a href="../chapters/12-discovery-observability-security.html"><span>12</span>未解难题：发现、可观测性与纵深安全</a><a href="../chapters/13-harness-as-mcp.html"><span>13</span>超越远程工具：把 Harness 做成 MCP Server 与架构反模式</a><a href="../chapters/14-mini-mcp-lab.html"><span>14</span>动手验证：零依赖 Python MCP 2027 教学运行时</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：规范索引、关键 SEP 速查表与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立架构研究，非官方文档 · MCP Spec 2026-07-28 · 快照 2bbace557bbf · 2026-11-27</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

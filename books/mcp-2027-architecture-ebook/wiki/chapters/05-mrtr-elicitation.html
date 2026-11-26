@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 MCP 2026-07-28 正式规范与 2027 官方扩展栈的深度中文架构拆解"><meta name="author" content="独立规范研究">
+<title>多往返请求（MRTR）与无状态追问 · MCP 2027</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">MCP</span><span>MCP 2027 架构与工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 05</div><div class="rail-title">多往返请求（MRTR）与无状态追问</div><ol><li><a href="#resulttype-inputrequiredresult-与允许触发的边界">resultType、InputRequiredResult 与允许触发的边界</a></li><li><a href="#把-requeststate-当作不可信外部输入来防">把 requestState 当作不可信外部输入来防</a></li><li><a href="#form-mode-与-url-mode-elicitation-sep-1036">Form Mode 与 URL Mode Elicitation（SEP-1036）</a></li><li><a href="#防钓鱼与防令牌透传-url-mode-的两道必考安全题">防钓鱼与防令牌透传：URL Mode 的两道必考安全题</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 05 章</div><h1>多往返请求（MRTR）与无状态追问</h1><div class="chapter-meta">MCP Spec 2026-07-28 快照 2026-11-24 · 约 20 分钟</div></header><div class="prose"><p>设想一个线上发布工具 <code>deploy_release</code>。用户让 Agent 把 <code>v2.4.0</code> 发到生产环境，客户端把 <code>tools/call</code> 发给了负载均衡器后面的副本 A。副本 A 检查策略后发现：生产发布必须先让操作人二次确认，或者需要先去第三方平台补录一个一次性审批凭证。</p>
+<p>在 <code>2025-11-25</code> 及以前的协议里，服务端要想反过来问客户端要信息，必须顺着正在打开的 HTTP SSE 响应流，倒着发一条服务端发起的 JSON-RPC 请求（<code>elicitation/create</code>），然后副本 A 的工作线程就得死死挂在那里干等。问题马上就来了：客户端回答后发回的 POST 必须精准路由回同一台副本 A，否则新落地的副本 B 根本不知道刚才那条挂起的协程在哪；如果用户喝了杯咖啡两分钟才点确认，中间网关或 Serverless 早就把长连接掐断了。</p>
+<p><code>2026-07-28</code> 通过 <strong><code>SEP-2322</code>（Multi Round-Trip Requests，简称 MRTR）</strong> 彻底终结了服务端主动发请求的历史。新规则非常干脆：服务端绝不在任何流上发送独立的 JSON-RPC Request；当处理请求需要额外输入时，直接结束本次请求并返回一个 <code>InputRequiredResult</code>，等客户端收集完输入，再带着原参数和服务端签发的不透明状态令牌重试一次。下面这张图把 MRTR 无状态追问与沙箱外 OAuth 2.1 的完整边界串在了一起。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 250" width="660" height="250" role="img" aria-label="MRTR 无状态多往返追问与沙箱外 OAuth 2.1 授权流程">
+<title>MRTR 无状态多往返追问与沙箱外 OAuth 2.1 授权流程</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+  </marker>
+</defs>
+<text x="12" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="12" font-weight="700" fill="var(--ink)" text-anchor="start">无粘性会话的 MRTR 追问与沙箱外 OAuth 2.1 授权边界</text><rect x="12" y="32" width="190" height="74" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="22" y="52" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">1. Host / MCP Client</text><text x="22" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">持有 OAuth 2.1 Token</text><text x="22" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">(按 RFC 8707 绑定 aud)</text><text x="22" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">发起 tools/call (id=1)</text><line x1="202" y1="69" x2="232" y2="69" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="234" y="32" width="190" height="74" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="244" y="52" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">2. Replica A (无状态)</text><text x="244" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">校验 Token 与 Scope</text><text x="244" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">需人工确认或外部授权</text><text x="244" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">签发 AEAD requestState</text><line x1="424" y1="69" x2="454" y2="69" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="456" y="32" width="192" height="74" rx="4" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="466" y="52" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--amber)" text-anchor="start">3. InputRequiredResult</text><text x="466" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">resultType: input_required</text><text x="466" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">inputRequests: elicitation</text><text x="466" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">附带不透明 requestState</text><line x1="552" y1="106" x2="552" y2="134" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="336" y="136" width="312" height="76" rx="4" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="346" y="156" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--amber)" text-anchor="start">4. 人工确认或 URL Mode 带外授权</text><text x="346" y="174" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">Form Mode: 宿主弹窗采集非敏感字段</text><text x="346" y="190" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">URL Mode: 跳浏览器直连服务端，密钥不经 LLM</text><text x="346" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">服务端核对 sub 身份，防钓鱼与会话劫持</text><line x1="336" y1="174" x2="306" y2="174" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="12" y="136" width="292" height="76" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="22" y="156" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">5. 重试落地到任意 Replica B (id=2)</text><text x="22" y="174" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">原样回传 requestState 与 inputResponses</text><text x="22" y="190" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">Replica B 验签: principal + TTL + paramsDigest</text><text x="22" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">无需粘性路由即可返回 resultType: complete</text><text x="12" y="234" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="400" fill="var(--muted)" text-anchor="start">安全红线: 沙箱内代码绝不接触原始 API Key; URL Mode 敏感凭证绝不回流到 MCP Client 或模型上下文。</text>
+</svg><figcaption>MRTR 无状态多往返追问与沙箱外 OAuth 2.1 授权流程</figcaption></figure>
+<p>图里第 1 到第 3 步发生在副本 A 上：副本 A 校验完 OAuth 2.1 Bearer Token 后发现缺少人工确认，于是直接签发带完整性保护的 <code>requestState</code>，随 <code>InputRequiredResult</code> 一起返回，然后立即释放当前 HTTP 连接，内存中不留任何会话状态。第 4 步由宿主在本地完成表单弹窗或跳转浏览器执行带外授权。第 5 步客户端换一个新的 JSON-RPC <code>id</code> 重试原请求，哪怕负载均衡器把重试打到了另一台毫无上下文的副本 B，副本 B 也能靠验签 <code>requestState</code> 重建上下文并直接产出最终结果。</p>
+<h2 id="resulttype-inputrequiredresult-与允许触发的边界"><code>resultType</code>、<code>InputRequiredResult</code> 与允许触发的边界<a class="anchor" href="#resulttype-inputrequiredresult-与允许触发的边界" aria-label="链接到本节">#</a></h2>
+<p>为了把正常完成和需要补充输入这两种结果清晰分开，<code>2026-07-28</code> 规定<strong>所有</strong>协议结果都必须带上 <code>resultType</code> 鉴别字段（<code>docs/specification/2026-07-28/basic/patterns/mrtr.mdx</code>）：</p>
+<ul>
+<li><code>&quot;complete&quot;</code>，表示本次 RPC 已经执行完毕，返回标准结果。如果客户端连上了旧版本服务端、结果里缺了该字段，客户端必须按 <code>&quot;complete&quot;</code> 处理。</li>
+<li><code>&quot;input_required&quot;</code>，表示本次请求需要客户端补充输入后再重试，即 <code>InputRequiredResult</code>。（此外，第 9 章的 Tasks 扩展还引入了 <code>&quot;task&quot;</code>。）</li>
+</ul>
+<p>规范严格限定了只有三个客户端方法允许返回 <code>InputRequiredResult</code>：<strong><code>tools/call</code></strong>、<strong><code>resources/read</code></strong> 和 <strong><code>prompts/get</code></strong>，其他任何方法都不允许触发 MRTR。而且服务端在返回 <code>inputRequests</code> 之前，必须检查本次请求 <code>_meta.io.modelcontextprotocol/clientCapabilities</code> 里客户端是否明确声明支持对应能力（比如 <code>elicitation</code> 里的 <code>form</code> 或 <code>url</code> 模式）。如果客户端没声明，服务端绝不能强行下发，而是应当视情况降级，或者返回 <code>-32021</code>（<code>MissingRequiredClientCapability</code>）明确告知缺少哪些能力。</p>
+<p>看一组完整的往返报文。第一次请求（<code>id: 1</code>）触发了表单追问：</p>
+<pre><code class="language-json">{
+  &quot;jsonrpc&quot;: &quot;2.0&quot;,
+  &quot;id&quot;: 1,
+  &quot;result&quot;: {
+    &quot;resultType&quot;: &quot;input_required&quot;,
+    &quot;inputRequests&quot;: {
+      &quot;confirm_prod&quot;: {
+        &quot;method&quot;: &quot;elicitation/create&quot;,
+        &quot;params&quot;: {
+          &quot;mode&quot;: &quot;form&quot;,
+          &quot;message&quot;: &quot;Confirm deploying v2.4.0 to prod?&quot;,
+          &quot;requestedSchema&quot;: {
+            &quot;type&quot;: &quot;object&quot;,
+            &quot;properties&quot;: {
+              &quot;approved&quot;: { &quot;type&quot;: &quot;boolean&quot; }
+            },
+            &quot;required&quot;: [&quot;approved&quot;]
+          }
+        }
+      }
+    },
+    &quot;requestState&quot;: &quot;eyJwcm...signature&quot;
+  }
+}
+</code></pre>
+<p>客户端弹窗征得用户同意后，发起第二次独立请求。注意规范的两条硬要求：第一，重试请求的 JSON-RPC <code>id</code> <strong>必须不同于</strong>首次请求（这里变成 <code>id: 2</code>），因为它们是两个完全独立的请求；第二，如果服务端返回了 <code>requestState</code>，客户端必须一字不差地原样回传，<strong>不得</strong>解析、篡改，也不得把它套用到并行发出的其他请求上。如果服务端没返回 <code>requestState</code>，客户端重试时则不得凭空带上该字段。</p>
+<pre><code class="language-json">{
+  &quot;jsonrpc&quot;: &quot;2.0&quot;,
+  &quot;id&quot;: 2,
+  &quot;method&quot;: &quot;tools/call&quot;,
+  &quot;params&quot;: {
+    &quot;name&quot;: &quot;deploy_release&quot;,
+    &quot;arguments&quot;: { &quot;version&quot;: &quot;v2.4.0&quot; },
+    &quot;inputResponses&quot;: {
+      &quot;confirm_prod&quot;: {
+        &quot;action&quot;: &quot;accept&quot;,
+        &quot;content&quot;: { &quot;approved&quot;: true }
+      }
+    },
+    &quot;requestState&quot;: &quot;eyJwcm...signature&quot;
+  }
+}
+</code></pre>
+<p>如果客户端漏填了必需的回答，规范建议服务端继续返回新的 <code>InputRequiredResult</code> 重新索要，而不是直接抛协议错误；如果客户端多塞了服务端不认识的额外字段，服务端应当静默忽略。同时回想第 2 章的缓存规则：任何 <code>resultType: &quot;input_required&quot;</code> 中间结果，以及携带了 <code>inputResponses</code> 或 <code>requestState</code> 的重试响应，都绝对禁止写入客户端缓存。</p>
+<h2 id="把-requeststate-当作不可信外部输入来防">把 <code>requestState</code> 当作不可信外部输入来防<a class="anchor" href="#把-requeststate-当作不可信外部输入来防" aria-label="链接到本节">#</a></h2>
+<p>因为 <code>requestState</code> 完整绕道了客户端，恶意或被攻破的客户端完全可能篡改、重放、跨账号移植或者调包参数。<code>mrtr.mdx</code> 给服务端列出了非常具体的密码学防护清单：</p>
+<ol>
+<li><strong>强制完整性保护</strong>：只要 <code>requestState</code> 会影响鉴权、资源访问或业务逻辑，服务端<strong>必须</strong>使用 HMAC 或 AEAD（如 AES-GCM）保护其完整性和机密性，验签失败直接拒绝。只有在篡改顶多导致请求失败的无害场景下，才允许省略完整性校验。</li>
+<li><strong>绑定三要素防重放</strong>：受保护的 <code>requestState</code> 载荷内应当编码三项数据并在收到重试时逐一核验：<ul>
+<li><strong>当前已鉴权主体（<code>principal</code> / <code>sub</code>）</strong>：拒绝由其他账号呈递的状态令牌；</li>
+<li><strong>短有效期（TTL）</strong>：拒绝超过过期窗口的陈旧令牌；</li>
+<li><strong>原始请求指纹（方法名加关键参数摘要）</strong>：防止攻击者拿着审批 <code>v2.4.0</code> 拿到的 <code>requestState</code>，在重试时偷偷把参数调包成 <code>v9.9.9-evil</code>。</li>
+</ul>
+</li>
+<li><strong>一次性消费必须由服务端落库保证</strong>：规范特意加了一段警告，上述三项只能收窄重放窗口、防跨人和防调包，本身<strong>不能</strong>保证严格一次性消费（Single-use）。像一次性核销、转账扣款这类不能被重放两次的操作，服务端必须在共享存储里记录消费状态（如 nonce 或幂等键）。</li>
+</ol>
+<p>这套防线已经在第 14 章的 <code>MrtrReplica</code> 与 <code>test_10</code>/<code>test_11</code> 中完整跑通：副本 A 签发的 <code>requestState</code> 在副本 B 上正常续跑，而篡改签名、换账号重放、超时、调包参数和复用 JSON-RPC <code>id</code> 五种攻击全部被准确拦截。</p>
+<h2 id="form-mode-与-url-mode-elicitation-sep-1036">Form Mode 与 URL Mode Elicitation（<code>SEP-1036</code>）<a class="anchor" href="#form-mode-与-url-mode-elicitation-sep-1036" aria-label="链接到本节">#</a></h2>
+<p>MRTR 承接的交互请求里，因为 Roots 和 Sampling 已在 <code>2026-07-28</code> 正式弃用，真正面向 2027 的主角是 <strong>Elicitation</strong>（<code>docs/specification/2026-07-28/client/elicitation.mdx</code>）。它分两种模式，安全边界划得泾渭分明。</p>
+<p>**Form Mode（表单模式）**用于采集非敏感的结构化信息，数据会经由客户端回传服务端。为了让各种桌面、网页和命令行宿主都能稳定渲染表单，<code>requestedSchema</code> 被刻意限制在扁平对象（Flat Object）子集内，属性只允许 <code>string</code>（支持 <code>email</code>、<code>uri</code>、<code>date</code>、<code>date-time</code> 格式）、<code>number</code>/<code>integer</code>、<code>boolean</code>，以及单选或多选枚举（<code>SEP-1330</code> 规范了带 <code>title</code> 的 <code>oneOf</code>/<code>anyOf</code> 与无标题的 <code>enum</code> 写法，<code>SEP-1034</code> 补齐了所有原始类型的 <code>default</code> 默认值）。深度嵌套对象和普通数组被明确禁止。用户的响应统一采用三态模型：<code>&quot;accept&quot;</code>（提交并附带 <code>content</code>）、<code>&quot;decline&quot;</code>（明确拒绝）和 <code>&quot;cancel&quot;</code>（关闭弹窗或按 Esc 放弃）。</p>
+<p>规范划了一条不可逾越的红线：<strong>服务端绝不能用 Form Mode 向用户索要密码、API Key、访问令牌或支付凭证</strong>。凡是涉及敏感秘密或第三方系统授权的交互，都必须走 <strong>URL Mode（<code>SEP-1036</code>）</strong>。</p>
+<p>在 URL Mode 中，服务端只返回一个带 <code>mode: &quot;url&quot;</code>、<code>message</code> 和目标 <code>url</code> 的 <code>elicitation/create</code> 请求，客户端向用户展示完整域名并征得明确同意后，通过安全隔离的系统浏览器（比如 iOS 上允许 <code>SFSafariViewController</code>，禁止客户端可窥探内容的 <code>WKWebView</code>）打开页面。用户直接在可信网页里输入敏感凭证或走完第三方 OAuth 流程，凭证直接存在 MCP Server 后端，<strong>全程不经过 LLM 上下文，也不经过 MCP Client</strong>。客户端重试原请求时，<code>inputResponses</code> 里只有 <code>{&quot;action&quot;: &quot;accept&quot;}</code>（没有 <code>content</code>），表示用户同意打开链接；至于带外操作有没有完成，由服务端根据回传的 <code>requestState</code> 和后端状态自行判断。</p>
+<p>这里有一个 <code>2026-07-28</code> 相比 <code>2025-11-25</code> 的关键精简：旧版曾经定义过 <code>elicitationId</code> 和服务端主动推送的 <code>notifications/elicitation/complete</code> 通知。在全面转向 MRTR 后，客户端靠重试原请求就能得知带外流程结果，服务端需要关联状态时直接把自己的标识放进 <code>requestState</code> 即可，于是这两个冗余元素被彻底删掉了。</p>
+<h2 id="防钓鱼与防令牌透传-url-mode-的两道必考安全题">防钓鱼与防令牌透传：URL Mode 的两道必考安全题<a class="anchor" href="#防钓鱼与防令牌透传-url-mode-的两道必考安全题" aria-label="链接到本节">#</a></h2>
+<p>URL Mode 把用户引到了外部浏览器，立刻引入了两个经典安全陷阱，规范在 <code>elicitation.mdx</code> 里花了不少篇幅给出标准解法：</p>
+<p>第一是<strong>禁止拿 URL Mode 替代 MCP 自身授权，更禁止 Token Passthrough</strong>。MCP Client 访问 MCP Server 的身份授权必须走下一章讲的标准 OAuth 2.1；URL Mode 只用来处理 MCP Server 作为第三方 API 客户端时的外部授权，而且服务端绝不能把客户端发来的 MCP Bearer Token 透传给第三方 API，也不能把第三方凭证发回给 MCP Client。</p>
+<p>第二是<strong>防链接转发钓鱼（Account Takeover）</strong>。设想恶意用户 Alice 触发了一个第三方授权 URL，她自己不点，而是把链接发给同一台 MCP Server 的受害者 Bob。如果服务端直接把用户送到第三方 OAuth 授权页，Bob 点完授权后，第三方回调回来，服务端错把 Bob 的第三方令牌绑到了 Alice 的账号下，导致账号接管。标准防线是：服务端给的 URL 不应该是直接指向第三方授权页的裸链接，而是先指向 MCP Server 自己的受保护入口（例如 <code>https://mcp.example.com/connect?...</code>），且 URL 里禁止包含敏感信息或预鉴权令牌。浏览器打开该页面后，服务端必须先校验浏览器里的登录态（如 Session Cookie 对应的 <code>sub</code> 身份）与发起 MRTR 的 MCP 鉴权 <code>sub</code> 完全一致，确认是同一个人操作后，才把浏览器重定向到第三方授权服务器。同时，客户端侧禁止预抓取 URL 元数据、必须高亮展示完整域名并对 Punycode 混淆域名发出警告。</p>
+<p>理清了服务端如何向用户安全追问之后，下一章我们把目光转向整个 MCP 远程服务的入口闸门：OAuth 2.1、受保护资源元数据、CIMD 无预注册发现与企业 IdP 集中管控。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="04-code-mode.html"><small>上一章</small><strong>Code Mode：终结上下文膨胀与 N 轮串行调用</strong></a><a class="next" href="06-oauth-auth.html"><small>下一章</small><strong>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：从狂热、退潮到 2027 拐点</a><a href="../chapters/01-evolution.html"><span>01</span>协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></a><a href="../chapters/02-stateless-http.html"><span>02</span>无状态内核与 HTTP 标准化</a><a href="../chapters/03-primitives-schemas.html"><span>03</span>核心原语与强类型契约</a><a href="../chapters/04-code-mode.html"><span>04</span>Code Mode：终结上下文膨胀与 N 轮串行调用</a><a href="../chapters/05-mrtr-elicitation.html"><span>05</span>多往返请求（MRTR）与无状态追问</a><a href="../chapters/06-oauth-auth.html"><span>06</span>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</a><a href="../chapters/07-extensions-framework.html"><span>07</span>扩展机制与治理边界</a><a href="../chapters/08-skills-over-mcp.html"><span>08</span>Skills 进入 MCP：<code>io.modelcontextprotocol/skills</code></a><a href="../chapters/09-tasks-async.html"><span>09</span>长程异步执行：MCP Tasks</a><a href="../chapters/10-events-always-on.html"><span>10</span>常驻与多人协作代理：MCP Events</a><a href="../chapters/11-mcp-apps.html"><span>11</span>产品原生智能体化：MCP Apps</a><a href="../chapters/12-discovery-observability-security.html"><span>12</span>未解难题：发现、可观测性与纵深安全</a><a href="../chapters/13-harness-as-mcp.html"><span>13</span>超越远程工具：把 Harness 做成 MCP Server 与架构反模式</a><a href="../chapters/14-mini-mcp-lab.html"><span>14</span>动手验证：零依赖 Python MCP 2027 教学运行时</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：规范索引、关键 SEP 速查表与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立架构研究，非官方文档 · MCP Spec 2026-07-28 · 快照 2bbace557bbf · 2026-11-27</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

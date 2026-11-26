@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 MCP 2026-07-28 正式规范与 2027 官方扩展栈的深度中文架构拆解"><meta name="author" content="独立规范研究">
+<title>产品原生智能体化：MCP Apps · MCP 2027</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">MCP</span><span>MCP 2027 架构与工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 11</div><div class="rail-title">产品原生智能体化：MCP Apps</div><ol><li><a href="#为什么不在工具结果里直接返回-html-而是用预声明-ui-资源">为什么不在工具结果里直接返回 HTML，而是用预声明 ui:// 资源</a></li><li><a href="#三种宿主视图形态与产品边界">三种宿主视图形态与产品边界</a></li><li><a href="#沙箱边界与宿主侧安全治理">沙箱边界与宿主侧安全治理</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 11 章</div><h1>产品原生智能体化：MCP Apps</h1><div class="chapter-meta">MCP Spec 2026-07-28 快照 2026-11-24 · 约 16 分钟</div></header><div class="prose"><p>用户在对话窗口里提出要求：把上个季度各区域的营收异常和 P95 延迟对比拉出来，顺便把核心服务的发布单配好。如果 MCP Server 只返回一段 Markdown 表格和四条外部链接，用户接下来就得切出对话、连续点开四个浏览器标签页，在四个不同后台之间来回复制 ID、筛选时间范围、再切回聊天框告诉 Agent 自己选了哪几项。一旦需要多维交互筛选、表单联动配置、3D 模型/地图钻取或者实时监控看板，纯文本和静态图片很快就不够用了。</p>
+<p><strong>MCP Apps</strong>（<code>io.modelcontextprotocol/ui</code>，<code>SEP-1865</code> 已达 Final，扩展本身在 <code>ext-apps</code> 仓库中已达到 <strong>Stable</strong> 阶段）把交互式界面正式纳入了 MCP 协议。根据官方客户端支持矩阵与 Philipp Schmid 原文记录，目前 Claude（Web 与 Desktop）、ChatGPT、Cursor、VS Code GitHub Copilot、Microsoft 365 Copilot、Slack 新版 MCP 客户端、Google Antigravity、Goose、Postman、MCPJam 和 Glean 等主流宿主都已经落地了这一模式，覆盖行内聊天卡片、侧边发布看板和自定义文件查看器三种核心形态。</p>
+<h2 id="为什么不在工具结果里直接返回-html-而是用预声明-ui-资源">为什么不在工具结果里直接返回 HTML，而是用预声明 <code>ui://</code> 资源<a class="anchor" href="#为什么不在工具结果里直接返回-html-而是用预声明-ui-资源" aria-label="链接到本节">#</a></h2>
+<p>早期的社区实验（如 MCP-UI 早期方案）曾尝试让工具调用直接在返回体里内联一段 HTML，虽然写起来省事，但很快在宿主侧暴露出三个硬伤：第一，每次工具执行完才开始传输前端代码包，首屏渲染延迟高，无法流式展示工具输入；第二，界面模板和业务数据搅在一起，宿主没法缓存 UI 壳子；第三，安全团队无法在执行前对 UI 资源做静态审查或版本核验。</p>
+<p>因此 <code>SEP-1865</code> 统一了 MCP-UI 与 OpenAI Apps SDK 两条路线，确立了<strong>工具声明加预声明 <code>ui://</code> 资源</strong>的双原语解耦架构（<code>docs/extensions/apps/overview.mdx</code> 与 <code>docs/seps/1865-mcp-apps-interactive-user-interfaces-for-mcp.mdx</code>）：</p>
+<ol>
+<li><strong>能力协商</strong>：客户端在每条请求的 <code>_meta[&quot;io.modelcontextprotocol/clientCapabilities&quot;].extensions</code> 里声明支持 <code>io.modelcontextprotocol/ui</code> 及可渲染的 MIME 类型（目前首发基线为 <code>text/html;profile=mcp-app</code>）；服务端在 <code>server/discover</code> 中广告同一扩展。面对不支持该扩展的纯文本或命令行客户端，服务端必须按优雅降级原则继续返回有意义的文本或 <code>structuredContent</code>。</li>
+<li><strong>元数据绑定与预加载</strong>：需要交互界面的工具在工具描述中挂上 <code>_meta.ui.resourceUri</code>，指向一个 <code>ui://</code> 资源（例如 <code>ui://analytics/latency-dashboard</code>）。因为资源地址在 <code>tools/list</code> 阶段就已经声明，宿主完全可以在工具真正被调用之前就预取并缓存 HTML 模板，甚至在工具还在流式输出参数时提前把界面架子撑起来。</li>
+<li><strong>资源获取与策略解析</strong>：宿主通过核心 <code>resources/read</code> 拉取该 <code>ui://</code> 资源，拿到打包好的 HTML/JS/CSS（资源元数据 <code>_meta.ui</code> 内还可声明 <code>csp</code> 外链白名单与 <code>permissions</code> 如麦克风/摄像头请求）。</li>
+<li><strong>受限 iframe 渲染与双向 JSON-RPC</strong>：Web 或桌面宿主把 HTML 放进严格受限的沙箱 <code>&lt;iframe&gt;</code> 中渲染。App 与宿主之间不发明专有私有消息格式，也不向 iframe 注入宿主私有全局对象，而是通过浏览器标准 <code>window.postMessage</code> 通道收发 <strong>MCP 风格的 JSON-RPC 消息</strong>（复用 <code>tools/call</code> 等核心方法，加上 <code>ui/initialize</code> 等 <code>ui/</code> 前缀专用方法）。</li>
+</ol>
+<p>下面这条完整交互链路最能体现 MCP Apps 相比独立 Web 应用的优势：</p>
+<ul>
+<li>模型调用 <code>get_latency_report</code> 工具，服务端返回底层的 <code>structuredContent</code> 指标，宿主把结果推送进对话里已渲染好的折线图 iframe；</li>
+<li>用户直接在图上拖拽时间区间、点选某条毛刺曲线，iframe 通过 <code>postMessage</code> 向宿主发一条 <code>tools/call</code> 请求下钻该时间段慢查询；</li>
+<li>宿主按现有 MCP 鉴权与权限策略（必要时弹窗征求用户同意）转发给 MCP Server，拿到最新数据推回 iframe 刷新图表；</li>
+<li>用户选中某条异常慢查询并触发助手分析动作，iframe 通过上下文更新消息把选中项回传给宿主和模型，对话直接接着往下走，全程零跳转、零重复登录、零手写外部前端鉴权代码。</li>
+</ul>
+<p>更重要的是，iframe 里的 App 还可以把跨域动作<strong>委托给宿主能力</strong>。比如一个项目管理 MCP App 需要发一封延期通知邮件，它不需要自己去对接 Gmail 或 Outlook 的 OAuth 接口，只需向宿主发出意图请求，由宿主经用户确认后路由给用户早已接好的邮件 MCP Server 执行。</p>
+<h2 id="三种宿主视图形态与产品边界">三种宿主视图形态与产品边界<a class="anchor" href="#三种宿主视图形态与产品边界" aria-label="链接到本节">#</a></h2>
+<p>在 Philipp Schmid 的观察和主流宿主落地实践中，MCP Apps 已经分化出三种各司其职的呈现形态：</p>
+<ul>
+<li><strong>对话行内视图（Inline in Chat）</strong>：适合延迟图表、审批确认单、代码差异对比、地图点选和小型配置表单，紧贴上下文讨论，看完即走。</li>
+<li><strong>独立侧栏工作区（Side Panels）</strong>：适合发布看板（Release Board）、持续刷新的实时监控面板、多步骤工单分诊队列，让用户一边在左侧和 Agent 讨论，一边在右侧持续操作持久视图。</li>
+<li><strong>自定义文件查看器（Custom Viewers）</strong>：适合 PDF 批注、3D 场景（如 <code>ext-apps</code> 官方示例中的 Three.js 与 CesiumJS 地球仪）、音频乐谱、白板（如 Excalidraw）等富媒体内容，替代简陋的纯文本预览。</li>
+</ul>
+<p>反过来，官方指南也很清醒地划出了<strong>不该做 MCP App 的边界</strong>：如果你的界面与对话上下文无关、不需要模型协助决策、也不需要复用宿主已连接的其他工具能力，做个普通独立 Web 应用反而更简单、屏幕空间也更大。MCP Apps 的真实价值在于把人机协作最频繁的那几步可视化确认和钻取无缝嵌进 Agent 工作流，而不是把整套后台管理系统硬塞进聊天框。</p>
+<h2 id="沙箱边界与宿主侧安全治理">沙箱边界与宿主侧安全治理<a class="anchor" href="#沙箱边界与宿主侧安全治理" aria-label="链接到本节">#</a></h2>
+<p>把第三方 MCP Server 返回的可执行 HTML/JavaScript 直接放进用户主应用里跑，如果不把隔离做死，后果比普通跨站脚本更严重。<code>SEP-1865</code> 和 <code>ext-apps</code> 的安全模型（宿主侧官方提供了 <code>@modelcontextprotocol/ext-apps</code> 的 <code>AppBridge</code> 与 <code>@mcp-ui/client</code> 组件）守住了四道关口：</p>
+<ol>
+<li><strong>强隔离 iframe 沙箱</strong>：iframe 无法访问父页面 DOM、无法读取宿主 Cookie 和 <code>localStorage</code>、无法顶层导航劫持父页面，也不能在父窗口上下文里执行脚本。</li>
+<li><strong>严格 CSP 与最小能力授权</strong>：除非资源的 <code>_meta.ui.csp</code> 明确声明且宿主安全策略放行，默认封死任意外域脚本加载与外联请求，防止界面偷偷把对话推送进来的敏感业务数据外传（Data Exfiltration）。类似 <code>sendOpenLink</code>、麦克风、剪贴板等宿主能力默认关闭，按需受控开放。</li>
+<li><strong>可审计的 JSON-RPC 桥接</strong>：UI 发起的每一次 <code>tools/call</code> 或上下文注入都必须经过宿主的 <code>postMessage</code> 桥接层。宿主可以完整记录审计日志、限制该 App 只能调用自身所属服务器的白名单工具，并对所有写操作强制弹人工确认框。</li>
+<li><strong>防界面侧间接提示注入</strong>：UI 回传给模型的上下文更新同样来自不可信的第三方代码。如果一个恶意 MCP App 在用户无感知的情况下偷偷往模型上下文里塞进隐藏指令（比如诱导模型去调另一台服务器的删除工具），宿主必须把 UI 上下文更新明确标示来源，并对跨服务器工具调用保持严格的人工审批门禁。</li>
+</ol>
+<p>说到这里，我们已经把 2027 年 MCP 运行时最亮眼的拼图全部摊开了：无状态 HTTP 内核、强类型契约与 Code Mode、MRTR 与 OAuth 2.1/企业 IdP、Skills、Tasks、Events 和 Apps。但 Philipp Schmid 在文章后半段特意泼了一盆很务实的冷水：这套体系还有三块硬骨头没啃完。下一章我们直面这些未解的工程缺口，把发现机制、意图可观测性和纵深安全攻击面一次拆透。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="10-events-always-on.html"><small>上一章</small><strong>常驻与多人协作代理：MCP Events</strong></a><a class="next" href="12-discovery-observability-security.html"><small>下一章</small><strong>未解难题：发现、可观测性与纵深安全</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：从狂热、退潮到 2027 拐点</a><a href="../chapters/01-evolution.html"><span>01</span>协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></a><a href="../chapters/02-stateless-http.html"><span>02</span>无状态内核与 HTTP 标准化</a><a href="../chapters/03-primitives-schemas.html"><span>03</span>核心原语与强类型契约</a><a href="../chapters/04-code-mode.html"><span>04</span>Code Mode：终结上下文膨胀与 N 轮串行调用</a><a href="../chapters/05-mrtr-elicitation.html"><span>05</span>多往返请求（MRTR）与无状态追问</a><a href="../chapters/06-oauth-auth.html"><span>06</span>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</a><a href="../chapters/07-extensions-framework.html"><span>07</span>扩展机制与治理边界</a><a href="../chapters/08-skills-over-mcp.html"><span>08</span>Skills 进入 MCP：<code>io.modelcontextprotocol/skills</code></a><a href="../chapters/09-tasks-async.html"><span>09</span>长程异步执行：MCP Tasks</a><a href="../chapters/10-events-always-on.html"><span>10</span>常驻与多人协作代理：MCP Events</a><a href="../chapters/11-mcp-apps.html"><span>11</span>产品原生智能体化：MCP Apps</a><a href="../chapters/12-discovery-observability-security.html"><span>12</span>未解难题：发现、可观测性与纵深安全</a><a href="../chapters/13-harness-as-mcp.html"><span>13</span>超越远程工具：把 Harness 做成 MCP Server 与架构反模式</a><a href="../chapters/14-mini-mcp-lab.html"><span>14</span>动手验证：零依赖 Python MCP 2027 教学运行时</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：规范索引、关键 SEP 速查表与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立架构研究，非官方文档 · MCP Spec 2026-07-28 · 快照 2bbace557bbf · 2026-11-27</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

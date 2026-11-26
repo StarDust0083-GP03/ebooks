@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 MCP 2026-07-28 正式规范与 2027 官方扩展栈的深度中文架构拆解"><meta name="author" content="独立规范研究">
+<title>无状态内核与 HTTP 标准化 · MCP 2027</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">MCP</span><span>MCP 2027 架构与工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 02</div><div class="rail-title">无状态内核与 HTTP 标准化</div><ol><li><a href="#每请求自包含-去掉-initialize-之后怎么协商版本">每请求自包含：去掉 initialize 之后怎么协商版本</a></li><li><a href="#http-请求头标准化与防拆包欺骗-sep-2243">HTTP 请求头标准化与防拆包欺骗（SEP-2243）</a></li><li><a href="#列表缓存-ttlms-cachescope-与变更失效-sep-2549">列表缓存：ttlMs、cacheScope 与变更失效（SEP-2549）</a></li><li><a href="#显式状态句柄与双传输一致性">显式状态句柄与双传输一致性</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 02 章</div><h1>无状态内核与 HTTP 标准化</h1><div class="chapter-meta">MCP Spec 2026-07-28 快照 2026-11-24 · 约 26 分钟</div></header><div class="prose"><p>2025 年把 MCP Server 放到企业 API 网关（如 Envoy、Nginx 或 Cloudflare Workers）后面时，运维团队最头疼的问题不是业务逻辑，而是流量全成了黑盒。所有请求都发向同一个 <code>POST /mcp</code> 路径，网关如果不把整段 JSON-RPC 请求体读进内存反序列化，就根本不知道这条请求是在调 <code>tools/list</code> 还是 <code>tools/call</code>，更不知道它要调哪个工具、访问哪个区域集群，限流、路由、WAF 审计和分区域灰度全都无从下手。再加上强制的 <code>initialize</code> 三步握手和 <code>Mcp-Session-Id</code> 粘性路由，一台普通无状态函数或标准 L7 负载均衡器根本接不住。</p>
+<p><code>2026-07-28</code> 规范通过四个紧密咬合的提案，彻底把 MCP 改造成了标准云原生 HTTP 工作负载：<code>SEP-2575</code> 去掉握手、把元数据放进每条请求；<code>SEP-2567</code> 去掉会话、用显式句柄替代；<code>SEP-2243</code> 把关键字段镜像到标准 HTTP 请求头；<code>SEP-2549</code> 给所有列表和读取结果加上 <code>ttlMs</code> 与 <code>cacheScope</code>。下面这张图对照了旧版有状态架构和 <code>2026-07-28</code> 无状态内核在请求链路上的差异。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 282" width="660" height="282" role="img" aria-label="2025 有状态粘性会话与 2026-07-28 无状态头路由对比">
+<title>2025 有状态粘性会话与 2026-07-28 无状态头路由对比</title>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+  </marker>
+</defs>
+<text x="12" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="12" font-weight="700" fill="var(--amber)" text-anchor="start">旧架构 (2025): 有状态粘性会话与连接绑定</text><rect x="12" y="28" width="192" height="74" rx="4" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="22" y="48" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--amber)" text-anchor="start">Client / Subagents</text><text x="22" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">新开连接须重跑 initialize</text><text x="22" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">重拉 O(N x M) tools/list</text><line x1="204" y1="65" x2="232" y2="65" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="234" y="28" width="192" height="74" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="244" y="48" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">粘性负载均衡器</text><text x="244" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">依赖 Mcp-Session-Id 路由</text><text x="244" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">GET SSE 常驻连接易超时</text><line x1="426" y1="65" x2="454" y2="65" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="456" y="28" width="192" height="74" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="466" y="48" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">单节点内存会话</text><text x="466" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">实例重启即丢会话状态</text><text x="466" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">列表结果跨会话不可缓存</text><line x1="12" y1="120" x2="648" y2="120" stroke="var(--line)" stroke-width="0.8" stroke-dasharray="4 4"/><text x="12" y="142" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="12" font-weight="700" fill="var(--forest)" text-anchor="start">新内核 (2026-07-28): 无状态头镜像与可缓存列表</text><rect x="12" y="152" width="192" height="92" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="22" y="172" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">Client + ListCache</text><text x="22" y="190" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">每请求携带 _meta 能力</text><text x="22" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">按 ttlMs/cacheScope 复用</text><text x="22" y="222" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">显式传递 basket_id 句柄</text><line x1="204" y1="198" x2="232" y2="198" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="234" y="152" width="192" height="92" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="244" y="172" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">标准 L7 网关 / CDN</text><text x="244" y="190" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">读 Mcp-Method / Mcp-Name</text><text x="244" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">按 Mcp-Param-* 路由限流</text><text x="244" y="222" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">无粘性会话，任意轮询</text><line x1="426" y1="198" x2="454" y2="198" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#arrow)"/><rect x="456" y="152" width="192" height="92" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="466" y="172" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">无状态副本 / Serverless</text><text x="466" y="190" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">校对头与 Body (-32020)</text><text x="466" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">按 Token 校验句柄权限</text><text x="466" y="222" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">subscriptions/listen 按需推</text><text x="12" y="266" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="400" fill="var(--muted)" text-anchor="start">核心变化: 去掉 Mcp-Session-Id 与 initialize，把状态显式化为业务句柄与可缓存元数据。</text>
+</svg><figcaption>2025 有状态粘性会话与 2026-07-28 无状态头路由对比</figcaption></figure>
+<p>图里上半部分展示的旧架构里，每一个新开的客户端或子代理都必须重走 <code>initialize</code> 并拉取不可跨会话缓存的列表，中间的网关被迫维护粘性会话，后端副本一旦重启就会直接丢失内存状态。下半部分的新内核里，客户端把协议版本与能力放进每条请求的 <code>_meta</code>，同时镜像到 HTTP 头，中间网关只需读取请求头就能直接路由和限流，后端任意无状态副本或 Serverless 实例都能独立完成验权和执行。</p>
+<h2 id="每请求自包含-去掉-initialize-之后怎么协商版本">每请求自包含：去掉 <code>initialize</code> 之后怎么协商版本<a class="anchor" href="#每请求自包含-去掉-initialize-之后怎么协商版本" aria-label="链接到本节">#</a></h2>
+<p>去掉 <code>initialize</code> 和 <code>notifications/initialized</code> 后，客户端可以不经握手直接发业务请求，或者在需要提前展示服务端能力时调用一次强制实现的 <code>server/discover</code>。每一条请求的参数 <code>_meta</code> 里都必须自包含以下元数据（源自 <code>SEP-2575</code> 与 <code>docs/specification/2026-07-28/basic/transports/streamable-http.mdx</code>）：</p>
+<ul>
+<li><code>io.modelcontextprotocol/protocolVersion</code>（必填）：本条请求遵循的协议版本，例如 <code>&quot;2026-07-28&quot;</code>。</li>
+<li><code>io.modelcontextprotocol/clientCapabilities</code>（必填）：本条请求周期内客户端声明支持的能力与扩展（例如 <code>elicitation</code>、<code>extensions</code>）。空对象 <code>{}</code> 表示不支持可选能力，服务端绝不能凭先前请求去猜测客户端能力。</li>
+<li><code>io.modelcontextprotocol/clientInfo</code>（建议每请求携带）：客户端软件名称和版本，用于日志与调试。</li>
+<li><code>io.modelcontextprotocol/logLevel</code>（可选）：替代已删除的 <code>logging/setLevel</code>，只有请求里显式带了这个字段，服务端才允许在响应流里发 <code>notifications/message</code>。</li>
+</ul>
+<p>服务端在响应的 <code>_meta</code> 里同样可以回传 <code>io.modelcontextprotocol/serverInfo</code>，规范特别提醒（<code>server/discover.mdx</code>）：<code>serverInfo</code> 是服务端自报的，未经协议校验，只用于界面显示、日志和排障，客户端不得拿它来做安全决策或改变协议行为。</p>
+<p>版本协商也变成了内联模式。客户端直接带自己偏好的版本发请求；如果服务端不支持，就返回 HTTP <code>400 Bad Request</code> 和 JSON-RPC 错误码 <code>-32022</code>（<code>UnsupportedProtocolVersionError</code>），并在 <code>error.data.supported</code> 数组里列出自己支持的版本，客户端挑一个双方共有的版本重试即可。如果客户端调用了服务端未实现的方法，服务端返回 HTTP <code>404 Not Found</code> 加上 JSON-RPC <code>-32601</code>（<code>Method not found</code>）。</p>
+<p><code>2026-07-28</code> 还专门划定了 JSON-RPC 服务端错误码的分配边界（<code>changelog.mdx</code>）：<code>-32000</code> 到 <code>-32019</code> 留给各 SDK 和具体实现自定义，<code>-32020</code> 到 <code>-32099</code> 保留给 MCP 规范本身，目前已经正式分配了三个高频错误码：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>错误码</th>
+<th>名称</th>
+<th>HTTP 状态码</th>
+<th>触发场景</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>-32020</code></td>
+<td><code>HeaderMismatch</code></td>
+<td><code>400 Bad Request</code></td>
+<td>必填 HTTP 头缺失、格式非法，或解码后的头值与 JSON-RPC Body 不一致</td>
+</tr>
+<tr>
+<td><code>-32021</code></td>
+<td><code>MissingRequiredClientCapability</code></td>
+<td><code>400 Bad Request</code></td>
+<td>请求需要某项客户端能力（如 <code>elicitation</code> 或 <code>io.modelcontextprotocol/tasks</code>），但请求 <code>_meta</code> 未声明</td>
+</tr>
+<tr>
+<td><code>-32022</code></td>
+<td><code>UnsupportedProtocolVersion</code></td>
+<td><code>400 Bad Request</code></td>
+<td>客户端请求的版本不被服务端支持，响应附带 <code>supported</code> 列表</td>
+</tr>
+</tbody></table></div>
+<h2 id="http-请求头标准化与防拆包欺骗-sep-2243">HTTP 请求头标准化与防拆包欺骗（<code>SEP-2243</code>）<a class="anchor" href="#http-请求头标准化与防拆包欺骗-sep-2243" aria-label="链接到本节">#</a></h2>
+<p>为了让反向代理、WAF 和可观测性系统无需解析请求体就能看见路由信息，Streamable HTTP 要求客户端在每条 POST 请求上镜像一组标准 HTTP 头（名称大小写不敏感，值大小写敏感）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>HTTP 请求头</th>
+<th>镜像来源字段</th>
+<th>必填范围</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>MCP-Protocol-Version</code></td>
+<td><code>params._meta[&quot;io.modelcontextprotocol/protocolVersion&quot;]</code></td>
+<td>所有 POST 请求</td>
+</tr>
+<tr>
+<td><code>Mcp-Method</code></td>
+<td><code>method</code></td>
+<td>所有 POST 请求</td>
+</tr>
+<tr>
+<td><code>Mcp-Name</code></td>
+<td><code>params.name</code>、<code>params.uri</code>（或 Tasks 扩展中的 <code>params.taskId</code>）</td>
+<td><code>tools/call</code>、<code>resources/read</code>、<code>prompts/get</code>、<code>tasks/*</code></td>
+</tr>
+<tr>
+<td><code>Mcp-Param-{Name}</code></td>
+<td><code>inputSchema</code> 中标注了 <code>&quot;x-mcp-header&quot;: &quot;{Name}&quot;</code> 的工具参数</td>
+<td>仅当对应参数存在且非 <code>null</code> 时</td>
+</tr>
+</tbody></table></div>
+<p>这里有一个很容易被忽略的安全细节：如果中间网关按 <code>Mcp-Param-Region: us-west1</code> 把请求放行到了美西集群，但攻击者在 JSON 请求体里偷偷把 <code>arguments.region</code> 改成了 <code>eu-central1</code>，就会出现经典的双重解析源不一致（Request Smuggling / Policy Bypass）。因此规范在 <code>Server Validation</code> 中定了一条死规矩：任何真正处理消息体的 MCP Server，都<strong>必须</strong>校对所有标准头与自定义 <code>Mcp-Param-*</code> 头的值是否与 Body 完全一致（整数比较按数值等价，例如 <code>42.0</code> 与 <code>42</code> 视为相等），只要对不上，立刻拒掉并返回 HTTP <code>400</code> 与 <code>-32020</code>（<code>HeaderMismatch</code>）。同时，中间网关如果基于镜像头做租户路由或限流，应当先检查 <code>MCP-Protocol-Version</code> 是否达到要求服务端强制校验的版本，否则绝不能盲信未校验的请求头。</p>
+<p>为了让非 ASCII 字符、换行符或首尾空格也能安全放进 HTTP 头（遵循 RFC 9110 可见 ASCII 范围 <code>0x21-0x7E</code>），<code>SEP-2243</code> 定义了一套统一的 Base64 哨兵编码格式：</p>
+<pre><code class="language-text">Mcp-Param-Greeting: =?base64?SGVsbG8sIOS4lueVjA==?=
+</code></pre>
+<p>当 <code>Mcp-Name</code> 或 <code>Mcp-Param-*</code> 的原始值包含非 ASCII 字符、控制字符、首尾空格，或者本身字面量就以 <code>=?base64?</code> 开头且以 <code>?=</code> 结尾时，客户端必须对 UTF-8 字节做 Base64 编码并套上小写哨兵前缀后缀；服务端校验前必须先解码再和 Body 比对。对于 <code>x-mcp-header</code> 注解，规范还划定了严格的静态可达边界：只能挂在 <code>string</code>、<code>integer</code>（JS 安全整数范围内）或 <code>boolean</code> 这三种原始类型上，禁止用于 <code>number</code> 浮点类型，且路径只能穿过纯 <code>properties</code> 链，不能穿过数组 <code>items</code>、<code>oneOf</code>/<code>anyOf</code>/<code>allOf</code>、<code>if</code>/<code>then</code>/<code>else</code> 或 <code>$ref</code>。如果服务端下发的某个工具定义违反了这些规则，Streamable HTTP 客户端必须把那个畸形工具从 <code>tools/list</code> 里剔除并记日志，而不影响同一服务器上的其他合法工具。而且服务端作者绝不能把密码、Token、PII 这类敏感参数标成 <code>x-mcp-header</code>，因为 HTTP 头对沿途所有代理和日志系统都是明文可见的。</p>
+<h2 id="列表缓存-ttlms-cachescope-与变更失效-sep-2549">列表缓存：<code>ttlMs</code>、<code>cacheScope</code> 与变更失效（<code>SEP-2549</code>）<a class="anchor" href="#列表缓存-ttlms-cachescope-与变更失效-sep-2549" aria-label="链接到本节">#</a></h2>
+<p>在无状态内核里，<code>server/discover</code>、<code>tools/list</code>、<code>prompts/list</code>、<code>resources/list</code>、<code>resources/templates/list</code> 和 <code>resources/read</code> 这六个操作返回 <code>resultType: &quot;complete&quot;</code> 时，都必须带上 <code>ttlMs</code> 和 <code>cacheScope</code> 两个缓存提示字段（而 MRTR 中间态 <code>input_required</code> 或携带 <code>inputResponses</code>/<code>requestState</code> 的重试结果绝对禁止缓存）。</p>
+<p><code>ttlMs</code> 是非负整数毫秒值，类似 HTTP 的 <code>Cache-Control: max-age</code>：客户端记录收到响应的本地时间 <code>t_received</code>，在 <code>now &lt; t_received + ttlMs</code> 期间直接复用缓存；<code>ttlMs: 0</code> 表示立刻过期。规范特意提醒，TTL 只是懒惰新鲜度提示，客户端不应该把它当成后台定时器到处空转轮询，而是在真正需要数据时再检查是否过期。</p>
+<p><code>cacheScope</code> 只有 <code>&quot;public&quot;</code> 和 <code>&quot;private&quot;</code> 两个值，直接决定多租户场景下会不会串数据：</p>
+<ul>
+<li><strong><code>&quot;public&quot;</code></strong>，响应不含用户特定数据，客户端、共享网关或代理可以跨不同调用方复用（例如所有用户看到的工具定义完全一致）。</li>
+<li><strong><code>&quot;private&quot;</code></strong>，响应依赖当前鉴权身份（比如按 OAuth Scope 过滤后的工具列表，或者用户私有资源内容），只能在同一个授权上下文内复用，换一个 Access Token 就必须隔离缓存。分页列表的所有页必须声明一致的 <code>cacheScope</code>。</li>
+</ul>
+<p>此外，服务端返回 <code>tools/list</code> 时<strong>应当</strong>保持确定性排序（Deterministic Ordering）。这不仅是为了客户端缓存稳定，更重要的是当工具清单注入 LLM 提示词时，稳定的顺序能显著提高大模型的 Prompt Cache 命中率。如果服务端同时支持推送通知，客户端可以通过 <code>POST subscriptions/listen</code> 订阅 <code>toolsListChanged</code> 等事件；一旦收到 <code>notifications/tools/list_changed</code> 或 <code>notifications/resources/updated</code>，客户端立刻把本地还没到 TTL 的缓存标为失效，实现低频兜底加实时刷新的组合。</p>
+<h2 id="显式状态句柄与双传输一致性">显式状态句柄与双传输一致性<a class="anchor" href="#显式状态句柄与双传输一致性" aria-label="链接到本节">#</a></h2>
+<p>删掉会话后，像购物车、数据库连接或浏览器实例这类跨调用状态怎么办？<code>SEP-2567</code> 和 <code>tools.mdx</code> 给出的答案很朴素：用普通工具返回值颁发显式句柄（比如 <code>create_basket</code> 返回 <code>basket_id: &quot;bsk_a1b2c3&quot;</code>），后续工具把 <code>basket_id</code> 当普通入参传回来。Linear 的 <code>create_issue</code>、Notion 的 <code>notion-create-pages</code>、GitHub 的 <code>create_pull_request</code> 和 Stripe 的 <code>create_customer</code> 早就这么干了。</p>
+<p>这里有一条安全底线必须分清：对<strong>已鉴权</strong>服务器，句柄只是资源名而不是通行证，服务端每次调用都必须校验 <code>(handle, auth_context)</code>，就像拿到一个 Google Doc 链接不代表你有权限打开它；只有对<strong>无鉴权</strong>服务器，句柄才不得不充当承载凭证（Bearer Token），此时必须用密码学随机源生成至少 128 位熵（如 UUIDv4）并设置明确过期时间，且把过期策略写进创建工具的 <code>description</code> 里让模型能看见。</p>
+<p>最后看看 <code>stdio</code> 与 Streamable HTTP 的关系。<code>2026-07-28</code> 坚持两套传输保持完全一致的无状态语义：<code>stdio</code> 同样去掉了握手，每行一条换行分隔的 JSON-RPC 消息，元数据全在 <code>_meta</code> 里，日志走 <code>stderr</code>。两者的核心区别只剩传输力学：</p>
+<ul>
+<li><strong>请求取消</strong>：Streamable HTTP 关闭该请求的 SSE 响应流即代表取消（不再发 <code>notifications/cancelled</code>）；<code>stdio</code> 共享同一对标准输入输出管道，所以仍需发 <code>notifications/cancelled</code> 指定请求 ID。</li>
+<li><strong>向下兼容探测</strong>：连接未知版本的旧服务时，Streamable HTTP 客户端可以直接发一条现代 POST 请求，如果收到 <code>400</code>/<code>404</code>/<code>405</code> 且响应体不是现代规范认可的 JSON-RPC 错误，再回退到 <code>initialize</code> 或老旧的 GET SSE 端点；<code>stdio</code> 没有 HTTP 状态码，规范建议客户端先发一条 <code>server/discover</code> 探针，收到 <code>DiscoverResult</code> 或现代版本错误就走新协议，收到其他错误或超时再回退 <code>initialize</code>。</li>
+</ul>
+<p>根据 2026 年 8 月更新的官方路线图（<code>docs/development/roadmap.mdx</code>），Transports 工作组下一步甚至计划探索 <strong>HTTP/2 over stdio</strong>，试图用一套统一的多路复用 HTTP 传输同时服务远程和本地子进程，再配合 ETag 扩展工具结果缓存。到那时，本地与远程传输层的双轨维护成本还会进一步压缩。</p>
+<p>传输层已经轻装上阵，但要让 Agent 在不撑爆上下文的前提下精准调用这些无状态接口，核心还要看工具、资源与提示词这三类原语的契约设计。下一章我们拆解它们的 Schema 约束与错误处理机制。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="01-evolution.html"><small>上一章</small><strong>协议演进史：从 2024-11-05 到 2026-07-28</strong></a><a class="next" href="03-primitives-schemas.html"><small>下一章</small><strong>核心原语与强类型契约</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：从狂热、退潮到 2027 拐点</a><a href="../chapters/01-evolution.html"><span>01</span>协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></a><a href="../chapters/02-stateless-http.html"><span>02</span>无状态内核与 HTTP 标准化</a><a href="../chapters/03-primitives-schemas.html"><span>03</span>核心原语与强类型契约</a><a href="../chapters/04-code-mode.html"><span>04</span>Code Mode：终结上下文膨胀与 N 轮串行调用</a><a href="../chapters/05-mrtr-elicitation.html"><span>05</span>多往返请求（MRTR）与无状态追问</a><a href="../chapters/06-oauth-auth.html"><span>06</span>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</a><a href="../chapters/07-extensions-framework.html"><span>07</span>扩展机制与治理边界</a><a href="../chapters/08-skills-over-mcp.html"><span>08</span>Skills 进入 MCP：<code>io.modelcontextprotocol/skills</code></a><a href="../chapters/09-tasks-async.html"><span>09</span>长程异步执行：MCP Tasks</a><a href="../chapters/10-events-always-on.html"><span>10</span>常驻与多人协作代理：MCP Events</a><a href="../chapters/11-mcp-apps.html"><span>11</span>产品原生智能体化：MCP Apps</a><a href="../chapters/12-discovery-observability-security.html"><span>12</span>未解难题：发现、可观测性与纵深安全</a><a href="../chapters/13-harness-as-mcp.html"><span>13</span>超越远程工具：把 Harness 做成 MCP Server 与架构反模式</a><a href="../chapters/14-mini-mcp-lab.html"><span>14</span>动手验证：零依赖 Python MCP 2027 教学运行时</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：规范索引、关键 SEP 速查表与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立架构研究，非官方文档 · MCP Spec 2026-07-28 · 快照 2bbace557bbf · 2026-11-27</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

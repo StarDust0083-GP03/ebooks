@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 MCP 2026-07-28 正式规范与 2027 官方扩展栈的深度中文架构拆解"><meta name="author" content="独立规范研究">
+<title>核心原语与强类型契约 · MCP 2027</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">MCP</span><span>MCP 2027 架构与工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 03</div><div class="rail-title">核心原语与强类型契约</div><ol><li><a href="#三大原语的控制权划分">三大原语的控制权划分</a></li><li><a href="#inputschema-outputschema-与-structuredcontent">inputSchema、outputSchema 与 structuredContent</a></li><li><a href="#原生多模态内容块与资源引用">原生多模态内容块与资源引用</a></li><li><a href="#sep-1303-把参数校验失败还给模型自纠错">SEP-1303：把参数校验失败还给模型自纠错</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 03 章</div><h1>核心原语与强类型契约</h1><div class="chapter-meta">MCP Spec 2026-07-28 快照 2026-11-24 · 约 16 分钟</div></header><div class="prose"><p>很多团队在 2025 年写完第一个 MCP Server 后，很快遇到两个让人哭笑不得的故障。第一个故障来自返回格式：工具把查询结果拼成一段自然语言文本塞回 <code>content</code>，结果上游字段多了一个逗号或者模型需要二次提取 ID 时，只能靠肉眼读字符串硬猜，一旦要做批量过滤或跨系统关联，失误率直线上升。第二个故障来自参数校验：用户说把机票订在 12 月 12 日，模型不小心填成了去年的年份 <code>&quot;12/12/2024&quot;</code>，服务端一看日期不对，直接扔出一个 JSON-RPC 协议错误 <code>-32602 (Invalid params)</code>；客户端把协议错误当成系统异常拦在外面，根本没告诉模型为什么错，模型只好盲目重试三遍一模一样的过去日期，最后任务彻底卡死。</p>
+<p>这两个坑分别在 <code>2025-06-18</code>、<code>2025-11-25</code> 和 <code>2026-07-28</code> 被逐一填平。正是这组看似不起眼的契约升级，让 MCP 工具从给人看的字符串拼接接口，变成了给程序和模型共同消费的强类型合约。</p>
+<h2 id="三大原语的控制权划分">三大原语的控制权划分<a class="anchor" href="#三大原语的控制权划分" aria-label="链接到本节">#</a></h2>
+<p>MCP 服务端暴露的核心原语一直保持克制，只有三类：Tools、Resources 和 Prompts。官方规范用控制权归属把它们的边界切得很清楚，免得团队把所有东西都一股脑塞成 Tool：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>原语</th>
+<th>默认控制权</th>
+<th>典型协议方法</th>
+<th>适用场景</th>
+<th>缓存与 MRTR 支持（<code>2026-07-28</code>）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Tools</strong></td>
+<td>模型控制（Model-controlled）</td>
+<td><code>tools/list</code>、<code>tools/call</code></td>
+<td>执行有副作用的操作、查库、调外部 API、触发计算</td>
+<td><code>tools/list</code> 支持 <code>ttlMs</code>/<code>cacheScope</code>；<code>tools/call</code> 支持 MRTR</td>
+</tr>
+<tr>
+<td><strong>Resources</strong></td>
+<td>应用驱动（Application-driven）</td>
+<td><code>resources/list</code>、<code>resources/templates/list</code>、<code>resources/read</code></td>
+<td>只读上下文数据（文件、库表结构、日志、Skill 文档、UI 模板），按 URI 寻址</td>
+<td>列表与读取均支持缓存；<code>resources/read</code> 支持 MRTR 与 URI 模板（RFC 6570）</td>
+</tr>
+<tr>
+<td><strong>Prompts</strong></td>
+<td>用户控制（User-controlled）</td>
+<td><code>prompts/list</code>、<code>prompts/get</code></td>
+<td>显式触发的工作流模板（如客户端里的 <code>/</code> 斜杠命令）</td>
+<td><code>prompts/list</code> 支持缓存；<code>prompts/get</code> 支持 MRTR</td>
+</tr>
+</tbody></table></div>
+<p>工具命名也有了明确规范（<code>SEP-986</code>）：名称长度应在 1 到 128 个字符之间，区分大小写，仅使用 ASCII 字母、数字、下划线、连字符和点号（例如 <code>getUser</code>、<code>DATA_EXPORT_v2</code>、<code>admin.tools.list</code>），避免空格和特殊符号。同时，规范在 <code>tools.mdx</code> 里特意提醒聚合代理和客户端：工具名只在单个服务器内唯一，不要拿自报的 <code>serverInfo.name</code> 做命名空间前缀来消歧，因为它不保证全局唯一，客户端应当使用自己分配的稳定服务器标识来隔离同名工具（例如两台服务器都叫 <code>search</code>）。</p>
+<p>另外，每个工具还可以附带可选的 <code>annotations</code>（描述是否只读、是否具有破坏性等）和 <code>icons</code>（<code>SEP-973</code>），但规范用醒目的安全警告提醒客户端：除非来自明确受信任的服务器，否则工具注解必须视作不可信输入，绝不能仅凭服务端自称只读就跳过破坏性操作的用户确认。</p>
+<h2 id="inputschema-outputschema-与-structuredcontent"><code>inputSchema</code>、<code>outputSchema</code> 与 <code>structuredContent</code><a class="anchor" href="#inputschema-outputschema-与-structuredcontent" aria-label="链接到本节">#</a></h2>
+<p>从 <code>2025-11-25</code>（<code>SEP-1613</code>）起，MCP 确立 JSON Schema 2020-12 为默认方言；到了 <code>2026-07-28</code>（<code>SEP-2106</code>），规范进一步放开了限制：<code>inputSchema</code> 和 <code>outputSchema</code> 允许使用完整的 JSON Schema 2020-12 关键字，且 <code>structuredContent</code> 不再局限于 JSON 对象，可以是任意合法 JSON 值（对象、数组、字符串、数字、布尔或 <code>null</code>），同时要求实现做好 <code>$ref</code> 解析以及组合关键字的资源上限防护，避免恶意深度嵌套 Schema 拖垮解析器。</p>
+<p>看一个带完整输入输出 Schema 的工具定义示例（遵循 <code>docs/specification/2026-07-28/server/tools.mdx</code>）：</p>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;list_open_issues&quot;,
+  &quot;title&quot;: &quot;List Open Issues&quot;,
+  &quot;description&quot;: &quot;Return open engineering issues for a team&quot;,
+  &quot;inputSchema&quot;: {
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;properties&quot;: {
+      &quot;team&quot;: { &quot;type&quot;: &quot;string&quot; },
+      &quot;state&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;enum&quot;: [&quot;open&quot;, &quot;closed&quot;] }
+    },
+    &quot;required&quot;: [&quot;team&quot;, &quot;state&quot;]
+  },
+  &quot;outputSchema&quot;: {
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;properties&quot;: {
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;items&quot;: {
+          &quot;type&quot;: &quot;object&quot;,
+          &quot;properties&quot;: {
+            &quot;identifier&quot;: { &quot;type&quot;: &quot;string&quot; },
+            &quot;title&quot;: { &quot;type&quot;: &quot;string&quot; },
+            &quot;priority&quot;: { &quot;type&quot;: &quot;integer&quot; }
+          },
+          &quot;required&quot;: [&quot;identifier&quot;, &quot;title&quot;, &quot;priority&quot;]
+        }
+      }
+    },
+    &quot;required&quot;: [&quot;items&quot;]
+  }
+}
+</code></pre>
+<p>当工具声明了 <code>outputSchema</code> 时，服务端<strong>必须</strong>返回符合该 Schema 的 <code>structuredContent</code>，客户端<strong>应当</strong>在消费前按该 Schema 做校验。为了兼容还不认识 <code>structuredContent</code> 的旧客户端，规范建议服务端在 <code>content</code> 里同步放一份序列化文本或可读摘要。这里需要注意规范特别划出的一条概念区分：<code>structuredContent</code> 是<strong>服务端</strong>产生的结构化工具返回值，与大语言模型推理侧的 Structured Outputs（受限解码生成 JSON）完全是两回事。</p>
+<p>不过，同时存在 <code>content</code> 和 <code>structuredContent</code> 也带来了一定心智负担和实现分歧。官方在 2026 年 8 月更新的路线图（<code>docs/development/roadmap.mdx</code> 第 4 项优先领域）里坦率承认了这一点：新成立的 Core Primitives 工作组计划在下个周期精简 <code>tools/call</code> 的返回形态，解决结构化与非结构化输出并存导致的保真度差异，并同步探索服务端渐进发现（Progressive Discovery）机制。</p>
+<h2 id="原生多模态内容块与资源引用">原生多模态内容块与资源引用<a class="anchor" href="#原生多模态内容块与资源引用" aria-label="链接到本节">#</a></h2>
+<p>相比只能输出纯文本字节流的 CLI，MCP 工具结果从协议层就原生支持混合内容块。单次 <code>tools/call</code> 的响应可以同时把机器可计算的字段放进 <code>structuredContent</code>，把给人或视觉/语音模型看的内容放进 <code>content</code> 数组里的独立块：</p>
+<ul>
+<li><strong>文本块（<code>type: &quot;text&quot;</code>）</strong>，承载可读摘要或向后兼容的 JSON 字符串。</li>
+<li><strong>图像块（<code>type: &quot;image&quot;</code>）与音频块（<code>type: &quot;audio&quot;</code>）</strong>，携带 Base64 数据与 <code>mimeType</code>（如 <code>image/png</code>、<code>audio/wav</code>）。</li>
+<li><strong>资源链接（<code>type: &quot;resource_link&quot;</code>）</strong>，只返回资源 URI、名称和描述，避免在工具结果里直接内联几十兆的大文件，让客户端按需调 <code>resources/read</code> 懒加载。规范提醒：工具返回的 <code>resource_link</code> 不一定出现在 <code>resources/list</code> 目录中。</li>
+<li><strong>内嵌资源（<code>type: &quot;resource&quot;</code>）</strong>，当数据量不大且需要随结果立即生效时，直接携带 <code>uri</code>、<code>mimeType</code> 和内容体。</li>
+</ul>
+<p>所有内容块都可以挂 <code>annotations</code>，用 <code>audience</code>（如 <code>[&quot;user&quot;]</code> 或 <code>[&quot;assistant&quot;]</code>）、<code>priority</code> 和 <code>lastModified</code> 提示宿主这段内容该给谁看。比如一张给人类复核的高清截图可以标成 <code>audience: [&quot;user&quot;]</code>，而不必白白浪费视觉模型的输入 Token。</p>
+<h2 id="sep-1303-把参数校验失败还给模型自纠错"><code>SEP-1303</code>：把参数校验失败还给模型自纠错<a class="anchor" href="#sep-1303-把参数校验失败还给模型自纠错" aria-label="链接到本节">#</a></h2>
+<p>回到本章开头那个订机票填错年份的死循环。<code>SEP-1303</code> 在 <code>2025-11-25</code> 落地并延续到 <code>2026-07-28</code>，把工具错误严格划成了两类，核心判据只有一条：<strong>模型看到这条报错后能不能自己改参数修好</strong>。</p>
+<ol>
+<li><strong>协议错误（Protocol Errors）</strong>，走标准 JSON-RPC <code>error</code> 对象，用于请求框架本身坏了或模型很难自修的问题，包括：调用了不存在的工具名（<code>-32602</code>）、请求外层不符合 <code>CallToolRequest</code> 结构、HTTP 头与 Body 不匹配（<code>-32020</code>）、服务端内部崩溃（<code>-32603</code>）。客户端可以选择直接拦截，不一定会喂给模型。</li>
+<li><strong>工具执行错误（Tool Execution Errors）</strong>，走正常的 JSON-RPC <code>result</code> 对象，带上 <code>&quot;resultType&quot;: &quot;complete&quot;</code> 和 <code>&quot;isError&quot;: true</code>，把清晰可执行的修复提示写在 <code>content</code> 里。覆盖三类场景：外部 API 调用失败、<strong>所有输入参数校验错误</strong>（格式不对、日期在过去、枚举越界、必填字段缺失），以及业务逻辑错误（如句柄已过期、余额不足）。</li>
+</ol>
+<p>规范明确要求客户端<strong>应当</strong>把 <code>isError: true</code> 的工具执行错误完整交给模型。回到订机票的例子，服务端返回：</p>
+<pre><code class="language-json">{
+  &quot;jsonrpc&quot;: &quot;2.0&quot;,
+  &quot;id&quot;: 4,
+  &quot;result&quot;: {
+    &quot;resultType&quot;: &quot;complete&quot;,
+    &quot;content&quot;: [
+      {
+        &quot;type&quot;: &quot;text&quot;,
+        &quot;text&quot;: &quot;Invalid departure date: must be in the future. Current date is 2026-11-26.&quot;
+      }
+    ],
+    &quot;isError&quot;: true
+  }
+}
+</code></pre>
+<p>模型看到当前日期提示后，下一轮马上就能把参数修正为合法日期并完成预订，不再需要人工打断。类似地，前面提到的显式状态句柄如果过期了，服务端也应当用 <code>isError: true</code> 明确回复 <code>&quot;basket bsk_a1b2c3 has expired&quot;</code>，引导模型重新调用创建工具，而不是扔一个冰冷的 <code>&quot;invalid argument&quot;</code>。</p>
+<p>无状态传输、强类型 <code>inputSchema</code>/<code>outputSchema</code>、<code>structuredContent</code> 多模态返回和可自愈的错误边界都齐备之后，客户端执行工具的方式迎来了质变。下一章我们看 Phil Schmid 文章里的第一个重头戏：Code Mode 如何借着这套强类型契约，彻底改写 Agent 调用 MCP 的成本曲线。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="02-stateless-http.html"><small>上一章</small><strong>无状态内核与 HTTP 标准化</strong></a><a class="next" href="04-code-mode.html"><small>下一章</small><strong>Code Mode：终结上下文膨胀与 N 轮串行调用</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：从狂热、退潮到 2027 拐点</a><a href="../chapters/01-evolution.html"><span>01</span>协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></a><a href="../chapters/02-stateless-http.html"><span>02</span>无状态内核与 HTTP 标准化</a><a href="../chapters/03-primitives-schemas.html"><span>03</span>核心原语与强类型契约</a><a href="../chapters/04-code-mode.html"><span>04</span>Code Mode：终结上下文膨胀与 N 轮串行调用</a><a href="../chapters/05-mrtr-elicitation.html"><span>05</span>多往返请求（MRTR）与无状态追问</a><a href="../chapters/06-oauth-auth.html"><span>06</span>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</a><a href="../chapters/07-extensions-framework.html"><span>07</span>扩展机制与治理边界</a><a href="../chapters/08-skills-over-mcp.html"><span>08</span>Skills 进入 MCP：<code>io.modelcontextprotocol/skills</code></a><a href="../chapters/09-tasks-async.html"><span>09</span>长程异步执行：MCP Tasks</a><a href="../chapters/10-events-always-on.html"><span>10</span>常驻与多人协作代理：MCP Events</a><a href="../chapters/11-mcp-apps.html"><span>11</span>产品原生智能体化：MCP Apps</a><a href="../chapters/12-discovery-observability-security.html"><span>12</span>未解难题：发现、可观测性与纵深安全</a><a href="../chapters/13-harness-as-mcp.html"><span>13</span>超越远程工具：把 Harness 做成 MCP Server 与架构反模式</a><a href="../chapters/14-mini-mcp-lab.html"><span>14</span>动手验证：零依赖 Python MCP 2027 教学运行时</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：规范索引、关键 SEP 速查表与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立架构研究，非官方文档 · MCP Spec 2026-07-28 · 快照 2bbace557bbf · 2026-11-27</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

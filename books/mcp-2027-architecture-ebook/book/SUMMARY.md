@@ -1,0 +1,18 @@
+# 目录
+
+0. [前言：从狂热、退潮到 2027 拐点](chapters/00-preface.md)
+1. [协议演进史：从 `2024-11-05` 到 `2026-07-28`](chapters/01-evolution.md)
+2. [无状态内核与 HTTP 标准化](chapters/02-stateless-http.md)
+3. [核心原语与强类型契约](chapters/03-primitives-schemas.md)
+4. [Code Mode：终结上下文膨胀与 N 轮串行调用](chapters/04-code-mode.md)
+5. [多往返请求（MRTR）与无状态追问](chapters/05-mrtr-elicitation.md)
+6. [身份与授权体系：OAuth 2.1、CIMD 与企业 IdP](chapters/06-oauth-auth.md)
+7. [扩展机制与治理边界](chapters/07-extensions-framework.md)
+8. [Skills 进入 MCP：`io.modelcontextprotocol/skills`](chapters/08-skills-over-mcp.md)
+9. [长程异步执行：MCP Tasks](chapters/09-tasks-async.md)
+10. [常驻与多人协作代理：MCP Events](chapters/10-events-always-on.md)
+11. [产品原生智能体化：MCP Apps](chapters/11-mcp-apps.md)
+12. [未解难题：发现、可观测性与纵深安全](chapters/12-discovery-observability-security.md)
+13. [超越远程工具：把 Harness 做成 MCP Server 与架构反模式](chapters/13-harness-as-mcp.md)
+14. [动手验证：零依赖 Python MCP 2027 教学运行时](chapters/14-mini-mcp-lab.md)
+- [附录：规范索引、关键 SEP 速查表与核验命令](chapters/appendix-sources.md)

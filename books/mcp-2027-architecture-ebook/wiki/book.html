@@ -1,0 +1,1885 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 MCP 2026-07-28 正式规范与 2027 官方扩展栈的深度中文架构拆解"><meta name="author" content="独立规范研究">
+<title>离线合订本 · MCP 2027</title>
+<style>@font-face{font-family:BookSerif;src:local("Charter"),local("Bitstream Charter");font-display:swap}
+:root{color-scheme:light;--paper:#f6f1e7;--paper-2:#ebe3d4;--ink:#20251f;--muted:#686d64;--forest:#174f42;--amber:#8f451f;--line:#cbc2b2;--code:#18231f;--code-ink:#e8eadf;--reader-size:20px;--progress:0%;--serif:BookSerif,"Source Han Serif SC","Noto Serif CJK SC","Songti SC",serif;--sans:"IBM Plex Sans","Noto Sans CJK SC",system-ui,sans-serif;--mono:"IBM Plex Mono","SFMono-Regular",Consolas,monospace}
+:root[data-theme="dark"]{color-scheme:dark;--paper:#171b18;--paper-2:#202720;--ink:#e5e1d6;--muted:#a6aa9e;--forest:#78b9a5;--amber:#f0a26b;--line:#39423b;--code:#0f1311;--code-ink:#e2e8df}
+:root[data-theme="light"]{color-scheme:light}
+@media(prefers-color-scheme:dark){:root[data-theme="auto"]{color-scheme:dark;--paper:#171b18;--paper-2:#202720;--ink:#e5e1d6;--muted:#a6aa9e;--forest:#78b9a5;--amber:#f0a26b;--line:#39423b;--code:#0f1311;--code-ink:#e2e8df}}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;background:var(--paper)}
+body{margin:0;color:var(--ink);background:var(--paper);font-family:var(--serif);text-rendering:optimizeLegibility}
+a{color:var(--forest);text-decoration-thickness:.07em;text-underline-offset:.18em}
+a:hover{color:var(--amber)}
+button,input{font:inherit}
+button{color:inherit}
+.skip{position:fixed;left:1rem;top:-5rem;z-index:99;padding:.7rem 1rem;background:var(--ink);color:var(--paper)}
+.skip:focus{top:1rem}
+.progress{position:fixed;z-index:20;inset:0 0 auto;height:3px;background:linear-gradient(90deg,var(--amber) var(--progress),transparent 0)}
+.topbar{height:62px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 max(20px,calc((100vw - 1180px)/2));font-family:var(--sans);position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--paper) 94%,transparent);backdrop-filter:blur(10px)}
+.brand{display:flex;align-items:center;gap:12px;color:var(--ink);text-decoration:none;font-weight:700;letter-spacing:-.02em}
+.brand-mark{display:grid;place-items:center;width:31px;height:31px;border:1px solid var(--forest);color:var(--forest);font-family:var(--mono);font-size:11px;transform:rotate(-2deg)}
+.tools{display:flex;align-items:center;gap:4px}
+.tool-button{border:0;background:transparent;min-width:42px;min-height:42px;padding:0 10px;cursor:pointer;color:var(--muted);font-family:var(--sans);font-size:13px}
+.tool-button:hover,.tool-button:focus-visible{color:var(--ink);background:var(--paper-2);outline:none}
+main{min-height:calc(100vh - 62px)}
+.hero{max-width:1180px;margin:auto;padding:clamp(60px,10vw,132px) 24px 70px;display:grid;grid-template-columns:minmax(0,1.35fr) minmax(260px,.65fr);gap:clamp(40px,8vw,110px);border-bottom:1px solid var(--line)}
+.kicker{font:600 12px/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--amber);margin:0 0 24px}
+.hero h1{font-size:clamp(44px,7vw,88px);line-height:.98;letter-spacing:-.055em;font-weight:600;margin:0;max-width:850px}
+.hero h1 em{font-style:normal;color:var(--forest)}
+.dek{font-size:clamp(20px,2.1vw,27px);line-height:1.5;color:var(--muted);max-width:760px;margin:30px 0 0}
+.hero-aside{align-self:end;border-left:1px solid var(--line);padding-left:28px;font:14px/1.65 var(--sans);color:var(--muted)}
+.hero-aside strong{display:block;color:var(--ink);font-size:15px;margin-bottom:8px}
+.snapshot{display:grid;grid-template-columns:auto 1fr;gap:5px 16px;margin-top:22px;font-family:var(--mono);font-size:11px}.snapshot dt{color:var(--amber)}.snapshot dd{margin:0;color:var(--ink);overflow-wrap:anywhere}
+.home-grid{max-width:1180px;margin:auto;padding:62px 24px 100px;display:grid;grid-template-columns:220px 1fr;gap:clamp(38px,7vw,90px)}
+.home-intro{font:14px/1.7 var(--sans);color:var(--muted);position:sticky;top:95px;align-self:start}.home-intro h2{font:700 14px/1.2 var(--sans);color:var(--ink);margin:0 0 13px}.home-intro a{display:inline-block;margin-top:10px}
+.contents{border-top:2px solid var(--ink)}
+.chapter-row{display:grid;grid-template-columns:54px 1fr auto;gap:20px;align-items:baseline;padding:20px 4px;border-bottom:1px solid var(--line);text-decoration:none;color:var(--ink)}
+.chapter-row:hover{color:var(--ink);background:var(--paper-2)}
+.chapter-no{font:12px/1 var(--mono);color:var(--amber)}
+.chapter-row h3{font-size:clamp(19px,2vw,25px);line-height:1.25;margin:0;font-weight:600;letter-spacing:-.02em}
+.chapter-row p{font:13px/1.4 var(--sans);color:var(--muted);margin:4px 0 0}
+.arrow{font-family:var(--sans);color:var(--forest)}
+.reader-layout{display:grid;grid-template-columns:minmax(180px,260px) minmax(0,860px);gap:clamp(40px,7vw,100px);max-width:1260px;margin:auto;padding:58px 24px 120px}
+.chapter-rail{font-family:var(--sans);font-size:13px;color:var(--muted);position:sticky;top:100px;align-self:start;max-height:calc(100vh - 130px);overflow:auto;padding-right:15px}.rail-label{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--amber);margin-bottom:16px}.rail-title{font:600 16px/1.35 var(--serif);color:var(--ink);margin-bottom:22px}.chapter-rail ol{padding:0;margin:0;list-style:none;border-top:1px solid var(--line)}.chapter-rail li{border-bottom:1px solid var(--line)}.chapter-rail li a{display:block;padding:10px 2px;text-decoration:none;color:var(--muted)}.chapter-rail li a:hover{color:var(--forest)}
+.chapter{min-width:0}.chapter-head{padding-bottom:36px;border-bottom:1px solid var(--line);margin-bottom:42px}.chapter-number{font:600 12px/1 var(--sans);letter-spacing:.14em;color:var(--amber);text-transform:uppercase}.chapter-head h1{font-size:clamp(37px,5.5vw,64px);line-height:1.06;letter-spacing:-.045em;margin:15px 0 0;font-weight:600}.chapter-meta{font:13px/1.6 var(--sans);color:var(--muted);margin-top:18px}
+.prose{font-size:var(--reader-size);line-height:1.86;letter-spacing:.005em}.prose>p:first-of-type{font-size:calc(var(--reader-size) * 1.12);line-height:1.72}.prose h2{font-size:clamp(27px,3.4vw,38px);line-height:1.25;letter-spacing:-.025em;margin:2.1em 0 .75em;padding-top:.2em}.prose h3{font-size:1.18em;line-height:1.4;margin:1.8em 0 .55em}.anchor{margin-left:.35em;color:var(--muted);font:400 .55em var(--sans);text-decoration:none;opacity:0}.prose h2:hover .anchor,.prose h3:hover .anchor,.anchor:focus{opacity:1}.prose p{margin:0 0 1.25em}.prose strong{font-weight:700}.prose ul,.prose ol{margin:0 0 1.4em;padding-left:1.4em}.prose li{padding-left:.3em;margin:.35em 0}.prose li::marker{color:var(--amber)}.prose blockquote{margin:2em 0;padding:.4em 0 .4em 1.3em;border-left:3px solid var(--amber);color:var(--muted);font-style:normal}.prose hr{border:0;border-top:1px solid var(--line);margin:3em 0}
+.prose code{font:0.82em/1.45 var(--mono);background:var(--paper-2);padding:.1em .35em;border-radius:2px;overflow-wrap:anywhere}.prose pre{position:relative;margin:1.8em 0 2em;padding:22px 24px;background:var(--code);color:var(--code-ink);overflow:auto;border-radius:2px;box-shadow:inset 4px 0 var(--forest)}.prose pre code{font-size:13px;line-height:1.65;background:transparent;padding:0;white-space:pre;overflow-wrap:normal}.copy{position:absolute;right:8px;top:8px;border:1px solid #52615a;background:#222e29;color:#dfe6dd;padding:5px 9px;font:11px var(--sans);cursor:pointer}.copy:hover{background:#35463f}
+.table-wrap{overflow-x:auto;margin:1.8em 0}.prose table{width:100%;border-collapse:collapse;font:14px/1.55 var(--sans);min-width:530px}.prose th{text-align:left;color:var(--ink);border-bottom:2px solid var(--ink);padding:10px 12px}.prose td{border-bottom:1px solid var(--line);padding:10px 12px;vertical-align:top}.prose tr:hover td{background:var(--paper-2)}
+.chapter-nav{display:grid;grid-template-columns:1fr 1fr;gap:18px;border-top:1px solid var(--line);margin-top:70px;padding-top:26px;font-family:var(--sans)}.chapter-nav a{text-decoration:none;padding:16px 0}.chapter-nav small{display:block;color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:5px}.chapter-nav strong{font-size:15px}.chapter-nav .next{text-align:right;grid-column:2}
+.menu-panel{width:min(520px,calc(100vw - 24px));max-height:calc(100vh - 24px);border:1px solid var(--line);background:var(--paper);color:var(--ink);padding:0;margin:12px 12px 12px auto}.menu-panel::backdrop{background:rgba(8,12,9,.56)}.menu-head{position:sticky;top:0;background:var(--paper);display:flex;justify-content:space-between;align-items:center;padding:17px 20px;border-bottom:1px solid var(--line);font:600 14px var(--sans)}.menu-list{padding:10px 20px 30px}.menu-list a{display:grid;grid-template-columns:36px 1fr;gap:10px;padding:12px 0;border-bottom:1px solid var(--line);text-decoration:none;color:var(--ink);font-size:16px}.menu-list span{font:11px var(--mono);color:var(--amber)}
+.search-page{max-width:930px;margin:auto;padding:70px 24px 120px}.search-page h1{font-size:clamp(42px,6vw,72px);letter-spacing:-.045em;margin:0 0 35px}.search-input{width:100%;border:0;border-bottom:2px solid var(--ink);background:transparent;color:var(--ink);font:clamp(22px,4vw,38px)/1.4 var(--serif);padding:10px 0;outline:none}.search-input:focus{border-color:var(--amber)}.search-hint{font:15px/1.7 var(--sans);color:var(--muted);margin-top:30px}.search-hit a{display:grid;grid-template-columns:52px 1fr;text-decoration:none;color:var(--ink);border-bottom:1px solid var(--line);padding:23px 0}.search-hit span{font:11px var(--mono);color:var(--amber);grid-row:1/3}.search-hit h2{font-size:23px;margin:0}.search-hit p{font:14px/1.6 var(--sans);color:var(--muted);margin:7px 0 0}.search-hit a:hover{background:var(--paper-2)}
+.site-footer{border-top:1px solid var(--line);padding:28px 24px;text-align:center;font:12px/1.6 var(--sans);color:var(--muted)}
+@media(max-width:820px){.hero{grid-template-columns:1fr;padding-top:65px}.hero-aside{border-left:0;border-top:1px solid var(--line);padding:22px 0 0}.home-grid{grid-template-columns:1fr}.home-intro{position:static}.reader-layout{display:block;padding-top:38px}.chapter-rail{display:none}.topbar{padding:0 12px}.brand span:last-child{display:none}.chapter-row{grid-template-columns:42px 1fr}.chapter-row .arrow{display:none}}
+@media(max-width:520px){.hero{padding-left:18px;padding-right:18px}.hero h1{font-size:43px}.home-grid,.reader-layout,.search-page{padding-left:18px;padding-right:18px}.chapter-head h1{font-size:38px}.prose{line-height:1.78}.prose pre{margin-left:-18px;margin-right:-18px;border-radius:0;padding:20px 18px}.chapter-nav{grid-template-columns:1fr}.chapter-nav .next{grid-column:1;text-align:left}.chapter-row{padding:17px 0}.tool-button{padding:0 7px;min-width:38px}.theme-label{display:none}}
+@media print{.topbar,.progress,.skip,.chapter-rail,.chapter-nav,.menu-panel,.site-footer,.copy{display:none!important}.reader-layout{display:block;max-width:none;padding:0}.chapter{max-width:none}.prose{font-size:11pt;color:#000}.prose pre{white-space:pre-wrap;break-inside:avoid}.prose a{color:#000}.chapter-head{margin-top:0}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+.volume{display:block;max-width:960px}.volume-cover{padding:80px 0 110px;border-bottom:1px solid var(--line);line-height:1.8}.volume-cover h1{font-size:54px;font-weight:600;margin:30px 0 0;letter-spacing:0}.volume-cover h2{font-size:32px;font-weight:400;margin-top:0}.volume-cover p{overflow-wrap:anywhere}.volume-toc{padding:40px 0;line-height:2}.book-section{margin-top:100px}.prose details{margin:1.8em 0;padding:18px 0;border-block:1px solid var(--line)}.prose summary{cursor:pointer;font:500 16px/1.6 var(--sans)}.prose details[open] summary{margin-bottom:16px}.chapter-head h1,.hero h1{letter-spacing:0}.tool-button{min-width:44px;min-height:44px}a:focus-visible,button:focus-visible{outline:2px solid var(--forest);outline-offset:3px}
+@media print{@page{size:A5;margin:16mm 14mm 18mm}html,body{background:white!important;color:#222!important}.volume{padding:0}.volume-cover{break-after:page;padding:32mm 0 0;border:0;min-height:140mm}.volume-cover h1{font-size:30pt}.volume-cover h2{font-size:18pt}.volume-cover p{font-size:10pt}.volume-toc{break-after:page;font-size:10pt;line-height:1.85;padding:0}.volume-toc h1{font-size:20pt}.book-section{break-before:page;margin:0}.chapter-head{padding-bottom:6mm;margin-bottom:8mm;break-after:avoid}.chapter-head h1{font-size:25pt}.chapter-number{font-size:9pt}.prose{font-size:10.5pt;line-height:1.75;orphans:3;widows:3}.prose>p:first-of-type{font-size:11pt}.prose h2{font-size:16pt;margin:1.4em 0 .7em;break-after:avoid}.prose h3{font-size:12pt;break-after:avoid}.prose table{min-width:0;font-size:8pt;table-layout:fixed}.prose td,.prose th{padding:6px;overflow-wrap:anywhere}.table-wrap{overflow:visible}.prose pre{background:#f2f2ec;color:#222;padding:10px;box-shadow:none;margin:10px 0;break-inside:auto}.prose pre code{white-space:pre-wrap;overflow-wrap:anywhere;font-size:7.5pt;line-height:1.6}.prose code{background:none;font-size:.8em}.prose ul{padding-left:1em}.prose li{overflow-wrap:anywhere}.prose a{text-decoration:none;color:#222}.prose details{font-size:9pt}.anchor{display:none}.book-section .prose li a{font-size:9pt}}
+.concept-diagram{margin:2em 0;overflow-x:auto;padding:18px 0;border-block:1px solid var(--line)}.concept-diagram svg{display:block;width:100%;min-width:620px;height:auto;color:var(--forest);font-family:var(--sans)}.concept-diagram figcaption{font:13px/1.5 var(--sans);color:var(--muted);margin-top:8px}
+
+/* ebook-reader-polish v1 */
+:root{--eb-light-accent:#174f42;--eb-dark-accent:#9bc8b3}
+/* Shared reading refinements. Embedded in each book so offline copies stay portable. */
+@media screen {
+  :root {
+    --eb-accent:var(--forest,var(--accent,var(--brand,#1b365d)));
+    --eb-line:var(--line,var(--rule,#d8d5c9));
+    --eb-panel:var(--paper-2,var(--paper-deep,var(--panel,#eeece2)));
+  }
+  html {scroll-padding-top:88px;scrollbar-color:var(--eb-line) var(--paper);scrollbar-width:thin}
+  :root[data-theme="light"] {color-scheme:light;--paper:#faf8f2;--paper-2:#f0ece2;--paper-deep:#f0ece2;--panel:#f0ece2;--ink:#262b27;--muted:#5d665e;--line:#d4d8ce;--rule:#d4d8ce;--code:#f0ece2;--code-ink:#283b33;--forest:var(--eb-light-accent,#29564c);--accent:var(--eb-light-accent,#29564c);--brand:var(--eb-light-accent,#29564c)}
+  :root[data-theme="dark"] {color-scheme:dark;--paper:#171d19;--paper-2:#222b24;--paper-deep:#222b24;--panel:#222b24;--ink:#e3e7de;--muted:#b0bbad;--line:#455044;--rule:#455044;--code:#202a24;--code-ink:#e3e7de;--forest:var(--eb-dark-accent,#9bc8b3);--accent:var(--eb-dark-accent,#9bc8b3);--brand:var(--eb-dark-accent,#9bc8b3)}
+  @media(prefers-color-scheme:dark) {:root:not([data-theme="light"]):not([data-theme="dark"]){color-scheme:dark;--paper:#171d19;--paper-2:#222b24;--paper-deep:#222b24;--panel:#222b24;--ink:#e3e7de;--muted:#b0bbad;--line:#455044;--rule:#455044;--code:#202a24;--code-ink:#e3e7de;--forest:var(--eb-dark-accent,#9bc8b3);--accent:var(--eb-dark-accent,#9bc8b3);--brand:var(--eb-dark-accent,#9bc8b3)}}
+  body {font-variant-numeric:tabular-nums;overflow-wrap:break-word}
+  .layout code,.layout pre {background:var(--eb-panel);color:var(--ink)}
+  .layout th {background:var(--eb-panel)}
+  .layout blockquote {border-left-width:1px}
+  .reading .lesson-note,.reading .book-diagram {background:var(--eb-panel)}
+  ::selection {background:color-mix(in srgb,var(--eb-accent) 22%,var(--paper));color:var(--ink)}
+  input {caret-color:var(--eb-accent)}
+  h1,h2,h3,h4 {text-wrap:balance;letter-spacing:0}
+  p,li {text-wrap:pretty}
+  .kicker,.eyebrow {display:none}
+  .topbar {background:var(--paper);backdrop-filter:none;min-height:64px;height:auto;gap:12px}
+  .brand {letter-spacing:0;min-width:0}
+  .brand-mark {transform:none;border:0;font-size:14px;font-weight:600;white-space:nowrap;min-width:44px;width:auto}
+  .hero {padding-top:64px;padding-bottom:48px;gap:56px}
+  .hero h1 {font-size:clamp(36px,4.5vw,58px);line-height:1.25;letter-spacing:0}
+  .hero .dek {font-size:21px;line-height:1.8;margin-top:22px;max-width:34em}
+  .hero-aside {font-size:14px;line-height:1.8;border-left:1px solid var(--eb-line)}
+  .home-grid {padding-top:42px}
+  .home-intro {font-size:15px;line-height:1.8}
+  .chapter-row {gap:18px;padding:21px 4px;transition:background-color 120ms ease-out}
+  .chapter-row h3 {font-size:22px;line-height:1.5;letter-spacing:0}
+  .chapter-row p {font-size:14px;line-height:1.7;margin-top:6px}
+  .chapter-row:focus-visible {outline-offset:-2px}
+  .reader-layout {grid-template-columns:220px minmax(0,780px);gap:64px;padding-top:44px}
+  .chapter-rail {font-size:14px;line-height:1.65;top:96px;max-height:calc(100dvh - 120px)}
+  .rail-label {letter-spacing:.03em}
+  .rail-title {font-size:17px;line-height:1.65}
+  .chapter-rail li a {padding:11px 4px}
+  .chapter-rail a[aria-current="location"],nav.toc>a[aria-current="location"] {color:var(--eb-accent);font-weight:600;text-decoration:underline;text-underline-offset:5px}
+  .chapter-head {padding-bottom:28px;margin-bottom:32px}
+  .chapter-head h1 {font-size:clamp(32px,3.6vw,46px);line-height:1.4;letter-spacing:0}
+  .chapter-meta {font-size:14px;line-height:1.8}
+  .chapter-number {letter-spacing:.02em}
+  .prose,.content,.reading {line-height:1.9;letter-spacing:0}
+  .prose>p:first-of-type {font-size:inherit;line-height:inherit}
+  .prose p,.content p,.reading p {margin-bottom:1.25em}
+  .prose h2,.content h2,.reading h2 {font-size:1.45em;line-height:1.5;letter-spacing:0;margin-top:2.1em;margin-bottom:.7em;border-left:0;padding-left:0}
+  .prose h3,.content h3,.reading h3 {font-size:1.15em;line-height:1.6}
+  .prose blockquote,.reading blockquote {font-style:normal;border-left-width:1px}
+  .anchor {opacity:.55;padding:4px}
+  .table-wrap {max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-width:thin;margin:1.7em 0}
+  .table-wrap table {min-width:560px;font-size:15px;line-height:1.75;table-layout:auto}
+  .table-wrap:focus-visible,pre:focus-visible {outline:2px solid var(--eb-accent);outline-offset:4px}
+  pre {max-width:100%;tab-size:4;overscroll-behavior-inline:contain;scrollbar-width:thin;box-shadow:none}
+  .prose pre,.content pre {padding:54px 22px 22px}
+  .prose pre code,.content pre code {font-size:14px;line-height:1.8}
+  .copy {min-height:44px;min-width:52px;top:5px;right:8px;font-size:12px;border-color:color-mix(in srgb,var(--code-ink,var(--ink)) 35%,transparent);background:var(--code);color:var(--code-ink,var(--ink))}
+  .book {width:min(100% - 48px,780px);padding-top:46px}
+  .home-title {font-size:clamp(34px,4.5vw,52px);line-height:1.3;letter-spacing:0}
+  .content h1 {font-size:clamp(30px,3.5vw,42px);line-height:1.45}
+  .deck {line-height:1.85}
+  .resume {box-shadow:none;border-block:1px solid var(--eb-line);padding:20px 0;background:transparent}
+  .toolbar {display:none}
+  .control,.tool-button {min-height:44px;min-width:44px;font-size:14px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none}
+  [data-reader-theme] {appearance:none;background:transparent;border:1px solid var(--eb-line);color:var(--muted);border-radius:3px;padding:8px 10px;cursor:pointer;font:14px/1.6 var(--sans,"Noto Sans CJK SC",sans-serif)}
+  button,a,input,summary {touch-action:manipulation}
+  a:focus-visible,button:focus-visible,summary:focus-visible,input:focus-visible {outline:2px solid var(--eb-accent);outline-offset:3px}
+  .search-input {font-size:20px;min-height:52px;border-radius:2px}
+  .search-page h1 {font-size:clamp(32px,4vw,48px);line-height:1.4;letter-spacing:0}
+  .search-hit h2 {line-height:1.6}
+  .reader-book-toc {position:sticky;top:28px;align-self:start;max-height:calc(100dvh - 60px);overflow:auto}
+  .reader-book-toc>summary {display:none}
+  .reader-book-toc nav.toc {position:static;max-height:none}
+  .reader-mobile-toc {display:none}
+  .reader-mobile-toc summary {min-height:48px;cursor:pointer;display:flex;align-items:center;font:500 15px/1.7 "Noto Sans CJK SC",sans-serif}
+  .reader-mobile-toc ol {margin:0 0 18px;padding-left:22px;font:15px/1.8 "Noto Sans CJK SC",sans-serif}
+  .reader-mobile-toc a {display:block;padding:8px 0;text-decoration:none}
+  .cover {padding-top:58px;padding-bottom:46px}
+  .cover h1 {font-size:clamp(36px,4.5vw,58px);line-height:1.3;letter-spacing:0}
+  .cover .intro {line-height:1.85}
+  .layout {grid-template-columns:225px minmax(0,780px);gap:52px;max-width:1180px}
+  .layout>main {max-width:780px;font-size:20px;line-height:1.9}
+  .layout h1#cover {font-size:44px;line-height:1.4;letter-spacing:0}
+  .layout h1 {line-height:1.5;letter-spacing:0}
+  .layout h2 {border-left:0;padding-left:0;margin-top:2em}
+  nav.toc>a {padding:10px 4px}
+  .tools a,.tools button {min-height:44px;display:inline-flex;align-items:center;justify-content:center}
+  .volume {display:block;max-width:880px}
+  @media(max-width:1000px) {
+    .reader-layout {display:block;max-width:828px;padding-inline:24px}
+    .chapter-rail {display:none}
+    .reader-book-toc {position:static;max-height:none;margin-bottom:30px;border-bottom:1px solid var(--eb-line)}
+    .reader-book-toc>summary {display:flex;align-items:center;min-height:48px;cursor:pointer;font:500 16px/1.7 sans-serif}
+    .reader-mobile-toc {display:block;border-block:1px solid var(--eb-line);margin:0 0 32px}
+    .layout {display:block;padding:28px 24px 80px}
+    nav.toc {columns:2;position:static;max-height:none}
+  }
+  @media(max-width:700px) {
+    .topbar {padding:8px 14px;gap:6px;flex-wrap:wrap}
+    .brand {font-size:14px;line-height:1.6;max-width:100%;overflow-wrap:anywhere}
+    .brand span:last-child {display:none}
+    .topbar .tools {margin-left:auto;gap:0}
+    .topbar .spacer {min-width:0}
+    .hero {display:block;padding:38px 20px 34px}
+    .hero h1 {font-size:36px;line-height:1.4}
+    .hero .dek {font-size:19px;line-height:1.9}
+    .hero-aside {margin-top:28px;border-left:0;border-top:1px solid var(--eb-line);padding:20px 0 0}
+    .home-grid {display:block;padding:30px 20px 70px}
+    .home-intro {position:static;margin-bottom:28px}
+    .chapter-row h3 {font-size:20px}
+    .reader-layout {padding:30px 20px 80px}
+    .chapter-head h1 {font-size:32px}
+    .prose,.content,.reading {line-height:1.9}
+    .prose pre {margin-inline:0;padding-inline:16px}
+    .book {width:calc(100% - 40px);padding-top:32px}
+    .home-title,.content h1 {font-size:32px;line-height:1.4}
+    .topbar .brand {max-width:calc(100% - 150px);white-space:normal}
+    .reader-tools {flex-wrap:wrap}
+    .bar-inner {gap:8px;flex-wrap:wrap}
+    .layout>main {font-size:19px}
+    .layout h1#cover {font-size:34px}
+    nav.toc {columns:1}
+    .search-page {padding-top:36px}
+    .chapter-nav {margin-top:44px}
+  }
+  @media(prefers-reduced-motion:reduce) {html{scroll-behavior:auto}.chapter-row,.control{transition:none}}
+}
+@media print {.reader-mobile-toc,.reader-book-toc,[data-reader-theme],.copy{display:none!important}}
+
+@media screen and (max-width:520px){.concept-diagram svg{min-width:560px}}
+@media print{.concept-diagram{break-inside:avoid;overflow:visible;padding:10px 0}.concept-diagram svg{min-width:0;width:100%;max-width:100%}.concept-diagram figcaption{font-size:8pt}}
+</style>
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="#main"><span class="brand-mark">MCP</span><span>MCP 2027 架构与工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <span class="tool-button">Ctrl+F 查找</span>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout volume"><article class="chapter"><section class="volume-cover"><p>规范驱动的架构解剖 · 面向 2027 运行时栈</p><h1>MCP 2027</h1><h2>从远程工具调用到 Agent 运行时协议</h2><p>前言 · 14 章 · 附录</p><p>MCP Specification 2026-07-28 + draft<br>2bbace557bbf2cb5d03d6f9b48905415cd7607b0<br>上游规范 2026-11-24 · 主文 philschmid.de/mcp-2027 (2026-11-26)</p><p>独立规范研究，非官方文档。基于静态规范核验、SEP 原文对照与零依赖离线教学测试模型。</p></section><section class="volume-toc"><h1>全书目录</h1><ol><li><a href="#00-preface">前言：从狂热、退潮到 2027 拐点</a></li><li><a href="#01-evolution">协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></a></li><li><a href="#02-stateless-http">无状态内核与 HTTP 标准化</a></li><li><a href="#03-primitives-schemas">核心原语与强类型契约</a></li><li><a href="#04-code-mode">Code Mode：终结上下文膨胀与 N 轮串行调用</a></li><li><a href="#05-mrtr-elicitation">多往返请求（MRTR）与无状态追问</a></li><li><a href="#06-oauth-auth">身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</a></li><li><a href="#07-extensions-framework">扩展机制与治理边界</a></li><li><a href="#08-skills-over-mcp">Skills 进入 MCP：<code>io.modelcontextprotocol/skills</code></a></li><li><a href="#09-tasks-async">长程异步执行：MCP Tasks</a></li><li><a href="#10-events-always-on">常驻与多人协作代理：MCP Events</a></li><li><a href="#11-mcp-apps">产品原生智能体化：MCP Apps</a></li><li><a href="#12-discovery-observability-security">未解难题：发现、可观测性与纵深安全</a></li><li><a href="#13-harness-as-mcp">超越远程工具：把 Harness 做成 MCP Server 与架构反模式</a></li><li><a href="#14-mini-mcp-lab">动手验证：零依赖 Python MCP 2027 教学运行时</a></li><li><a href="#appendix-sources">附录：规范索引、关键 SEP 速查表与核验命令</a></li></ol></section><section class="book-section" id="00-preface"><header class="chapter-head"><div class="chapter-number">00</div><h1>前言：从狂热、退潮到 2027 拐点</h1></header><div class="prose"><p>2025 年下半年，不少工程团队把刚接好的 MCP Server 拆回了命令行脚本。理由很实际：往系统提示里塞进四五十个工具的 JSON Schema，还没开始干活，上下文窗口就吃掉一大截；遇到跨系统的多步查询，模型只能一轮调一个工具，把几百行原始 JSON 反复塞进对话历史，既慢又贵。到了 2026 年初，Agent Skills 流行起来，很多开发者直接转向本地 CLI 配合 <code>SKILL.md</code> 的渐进披露，社区里关于 MCP 过于沉重、迟早被 CLI 取代的争论此起彼伏。</p>
+<p>但如果把视线从开发者本机移到真实生产流量上，数据讲的是另一件事。Philipp Schmid 在 2026 年 11 月 26 日发布的文章《Why I&#39;m Bullish on MCP for 2027》中列出了几组公开业务数据：在 Linear 和 Notion，Agent 创建的 issue（约 240 万条/周）和页面已经占到总量的一半左右，Notion 报告其 MCP 流量增长了 60 倍；在 Atlassian，MCP 每个工作日处理超过 500 万次工具调用，其中 44% 的用户不在研发团队，CLI 对这批非工程角色从来就不是可选项；在 Neon，基于 MCP 的 Agent 用量保持 14% 的周环比增长；连 Apple 也开始为 Pages、Numbers 和 Keynote 内置本地 MCP Server。</p>
+<p>这两股看似矛盾的体验，其实对应着两代不同形态的 MCP。早期引起抱怨的是 2024 年底到 2025 年的有状态协议与原始 tool calling 用法：必须维护连接握手和粘性会话，列表结果无法跨会话缓存，客户端一股脑把全量 Schema 喂给模型，且只能由用户发问后被动拉取。到 <code>2026-07-28</code> 正式规范落地后，协议底层做了大手术，把会话和握手从核心拿掉，补齐了 HTTP 路由头、列表 TTL 缓存、无状态多往返追问和官方扩展机制；客户端侧则演化出 Code Mode、Skills over MCP、MCP Tasks、MCP Events 和 MCP Apps，把原本零散的胶水层收拢到了同一套协议边界里。</p>
+<h2 id="00-preface--cli-与-mcp-的真实分工">CLI 与 MCP 的真实分工<a class="anchor" href="#00-preface--cli-与-mcp-的真实分工" aria-label="链接到本节">#</a></h2>
+<p>把 CLI 和 MCP 对立成二选一，往往是因为默认了执行者是坐在终端前的软件工程师。在本地代码仓库里，给 Agent 一个终端、几个命令行工具和几份本地 Markdown 说明书确实够快，零协议封装，管道组合也很顺手。</p>
+<p>一旦业务跨出本机终端，CLI 的短板很快会暴露出来。第一是凭证边界：CLI 和裸 <code>curl</code> 往往要求把长效 API Key 写进磁盘配置文件或环境变量，权限粒度粗，且和 Agent 执行的代码共享同一个进程环境，提示注入一旦突破命令限制就能直接读走密钥。第二是人群覆盖：财务、法务、运营、客服和产品团队的桌面环境里没有终端，也没有人会维护本地包管理器和环境变量，Atlassian 那 44% 的非研发调用量正是靠浏览器 OAuth 登录和零配置远程接入跑起来的。第三是多模态与强类型契约：命令行标准输出本质上是无结构文本流，遇到需要同时返回结构化 JSON、图片、音频或可交互视图的场景，只能靠脆弱的正则解析和临时文件路径硬凑。</p>
+<p>2027 年真正成型的格局，是客户端把 MCP 从远程工具调用层升级成 Agent 运行时协议。本地进程继续用 <code>stdio</code> 或命令行，远程 SaaS、企业内部系统、长程异步任务和事件订阅则通过无状态 Streamable HTTP 与官方扩展接入，再由宿主里的 Code Mode 沙箱把强类型 MCP 接口编译成可执行函数，把两边的优势拼到了一起。</p>
+<h2 id="00-preface--全书阅读路线">全书阅读路线<a class="anchor" href="#00-preface--全书阅读路线" aria-label="链接到本节">#</a></h2>
+<p>全书一共分为四个部分，从协议内核一路拆到运行时扩展与多代理编排：</p>
+<ol>
+<li><strong>无状态内核与契约基座（第 1 章至第 3 章）</strong>，复盘 MCP 从 <code>2024-11-05</code> 到 <code>2026-07-28</code> 的五个正式版本，讲清为什么要彻底删除 <code>Mcp-Session-Id</code> 与 <code>initialize</code> 握手、如何用 <code>Mcp-Method</code>/<code>Mcp-Name</code>/<code>x-mcp-header</code> 对齐标准 HTTP 网关、如何用 <code>ttlMs</code> 和 <code>cacheScope</code> 消除子代理列表风暴，以及 <code>outputSchema</code>、<code>structuredContent</code> 与 <code>SEP-1303</code> 如何建立机器可消费的强类型契约。</li>
+<li><strong>执行模型、交互与身份边界（第 4 章至第 6 章）</strong>，对比普通串行 tool calling、CLI 管道与 Code Mode 的上下文开销；拆解 <code>SEP-2322</code> 多往返请求（MRTR）和 <code>SEP-1036</code> URL Mode Elicitation 如何在无粘性会话的集群里完成人工确认与敏感信息录入；梳理 OAuth 2.1、RFC 9728 受保护资源元数据、CIMD URL 客户端注册、企业 IdP 托管授权（ID-JAG）以及 RFC 9207 <code>iss</code> 校验。</li>
+<li><strong>官方扩展栈与 Agent 运行时（第 7 章至第 11 章）</strong>，解析 <code>SEP-2133</code> 与 <code>SEP-3392</code> 的扩展治理生命周期，随后逐章拆解四项决定 2027 形态的核心扩展：Skills over MCP（<code>io.modelcontextprotocol/skills</code>）、MCP Tasks（<code>io.modelcontextprotocol/tasks</code>）、MCP Events（<code>io.modelcontextprotocol/events</code>）以及 MCP Apps（<code>io.modelcontextprotocol/ui</code>）。</li>
+<li><strong>工程缺口、多代理编排与代码核验（第 12 章至第 14 章）</strong>，直面发现机制（Registry 与 Server Cards <code>SEP-2127</code>）、意图可观测性和纵深安全（Prompt Injection、Untrusted Webhook、沙箱与 iframe、本地安装 <code>SEP-1024</code>）的现实短板；展开 Phil Schmid 提出的 Harness-as-MCP-Server 协作架构与 <code>ask_agent</code> 反模式；最后用零依赖 Python 标准库代码和 21 个单元测试，把全书最关键的协议不变量在本地跑通。</li>
+</ol>
+<h2 id="00-preface--事实口径与研究边界">事实口径与研究边界<a class="anchor" href="#00-preface--事实口径与研究边界" aria-label="链接到本节">#</a></h2>
+<p>本书是一份独立架构研究，不是 MCP 官方文档。为了保证每条协议细节经得起核查，全书严格区分三类信息来源：</p>
+<ul>
+<li><strong>上游行业数据与趋势判断</strong>：引用自 Philipp Schmid 2026 年 11 月 26 日文章 <code>https://www.philschmid.de/mcp-2027</code>，文中涉及具体公司数据或作者观点处均明确归属来源。</li>
+<li><strong>官方规范与 SEP 条款</strong>：全部核对自 <code>modelcontextprotocol/modelcontextprotocol</code> 仓库固定快照（提交 <code>2bbace557bbf2cb5d03d6f9b48905415cd7607b0</code>，提交日期 <code>2026-11-24</code>），并明确标注每项能力处于 <code>2026-07-28</code> 正式核心规范、Stable 扩展、Beta 扩展还是 <code>draft</code> 草案阶段。</li>
+<li><strong>离线教学模型</strong>：第 14 章及 <code>examples/</code> 目录下的 Python 运行时与 21 个单元测试用来验证协议状态机、签名校验与边界拦截逻辑，不代表线上集群压测或第三方商业服务实测。</li>
+</ul>
+<p>所有源码路径、SEP 速查表与本地核验命令汇总在附录和 <code>sources/UPSTREAM.md</code> 中，读者可以随时对照官方快照反向校验。</p>
+</div></section><section class="book-section" id="01-evolution"><header class="chapter-head"><div class="chapter-number">01</div><h1>协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></h1></header><div class="prose"><p>2025 年秋天，做远程 Playwright MCP Server 的开发者踩进过一个典型的架构坑：用户在对话里先调用工具打开网页，紧接着下一轮让模型点一下登录按钮，结果浏览器状态凭空消失了。排查下来，服务器代码并没写错，问题出在协议本身的会话语义上。ChatGPT 和早期 Claude.ai 会为每一次单独的工具调用新建并立刻关闭一个 MCP 会话，桌面 IDE 客户端却在应用启动时建一个会话一直挂到进程退出，网页端则是刷新一次页面换一个会话。同一个 <code>Mcp-Session-Id</code>，在不同宿主手里对应着完全不同的生命周期。</p>
+<p>类似的结构性摩擦在 2025 年集中爆发：远程无服务器函数（Serverless）挂不住常驻 HTTP GET SSE 连接；放在标准 L7 负载均衡后面的集群被迫开启脆弱的粘性路由；TypeScript SDK 把会话状态存进内存私有字段，节点一重启全部断线；更麻烦的是，只要协议允许服务端按会话动态篡改 <code>tools/list</code>，任何编排器每派生一个子代理，就必须把所有已连接服务器的工具列表重新拉一遍。</p>
+<p>理解 <code>2026-07-28</code> 为什么大刀阔斧砍掉握手和会话，最直接的方式是沿着官方仓库的五个正式变更日志，把这两年的演进脉络摊开来看。</p>
+<h2 id="01-evolution--五个正式版本的演进主线">五个正式版本的演进主线<a class="anchor" href="#01-evolution--五个正式版本的演进主线" aria-label="链接到本节">#</a></h2>
+<p>截至 2026 年 11 月 24 日快照，MCP 共发布过五个正式版本，加上持续累积的 <code>draft</code> 草案分支。下表对照了每个版本的关键架构转向与核验路径：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>规范版本</th>
+<th>核心架构变化</th>
+<th>解决的工程痛点</th>
+<th>官方变更日志路径</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>2024-11-05</code></td>
+<td>首发 stdio 与 HTTP+SSE 双端点传输，定义 Tools / Resources / Prompts、Roots、Sampling、Logging</td>
+<td>打通本地进程与远程服务接入，建立最小上下文交换协议</td>
+<td><code>docs/specification/2024-11-05/</code></td>
+</tr>
+<tr>
+<td><code>2025-03-26</code></td>
+<td>引入 OAuth 2.1 授权、Streamable HTTP（替代 HTTP+SSE）、JSON-RPC 批处理、Tool Annotations、音频内容块</td>
+<td>合并远程双端点，补齐远程鉴权，标记只读与破坏性工具</td>
+<td><code>docs/specification/2025-03-26/changelog.mdx</code></td>
+</tr>
+<tr>
+<td><code>2025-06-18</code></td>
+<td>删除 JSON-RPC 批处理；新增 <code>structuredContent</code> 与 <code>outputSchema</code>、OAuth 受保护资源元数据、RFC 8707、Form Elicitation、<code>MCP-Protocol-Version</code> 头</td>
+<td>让工具返回值机器可解析，防止令牌透传与跨服务滥用</td>
+<td><code>docs/specification/2025-06-18/changelog.mdx</code></td>
+</tr>
+<tr>
+<td><code>2025-11-25</code></td>
+<td>接入 OIDC Discovery 1.0、URL Mode Elicitation（SEP-1036）、CIMD 客户端注册（SEP-991）、实验性 Tasks（SEP-1686）、参数校验归入工具错误（SEP-1303）、JSON Schema 2020-12 默认方言（SEP-1613）</td>
+<td>补齐带外敏感授权、无预注册 OAuth、模型参数自纠错与早期异步任务</td>
+<td><code>docs/specification/2025-11-25/changelog.mdx</code></td>
+</tr>
+<tr>
+<td><code>2026-07-28</code></td>
+<td>删除会话（SEP-2567）与 <code>initialize</code> 握手（SEP-2575）；引入 <code>server/discover</code>、MRTR（SEP-2322）、HTTP 头标准化（SEP-2243）、列表缓存 <code>ttlMs</code>/<code>cacheScope</code>（SEP-2549）、官方扩展框架（SEP-2133）；移出 Tasks 至扩展（SEP-2663）；弃用 Roots/Sampling/Logging（SEP-2577）与 DCR</td>
+<td>彻底云原生化与无状态化，控制核心规范体积，将高迭代能力移入扩展轨道</td>
+<td><code>docs/specification/2026-07-28/changelog.mdx</code></td>
+</tr>
+</tbody></table></div>
+<p>紧跟 <code>2026-07-28</code> 之后的 <code>docs/specification/draft/changelog.mdx</code> 只有两项小幅修订：把 OAuth Client ID Metadata Document 引用从 <code>draft-00</code> 升级到 <code>draft-03</code>，以及补回在 <code>2026-07-28</code> 重构时误删的 Elicitation/Sampling/Roots 参数与结果中的可选 <code>_meta</code> 字段（Issue <code>#3468</code>）。<code>2026-07-28</code> 已经构成了 2027 年各方实现依赖的稳定地基。</p>
+<h2 id="01-evolution--为什么必须砍掉有状态会话与常驻双向流">为什么必须砍掉有状态会话与常驻双向流<a class="anchor" href="#01-evolution--为什么必须砍掉有状态会话与常驻双向流" aria-label="链接到本节">#</a></h2>
+<p>很多习惯了 WebSocket 或本地 stdio 开发的工程师最初会怀疑：把会话改成可选不行吗，为什么要做不向后兼容的彻底删除？<code>SEP-2567</code> 和 <code>SEP-2575</code> 给出了非常硬的工程证据。</p>
+<p>最直接的瓶颈出在<strong>子代理场景下的列表缓存失效</strong>。只要协议规范允许某个服务器把 <code>tools/list</code> 绑定到会话状态（比如先调 <code>connect_database</code>，后续列表里才凭空多出 <code>query</code> 工具），客户端在连接任意陌生服务器时就无法预先判定它会不会变脸。结果就是编排器每启动一个短生命周期子代理，面对 $M$ 个服务器，就必须重跑一遍 <code>initialize</code> 和 <code>tools/list</code>，整体发现流量变成 $O(\text{subagents} \times \text{servers})$。即使 99% 的服务器工具列表在编译期就固定了，哪怕把会话改成可选项，客户端照样不敢跨会话缓存。彻底删掉会话并规定列表不得随连接状态变化，再配合 <code>SEP-2549</code> 的 <code>ttlMs</code> 缓存提示，父代理拉一次列表，所有子代理就能零成本复用，开销直接降到 $O(\text{servers})$。</p>
+<p>另一个结构性硬伤是<strong>单会话固定基数（Cardinality）与多代理共享冲突</strong>。一个会话在协议层只能隐式挂载一份状态。假设主代理派生三个子代理一起帮用户选商品，它们需要往同一个购物车里加东西，同时各自打开独立的浏览器上下文去查不同网站。在隐式会话模型里，这是一个无解的死结：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>会话分配策略</th>
+<th>购物车（期望：共享）</th>
+<th>浏览器上下文（期望：隔离）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>子代理共享父会话</td>
+<td>正常共享</td>
+<td>互相踩踏、状态错乱</td>
+</tr>
+<tr>
+<td>子代理各自建新会话</td>
+<td>各自孤立、无法汇总</td>
+<td>正常隔离</td>
+</tr>
+</tbody></table></div>
+<p>换成显式状态句柄（Explicit State Handles）后，编排器调一次 <code>create_basket()</code> 拿到 <code>basket_id</code> 发给所有子代理，每个子代理再各自调 <code>create_browser()</code> 拿到自己的 <code>browser_id</code>。协议本身甚至不需要定义新原语，句柄只是工具返回值和入参里的普通字符串，却天然支持跨对话恢复、跨代理移交和细粒度权限校验。</p>
+<p>更关键的现实数据是<strong>真实仓库里几乎没人真在用会话存业务状态</strong>。<code>SEP-2567</code> 公布了对 1000 个随机开源 MCP Server 仓库的自动化扫描结果：</p>
+<ul>
+<li><strong>90.0%</strong> 的仓库在应用层根本没有引用过 MCP Session ID；</li>
+<li><strong>3.5%</strong> 只是复制了 TypeScript SDK 样板里的 <code>Map&lt;sessionId, Transport&gt;</code> 路由表；</li>
+<li><strong>2.8%</strong> 只传了 <code>sessionIdGenerator</code> 构造参数，业务代码从未读取；</li>
+<li>真正用会话做应用层状态存储的只占 <strong>2.5%</strong>，做网关粘性路由的占 <strong>0.7%</strong>，把 OAuth 状态绑在会话上的占 <strong>0.5%</strong>。</li>
+</ul>
+<p>为了这不到 4% 且语义本就混乱的存量用法，让所有客户端和服务端承担粘性负载均衡、重启丢状态、无法缓存列表的全局税，显然不划算。</p>
+<p>与此同时，<code>SEP-2575</code> 顺手清理了依赖持久连接的一整批旧机制：删除 HTTP GET 独立 SSE 端点、删除 <code>Last-Event-ID</code> 断流续传（需要持久化和断线恢复的作业统一交给 MCP Tasks）、删除 <code>ping</code>、<code>logging/setLevel</code> 以及 <code>resources/subscribe</code>/<code>unsubscribe</code>。客户端只在真正需要接收列表变更或资源更新时，才发一条 POST 请求调用 <code>subscriptions/listen</code>，按需换回一条带 <code>io.modelcontextprotocol/subscriptionId</code> 标签的 SSE 响应流。这种按需付费（pay as you go）原则让绝大多数普通请求退化成了标准的一问一答 HTTP POST。</p>
+<h2 id="01-evolution--sep-2577-与弃用治理-核心协议的瘦身决心"><code>SEP-2577</code> 与弃用治理：核心协议的瘦身决心<a class="anchor" href="#01-evolution--sep-2577-与弃用治理-核心协议的瘦身决心" aria-label="链接到本节">#</a></h2>
+<p>协议成熟的一个重要标志，是敢于把早期设想美好但现实中无人维护的特性清出核心。<code>2026-07-28</code> 同步落地了 <code>SEP-2596</code> 特性生命周期政策，规定任何特性进入 Deprecated 状态后，享有至少 12 个月的宽限窗口，期间线协议行为保持不变，之后在最早可移除日期后的版本中正式删除。</p>
+<p>下表整理自 <code>docs/specification/2026-07-28/deprecated.mdx</code>，列出当前已进入弃用清单的全部核心特性：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>已弃用特性</th>
+<th>弃用提案</th>
+<th>弃用版本</th>
+<th>官方推荐迁移路径</th>
+<th>最早可移除时间</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Roots（<code>roots/list</code> 等）</td>
+<td>SEP-2577</td>
+<td><code>2026-07-28</code></td>
+<td>通过工具参数、资源 URI 或服务端配置显式传递目录与文件</td>
+<td>2027-07-28 及之后的首个版本</td>
+</tr>
+<tr>
+<td>Sampling（<code>sampling/createMessage</code>）</td>
+<td>SEP-2577</td>
+<td><code>2026-07-28</code></td>
+<td>服务端直接调用 LLM 提供商 API，避免反向让客户端代跑推理</td>
+<td>2027-07-28 及之后的首个版本</td>
+</tr>
+<tr>
+<td>Logging（<code>logging/setLevel</code> 等）</td>
+<td>SEP-2577</td>
+<td><code>2026-07-28</code></td>
+<td>stdio 直接写 <code>stderr</code>，远程服务使用 OpenTelemetry（配合 SEP-414 <code>_meta</code> 透传 trace）</td>
+<td>2027-07-28 及之后的首个版本</td>
+</tr>
+<tr>
+<td>Dynamic Client Registration（RFC 7591）</td>
+<td>PR #2858</td>
+<td><code>2026-07-28</code></td>
+<td>迁移至 Client ID Metadata Documents（CIMD，SEP-991）</td>
+<td>2027-07-28 及之后的首个版本</td>
+</tr>
+<tr>
+<td>Sampling <code>includeContext</code> 非 <code>none</code> 值</td>
+<td>SEP-2596</td>
+<td><code>2025-11-25</code></td>
+<td>省略该字段或设为 <code>&quot;none&quot;</code></td>
+<td>随 Sampling 一并移除</td>
+</tr>
+<tr>
+<td>HTTP+SSE 传输</td>
+<td>SEP-2596</td>
+<td><code>2025-03-26</code></td>
+<td>迁移至 Streamable HTTP</td>
+<td>SEP-2596 终稿后满 3 个月</td>
+</tr>
+</tbody></table></div>
+<p><code>SEP-2577</code> 弃用 Roots、Sampling 和 Logging 背后的判断很清醒。Roots 在规范里只是信息性提示，服务端并不受强制约束，反而暴露了客户端本地目录结构；Sampling 允许服务端反向要求客户端执行模型补全，甚至在 <code>SEP-1577</code> 加入带工具循环的采样后，客户端要同时处理人工审批、模型路由、防提示注入和防数据外泄，复杂度极高而采用率极低；Logging 则纯粹是在应用协议层重复造轮子，远程服务本就有 OpenTelemetry，本地子进程直接写 <code>stderr</code> 更简单可靠。</p>
+<p>把这些高维护成本、低回报或边界模糊的机制清理出核心，再把 Tasks、Skills、Events、Apps 和企业授权放进独立版本化的官方扩展轨道，MCP 核心层在 <code>2026-07-28</code> 终于收敛成了一层精干、无状态、标准 HTTP 友好的传输与能力基座。接下来的一章，我们就钻进这层无状态 HTTP 内核，看看每一个请求头、错误码和缓存字段是怎么咬合在一起的。</p>
+</div></section><section class="book-section" id="02-stateless-http"><header class="chapter-head"><div class="chapter-number">02</div><h1>无状态内核与 HTTP 标准化</h1></header><div class="prose"><p>2025 年把 MCP Server 放到企业 API 网关（如 Envoy、Nginx 或 Cloudflare Workers）后面时，运维团队最头疼的问题不是业务逻辑，而是流量全成了黑盒。所有请求都发向同一个 <code>POST /mcp</code> 路径，网关如果不把整段 JSON-RPC 请求体读进内存反序列化，就根本不知道这条请求是在调 <code>tools/list</code> 还是 <code>tools/call</code>，更不知道它要调哪个工具、访问哪个区域集群，限流、路由、WAF 审计和分区域灰度全都无从下手。再加上强制的 <code>initialize</code> 三步握手和 <code>Mcp-Session-Id</code> 粘性路由，一台普通无状态函数或标准 L7 负载均衡器根本接不住。</p>
+<p><code>2026-07-28</code> 规范通过四个紧密咬合的提案，彻底把 MCP 改造成了标准云原生 HTTP 工作负载：<code>SEP-2575</code> 去掉握手、把元数据放进每条请求；<code>SEP-2567</code> 去掉会话、用显式句柄替代；<code>SEP-2243</code> 把关键字段镜像到标准 HTTP 请求头；<code>SEP-2549</code> 给所有列表和读取结果加上 <code>ttlMs</code> 与 <code>cacheScope</code>。下面这张图对照了旧版有状态架构和 <code>2026-07-28</code> 无状态内核在请求链路上的差异。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 282" width="660" height="282" role="img" aria-label="2025 有状态粘性会话与 2026-07-28 无状态头路由对比">
+<title>2025 有状态粘性会话与 2026-07-28 无状态头路由对比</title>
+<defs>
+  <marker id="02-stateless-http--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+  </marker>
+</defs>
+<text x="12" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="12" font-weight="700" fill="var(--amber)" text-anchor="start">旧架构 (2025): 有状态粘性会话与连接绑定</text><rect x="12" y="28" width="192" height="74" rx="4" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="22" y="48" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--amber)" text-anchor="start">Client / Subagents</text><text x="22" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">新开连接须重跑 initialize</text><text x="22" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">重拉 O(N x M) tools/list</text><line x1="204" y1="65" x2="232" y2="65" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#02-stateless-http--arrow)"/><rect x="234" y="28" width="192" height="74" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="244" y="48" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">粘性负载均衡器</text><text x="244" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">依赖 Mcp-Session-Id 路由</text><text x="244" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">GET SSE 常驻连接易超时</text><line x1="426" y1="65" x2="454" y2="65" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#02-stateless-http--arrow)"/><rect x="456" y="28" width="192" height="74" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="466" y="48" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">单节点内存会话</text><text x="466" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">实例重启即丢会话状态</text><text x="466" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">列表结果跨会话不可缓存</text><line x1="12" y1="120" x2="648" y2="120" stroke="var(--line)" stroke-width="0.8" stroke-dasharray="4 4"/><text x="12" y="142" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="12" font-weight="700" fill="var(--forest)" text-anchor="start">新内核 (2026-07-28): 无状态头镜像与可缓存列表</text><rect x="12" y="152" width="192" height="92" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="22" y="172" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">Client + ListCache</text><text x="22" y="190" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">每请求携带 _meta 能力</text><text x="22" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">按 ttlMs/cacheScope 复用</text><text x="22" y="222" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">显式传递 basket_id 句柄</text><line x1="204" y1="198" x2="232" y2="198" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#02-stateless-http--arrow)"/><rect x="234" y="152" width="192" height="92" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="244" y="172" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">标准 L7 网关 / CDN</text><text x="244" y="190" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">读 Mcp-Method / Mcp-Name</text><text x="244" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">按 Mcp-Param-* 路由限流</text><text x="244" y="222" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">无粘性会话，任意轮询</text><line x1="426" y1="198" x2="454" y2="198" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#02-stateless-http--arrow)"/><rect x="456" y="152" width="192" height="92" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="466" y="172" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">无状态副本 / Serverless</text><text x="466" y="190" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">校对头与 Body (-32020)</text><text x="466" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">按 Token 校验句柄权限</text><text x="466" y="222" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">subscriptions/listen 按需推</text><text x="12" y="266" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="400" fill="var(--muted)" text-anchor="start">核心变化: 去掉 Mcp-Session-Id 与 initialize，把状态显式化为业务句柄与可缓存元数据。</text>
+</svg><figcaption>2025 有状态粘性会话与 2026-07-28 无状态头路由对比</figcaption></figure>
+<p>图里上半部分展示的旧架构里，每一个新开的客户端或子代理都必须重走 <code>initialize</code> 并拉取不可跨会话缓存的列表，中间的网关被迫维护粘性会话，后端副本一旦重启就会直接丢失内存状态。下半部分的新内核里，客户端把协议版本与能力放进每条请求的 <code>_meta</code>，同时镜像到 HTTP 头，中间网关只需读取请求头就能直接路由和限流，后端任意无状态副本或 Serverless 实例都能独立完成验权和执行。</p>
+<h2 id="02-stateless-http--每请求自包含-去掉-initialize-之后怎么协商版本">每请求自包含：去掉 <code>initialize</code> 之后怎么协商版本<a class="anchor" href="#02-stateless-http--每请求自包含-去掉-initialize-之后怎么协商版本" aria-label="链接到本节">#</a></h2>
+<p>去掉 <code>initialize</code> 和 <code>notifications/initialized</code> 后，客户端可以不经握手直接发业务请求，或者在需要提前展示服务端能力时调用一次强制实现的 <code>server/discover</code>。每一条请求的参数 <code>_meta</code> 里都必须自包含以下元数据（源自 <code>SEP-2575</code> 与 <code>docs/specification/2026-07-28/basic/transports/streamable-http.mdx</code>）：</p>
+<ul>
+<li><code>io.modelcontextprotocol/protocolVersion</code>（必填）：本条请求遵循的协议版本，例如 <code>&quot;2026-07-28&quot;</code>。</li>
+<li><code>io.modelcontextprotocol/clientCapabilities</code>（必填）：本条请求周期内客户端声明支持的能力与扩展（例如 <code>elicitation</code>、<code>extensions</code>）。空对象 <code>{}</code> 表示不支持可选能力，服务端绝不能凭先前请求去猜测客户端能力。</li>
+<li><code>io.modelcontextprotocol/clientInfo</code>（建议每请求携带）：客户端软件名称和版本，用于日志与调试。</li>
+<li><code>io.modelcontextprotocol/logLevel</code>（可选）：替代已删除的 <code>logging/setLevel</code>，只有请求里显式带了这个字段，服务端才允许在响应流里发 <code>notifications/message</code>。</li>
+</ul>
+<p>服务端在响应的 <code>_meta</code> 里同样可以回传 <code>io.modelcontextprotocol/serverInfo</code>，规范特别提醒（<code>server/discover.mdx</code>）：<code>serverInfo</code> 是服务端自报的，未经协议校验，只用于界面显示、日志和排障，客户端不得拿它来做安全决策或改变协议行为。</p>
+<p>版本协商也变成了内联模式。客户端直接带自己偏好的版本发请求；如果服务端不支持，就返回 HTTP <code>400 Bad Request</code> 和 JSON-RPC 错误码 <code>-32022</code>（<code>UnsupportedProtocolVersionError</code>），并在 <code>error.data.supported</code> 数组里列出自己支持的版本，客户端挑一个双方共有的版本重试即可。如果客户端调用了服务端未实现的方法，服务端返回 HTTP <code>404 Not Found</code> 加上 JSON-RPC <code>-32601</code>（<code>Method not found</code>）。</p>
+<p><code>2026-07-28</code> 还专门划定了 JSON-RPC 服务端错误码的分配边界（<code>changelog.mdx</code>）：<code>-32000</code> 到 <code>-32019</code> 留给各 SDK 和具体实现自定义，<code>-32020</code> 到 <code>-32099</code> 保留给 MCP 规范本身，目前已经正式分配了三个高频错误码：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>错误码</th>
+<th>名称</th>
+<th>HTTP 状态码</th>
+<th>触发场景</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>-32020</code></td>
+<td><code>HeaderMismatch</code></td>
+<td><code>400 Bad Request</code></td>
+<td>必填 HTTP 头缺失、格式非法，或解码后的头值与 JSON-RPC Body 不一致</td>
+</tr>
+<tr>
+<td><code>-32021</code></td>
+<td><code>MissingRequiredClientCapability</code></td>
+<td><code>400 Bad Request</code></td>
+<td>请求需要某项客户端能力（如 <code>elicitation</code> 或 <code>io.modelcontextprotocol/tasks</code>），但请求 <code>_meta</code> 未声明</td>
+</tr>
+<tr>
+<td><code>-32022</code></td>
+<td><code>UnsupportedProtocolVersion</code></td>
+<td><code>400 Bad Request</code></td>
+<td>客户端请求的版本不被服务端支持，响应附带 <code>supported</code> 列表</td>
+</tr>
+</tbody></table></div>
+<h2 id="02-stateless-http--http-请求头标准化与防拆包欺骗-sep-2243">HTTP 请求头标准化与防拆包欺骗（<code>SEP-2243</code>）<a class="anchor" href="#02-stateless-http--http-请求头标准化与防拆包欺骗-sep-2243" aria-label="链接到本节">#</a></h2>
+<p>为了让反向代理、WAF 和可观测性系统无需解析请求体就能看见路由信息，Streamable HTTP 要求客户端在每条 POST 请求上镜像一组标准 HTTP 头（名称大小写不敏感，值大小写敏感）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>HTTP 请求头</th>
+<th>镜像来源字段</th>
+<th>必填范围</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>MCP-Protocol-Version</code></td>
+<td><code>params._meta[&quot;io.modelcontextprotocol/protocolVersion&quot;]</code></td>
+<td>所有 POST 请求</td>
+</tr>
+<tr>
+<td><code>Mcp-Method</code></td>
+<td><code>method</code></td>
+<td>所有 POST 请求</td>
+</tr>
+<tr>
+<td><code>Mcp-Name</code></td>
+<td><code>params.name</code>、<code>params.uri</code>（或 Tasks 扩展中的 <code>params.taskId</code>）</td>
+<td><code>tools/call</code>、<code>resources/read</code>、<code>prompts/get</code>、<code>tasks/*</code></td>
+</tr>
+<tr>
+<td><code>Mcp-Param-{Name}</code></td>
+<td><code>inputSchema</code> 中标注了 <code>&quot;x-mcp-header&quot;: &quot;{Name}&quot;</code> 的工具参数</td>
+<td>仅当对应参数存在且非 <code>null</code> 时</td>
+</tr>
+</tbody></table></div>
+<p>这里有一个很容易被忽略的安全细节：如果中间网关按 <code>Mcp-Param-Region: us-west1</code> 把请求放行到了美西集群，但攻击者在 JSON 请求体里偷偷把 <code>arguments.region</code> 改成了 <code>eu-central1</code>，就会出现经典的双重解析源不一致（Request Smuggling / Policy Bypass）。因此规范在 <code>Server Validation</code> 中定了一条死规矩：任何真正处理消息体的 MCP Server，都<strong>必须</strong>校对所有标准头与自定义 <code>Mcp-Param-*</code> 头的值是否与 Body 完全一致（整数比较按数值等价，例如 <code>42.0</code> 与 <code>42</code> 视为相等），只要对不上，立刻拒掉并返回 HTTP <code>400</code> 与 <code>-32020</code>（<code>HeaderMismatch</code>）。同时，中间网关如果基于镜像头做租户路由或限流，应当先检查 <code>MCP-Protocol-Version</code> 是否达到要求服务端强制校验的版本，否则绝不能盲信未校验的请求头。</p>
+<p>为了让非 ASCII 字符、换行符或首尾空格也能安全放进 HTTP 头（遵循 RFC 9110 可见 ASCII 范围 <code>0x21-0x7E</code>），<code>SEP-2243</code> 定义了一套统一的 Base64 哨兵编码格式：</p>
+<pre><code class="language-text">Mcp-Param-Greeting: =?base64?SGVsbG8sIOS4lueVjA==?=
+</code></pre>
+<p>当 <code>Mcp-Name</code> 或 <code>Mcp-Param-*</code> 的原始值包含非 ASCII 字符、控制字符、首尾空格，或者本身字面量就以 <code>=?base64?</code> 开头且以 <code>?=</code> 结尾时，客户端必须对 UTF-8 字节做 Base64 编码并套上小写哨兵前缀后缀；服务端校验前必须先解码再和 Body 比对。对于 <code>x-mcp-header</code> 注解，规范还划定了严格的静态可达边界：只能挂在 <code>string</code>、<code>integer</code>（JS 安全整数范围内）或 <code>boolean</code> 这三种原始类型上，禁止用于 <code>number</code> 浮点类型，且路径只能穿过纯 <code>properties</code> 链，不能穿过数组 <code>items</code>、<code>oneOf</code>/<code>anyOf</code>/<code>allOf</code>、<code>if</code>/<code>then</code>/<code>else</code> 或 <code>$ref</code>。如果服务端下发的某个工具定义违反了这些规则，Streamable HTTP 客户端必须把那个畸形工具从 <code>tools/list</code> 里剔除并记日志，而不影响同一服务器上的其他合法工具。而且服务端作者绝不能把密码、Token、PII 这类敏感参数标成 <code>x-mcp-header</code>，因为 HTTP 头对沿途所有代理和日志系统都是明文可见的。</p>
+<h2 id="02-stateless-http--列表缓存-ttlms-cachescope-与变更失效-sep-2549">列表缓存：<code>ttlMs</code>、<code>cacheScope</code> 与变更失效（<code>SEP-2549</code>）<a class="anchor" href="#02-stateless-http--列表缓存-ttlms-cachescope-与变更失效-sep-2549" aria-label="链接到本节">#</a></h2>
+<p>在无状态内核里，<code>server/discover</code>、<code>tools/list</code>、<code>prompts/list</code>、<code>resources/list</code>、<code>resources/templates/list</code> 和 <code>resources/read</code> 这六个操作返回 <code>resultType: &quot;complete&quot;</code> 时，都必须带上 <code>ttlMs</code> 和 <code>cacheScope</code> 两个缓存提示字段（而 MRTR 中间态 <code>input_required</code> 或携带 <code>inputResponses</code>/<code>requestState</code> 的重试结果绝对禁止缓存）。</p>
+<p><code>ttlMs</code> 是非负整数毫秒值，类似 HTTP 的 <code>Cache-Control: max-age</code>：客户端记录收到响应的本地时间 <code>t_received</code>，在 <code>now &lt; t_received + ttlMs</code> 期间直接复用缓存；<code>ttlMs: 0</code> 表示立刻过期。规范特意提醒，TTL 只是懒惰新鲜度提示，客户端不应该把它当成后台定时器到处空转轮询，而是在真正需要数据时再检查是否过期。</p>
+<p><code>cacheScope</code> 只有 <code>&quot;public&quot;</code> 和 <code>&quot;private&quot;</code> 两个值，直接决定多租户场景下会不会串数据：</p>
+<ul>
+<li><strong><code>&quot;public&quot;</code></strong>，响应不含用户特定数据，客户端、共享网关或代理可以跨不同调用方复用（例如所有用户看到的工具定义完全一致）。</li>
+<li><strong><code>&quot;private&quot;</code></strong>，响应依赖当前鉴权身份（比如按 OAuth Scope 过滤后的工具列表，或者用户私有资源内容），只能在同一个授权上下文内复用，换一个 Access Token 就必须隔离缓存。分页列表的所有页必须声明一致的 <code>cacheScope</code>。</li>
+</ul>
+<p>此外，服务端返回 <code>tools/list</code> 时<strong>应当</strong>保持确定性排序（Deterministic Ordering）。这不仅是为了客户端缓存稳定，更重要的是当工具清单注入 LLM 提示词时，稳定的顺序能显著提高大模型的 Prompt Cache 命中率。如果服务端同时支持推送通知，客户端可以通过 <code>POST subscriptions/listen</code> 订阅 <code>toolsListChanged</code> 等事件；一旦收到 <code>notifications/tools/list_changed</code> 或 <code>notifications/resources/updated</code>，客户端立刻把本地还没到 TTL 的缓存标为失效，实现低频兜底加实时刷新的组合。</p>
+<h2 id="02-stateless-http--显式状态句柄与双传输一致性">显式状态句柄与双传输一致性<a class="anchor" href="#02-stateless-http--显式状态句柄与双传输一致性" aria-label="链接到本节">#</a></h2>
+<p>删掉会话后，像购物车、数据库连接或浏览器实例这类跨调用状态怎么办？<code>SEP-2567</code> 和 <code>tools.mdx</code> 给出的答案很朴素：用普通工具返回值颁发显式句柄（比如 <code>create_basket</code> 返回 <code>basket_id: &quot;bsk_a1b2c3&quot;</code>），后续工具把 <code>basket_id</code> 当普通入参传回来。Linear 的 <code>create_issue</code>、Notion 的 <code>notion-create-pages</code>、GitHub 的 <code>create_pull_request</code> 和 Stripe 的 <code>create_customer</code> 早就这么干了。</p>
+<p>这里有一条安全底线必须分清：对<strong>已鉴权</strong>服务器，句柄只是资源名而不是通行证，服务端每次调用都必须校验 <code>(handle, auth_context)</code>，就像拿到一个 Google Doc 链接不代表你有权限打开它；只有对<strong>无鉴权</strong>服务器，句柄才不得不充当承载凭证（Bearer Token），此时必须用密码学随机源生成至少 128 位熵（如 UUIDv4）并设置明确过期时间，且把过期策略写进创建工具的 <code>description</code> 里让模型能看见。</p>
+<p>最后看看 <code>stdio</code> 与 Streamable HTTP 的关系。<code>2026-07-28</code> 坚持两套传输保持完全一致的无状态语义：<code>stdio</code> 同样去掉了握手，每行一条换行分隔的 JSON-RPC 消息，元数据全在 <code>_meta</code> 里，日志走 <code>stderr</code>。两者的核心区别只剩传输力学：</p>
+<ul>
+<li><strong>请求取消</strong>：Streamable HTTP 关闭该请求的 SSE 响应流即代表取消（不再发 <code>notifications/cancelled</code>）；<code>stdio</code> 共享同一对标准输入输出管道，所以仍需发 <code>notifications/cancelled</code> 指定请求 ID。</li>
+<li><strong>向下兼容探测</strong>：连接未知版本的旧服务时，Streamable HTTP 客户端可以直接发一条现代 POST 请求，如果收到 <code>400</code>/<code>404</code>/<code>405</code> 且响应体不是现代规范认可的 JSON-RPC 错误，再回退到 <code>initialize</code> 或老旧的 GET SSE 端点；<code>stdio</code> 没有 HTTP 状态码，规范建议客户端先发一条 <code>server/discover</code> 探针，收到 <code>DiscoverResult</code> 或现代版本错误就走新协议，收到其他错误或超时再回退 <code>initialize</code>。</li>
+</ul>
+<p>根据 2026 年 8 月更新的官方路线图（<code>docs/development/roadmap.mdx</code>），Transports 工作组下一步甚至计划探索 <strong>HTTP/2 over stdio</strong>，试图用一套统一的多路复用 HTTP 传输同时服务远程和本地子进程，再配合 ETag 扩展工具结果缓存。到那时，本地与远程传输层的双轨维护成本还会进一步压缩。</p>
+<p>传输层已经轻装上阵，但要让 Agent 在不撑爆上下文的前提下精准调用这些无状态接口，核心还要看工具、资源与提示词这三类原语的契约设计。下一章我们拆解它们的 Schema 约束与错误处理机制。</p>
+</div></section><section class="book-section" id="03-primitives-schemas"><header class="chapter-head"><div class="chapter-number">03</div><h1>核心原语与强类型契约</h1></header><div class="prose"><p>很多团队在 2025 年写完第一个 MCP Server 后，很快遇到两个让人哭笑不得的故障。第一个故障来自返回格式：工具把查询结果拼成一段自然语言文本塞回 <code>content</code>，结果上游字段多了一个逗号或者模型需要二次提取 ID 时，只能靠肉眼读字符串硬猜，一旦要做批量过滤或跨系统关联，失误率直线上升。第二个故障来自参数校验：用户说把机票订在 12 月 12 日，模型不小心填成了去年的年份 <code>&quot;12/12/2024&quot;</code>，服务端一看日期不对，直接扔出一个 JSON-RPC 协议错误 <code>-32602 (Invalid params)</code>；客户端把协议错误当成系统异常拦在外面，根本没告诉模型为什么错，模型只好盲目重试三遍一模一样的过去日期，最后任务彻底卡死。</p>
+<p>这两个坑分别在 <code>2025-06-18</code>、<code>2025-11-25</code> 和 <code>2026-07-28</code> 被逐一填平。正是这组看似不起眼的契约升级，让 MCP 工具从给人看的字符串拼接接口，变成了给程序和模型共同消费的强类型合约。</p>
+<h2 id="03-primitives-schemas--三大原语的控制权划分">三大原语的控制权划分<a class="anchor" href="#03-primitives-schemas--三大原语的控制权划分" aria-label="链接到本节">#</a></h2>
+<p>MCP 服务端暴露的核心原语一直保持克制，只有三类：Tools、Resources 和 Prompts。官方规范用控制权归属把它们的边界切得很清楚，免得团队把所有东西都一股脑塞成 Tool：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>原语</th>
+<th>默认控制权</th>
+<th>典型协议方法</th>
+<th>适用场景</th>
+<th>缓存与 MRTR 支持（<code>2026-07-28</code>）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Tools</strong></td>
+<td>模型控制（Model-controlled）</td>
+<td><code>tools/list</code>、<code>tools/call</code></td>
+<td>执行有副作用的操作、查库、调外部 API、触发计算</td>
+<td><code>tools/list</code> 支持 <code>ttlMs</code>/<code>cacheScope</code>；<code>tools/call</code> 支持 MRTR</td>
+</tr>
+<tr>
+<td><strong>Resources</strong></td>
+<td>应用驱动（Application-driven）</td>
+<td><code>resources/list</code>、<code>resources/templates/list</code>、<code>resources/read</code></td>
+<td>只读上下文数据（文件、库表结构、日志、Skill 文档、UI 模板），按 URI 寻址</td>
+<td>列表与读取均支持缓存；<code>resources/read</code> 支持 MRTR 与 URI 模板（RFC 6570）</td>
+</tr>
+<tr>
+<td><strong>Prompts</strong></td>
+<td>用户控制（User-controlled）</td>
+<td><code>prompts/list</code>、<code>prompts/get</code></td>
+<td>显式触发的工作流模板（如客户端里的 <code>/</code> 斜杠命令）</td>
+<td><code>prompts/list</code> 支持缓存；<code>prompts/get</code> 支持 MRTR</td>
+</tr>
+</tbody></table></div>
+<p>工具命名也有了明确规范（<code>SEP-986</code>）：名称长度应在 1 到 128 个字符之间，区分大小写，仅使用 ASCII 字母、数字、下划线、连字符和点号（例如 <code>getUser</code>、<code>DATA_EXPORT_v2</code>、<code>admin.tools.list</code>），避免空格和特殊符号。同时，规范在 <code>tools.mdx</code> 里特意提醒聚合代理和客户端：工具名只在单个服务器内唯一，不要拿自报的 <code>serverInfo.name</code> 做命名空间前缀来消歧，因为它不保证全局唯一，客户端应当使用自己分配的稳定服务器标识来隔离同名工具（例如两台服务器都叫 <code>search</code>）。</p>
+<p>另外，每个工具还可以附带可选的 <code>annotations</code>（描述是否只读、是否具有破坏性等）和 <code>icons</code>（<code>SEP-973</code>），但规范用醒目的安全警告提醒客户端：除非来自明确受信任的服务器，否则工具注解必须视作不可信输入，绝不能仅凭服务端自称只读就跳过破坏性操作的用户确认。</p>
+<h2 id="03-primitives-schemas--inputschema-outputschema-与-structuredcontent"><code>inputSchema</code>、<code>outputSchema</code> 与 <code>structuredContent</code><a class="anchor" href="#03-primitives-schemas--inputschema-outputschema-与-structuredcontent" aria-label="链接到本节">#</a></h2>
+<p>从 <code>2025-11-25</code>（<code>SEP-1613</code>）起，MCP 确立 JSON Schema 2020-12 为默认方言；到了 <code>2026-07-28</code>（<code>SEP-2106</code>），规范进一步放开了限制：<code>inputSchema</code> 和 <code>outputSchema</code> 允许使用完整的 JSON Schema 2020-12 关键字，且 <code>structuredContent</code> 不再局限于 JSON 对象，可以是任意合法 JSON 值（对象、数组、字符串、数字、布尔或 <code>null</code>），同时要求实现做好 <code>$ref</code> 解析以及组合关键字的资源上限防护，避免恶意深度嵌套 Schema 拖垮解析器。</p>
+<p>看一个带完整输入输出 Schema 的工具定义示例（遵循 <code>docs/specification/2026-07-28/server/tools.mdx</code>）：</p>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;list_open_issues&quot;,
+  &quot;title&quot;: &quot;List Open Issues&quot;,
+  &quot;description&quot;: &quot;Return open engineering issues for a team&quot;,
+  &quot;inputSchema&quot;: {
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;properties&quot;: {
+      &quot;team&quot;: { &quot;type&quot;: &quot;string&quot; },
+      &quot;state&quot;: { &quot;type&quot;: &quot;string&quot;, &quot;enum&quot;: [&quot;open&quot;, &quot;closed&quot;] }
+    },
+    &quot;required&quot;: [&quot;team&quot;, &quot;state&quot;]
+  },
+  &quot;outputSchema&quot;: {
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;properties&quot;: {
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;items&quot;: {
+          &quot;type&quot;: &quot;object&quot;,
+          &quot;properties&quot;: {
+            &quot;identifier&quot;: { &quot;type&quot;: &quot;string&quot; },
+            &quot;title&quot;: { &quot;type&quot;: &quot;string&quot; },
+            &quot;priority&quot;: { &quot;type&quot;: &quot;integer&quot; }
+          },
+          &quot;required&quot;: [&quot;identifier&quot;, &quot;title&quot;, &quot;priority&quot;]
+        }
+      }
+    },
+    &quot;required&quot;: [&quot;items&quot;]
+  }
+}
+</code></pre>
+<p>当工具声明了 <code>outputSchema</code> 时，服务端<strong>必须</strong>返回符合该 Schema 的 <code>structuredContent</code>，客户端<strong>应当</strong>在消费前按该 Schema 做校验。为了兼容还不认识 <code>structuredContent</code> 的旧客户端，规范建议服务端在 <code>content</code> 里同步放一份序列化文本或可读摘要。这里需要注意规范特别划出的一条概念区分：<code>structuredContent</code> 是<strong>服务端</strong>产生的结构化工具返回值，与大语言模型推理侧的 Structured Outputs（受限解码生成 JSON）完全是两回事。</p>
+<p>不过，同时存在 <code>content</code> 和 <code>structuredContent</code> 也带来了一定心智负担和实现分歧。官方在 2026 年 8 月更新的路线图（<code>docs/development/roadmap.mdx</code> 第 4 项优先领域）里坦率承认了这一点：新成立的 Core Primitives 工作组计划在下个周期精简 <code>tools/call</code> 的返回形态，解决结构化与非结构化输出并存导致的保真度差异，并同步探索服务端渐进发现（Progressive Discovery）机制。</p>
+<h2 id="03-primitives-schemas--原生多模态内容块与资源引用">原生多模态内容块与资源引用<a class="anchor" href="#03-primitives-schemas--原生多模态内容块与资源引用" aria-label="链接到本节">#</a></h2>
+<p>相比只能输出纯文本字节流的 CLI，MCP 工具结果从协议层就原生支持混合内容块。单次 <code>tools/call</code> 的响应可以同时把机器可计算的字段放进 <code>structuredContent</code>，把给人或视觉/语音模型看的内容放进 <code>content</code> 数组里的独立块：</p>
+<ul>
+<li><strong>文本块（<code>type: &quot;text&quot;</code>）</strong>，承载可读摘要或向后兼容的 JSON 字符串。</li>
+<li><strong>图像块（<code>type: &quot;image&quot;</code>）与音频块（<code>type: &quot;audio&quot;</code>）</strong>，携带 Base64 数据与 <code>mimeType</code>（如 <code>image/png</code>、<code>audio/wav</code>）。</li>
+<li><strong>资源链接（<code>type: &quot;resource_link&quot;</code>）</strong>，只返回资源 URI、名称和描述，避免在工具结果里直接内联几十兆的大文件，让客户端按需调 <code>resources/read</code> 懒加载。规范提醒：工具返回的 <code>resource_link</code> 不一定出现在 <code>resources/list</code> 目录中。</li>
+<li><strong>内嵌资源（<code>type: &quot;resource&quot;</code>）</strong>，当数据量不大且需要随结果立即生效时，直接携带 <code>uri</code>、<code>mimeType</code> 和内容体。</li>
+</ul>
+<p>所有内容块都可以挂 <code>annotations</code>，用 <code>audience</code>（如 <code>[&quot;user&quot;]</code> 或 <code>[&quot;assistant&quot;]</code>）、<code>priority</code> 和 <code>lastModified</code> 提示宿主这段内容该给谁看。比如一张给人类复核的高清截图可以标成 <code>audience: [&quot;user&quot;]</code>，而不必白白浪费视觉模型的输入 Token。</p>
+<h2 id="03-primitives-schemas--sep-1303-把参数校验失败还给模型自纠错"><code>SEP-1303</code>：把参数校验失败还给模型自纠错<a class="anchor" href="#03-primitives-schemas--sep-1303-把参数校验失败还给模型自纠错" aria-label="链接到本节">#</a></h2>
+<p>回到本章开头那个订机票填错年份的死循环。<code>SEP-1303</code> 在 <code>2025-11-25</code> 落地并延续到 <code>2026-07-28</code>，把工具错误严格划成了两类，核心判据只有一条：<strong>模型看到这条报错后能不能自己改参数修好</strong>。</p>
+<ol>
+<li><strong>协议错误（Protocol Errors）</strong>，走标准 JSON-RPC <code>error</code> 对象，用于请求框架本身坏了或模型很难自修的问题，包括：调用了不存在的工具名（<code>-32602</code>）、请求外层不符合 <code>CallToolRequest</code> 结构、HTTP 头与 Body 不匹配（<code>-32020</code>）、服务端内部崩溃（<code>-32603</code>）。客户端可以选择直接拦截，不一定会喂给模型。</li>
+<li><strong>工具执行错误（Tool Execution Errors）</strong>，走正常的 JSON-RPC <code>result</code> 对象，带上 <code>&quot;resultType&quot;: &quot;complete&quot;</code> 和 <code>&quot;isError&quot;: true</code>，把清晰可执行的修复提示写在 <code>content</code> 里。覆盖三类场景：外部 API 调用失败、<strong>所有输入参数校验错误</strong>（格式不对、日期在过去、枚举越界、必填字段缺失），以及业务逻辑错误（如句柄已过期、余额不足）。</li>
+</ol>
+<p>规范明确要求客户端<strong>应当</strong>把 <code>isError: true</code> 的工具执行错误完整交给模型。回到订机票的例子，服务端返回：</p>
+<pre><code class="language-json">{
+  &quot;jsonrpc&quot;: &quot;2.0&quot;,
+  &quot;id&quot;: 4,
+  &quot;result&quot;: {
+    &quot;resultType&quot;: &quot;complete&quot;,
+    &quot;content&quot;: [
+      {
+        &quot;type&quot;: &quot;text&quot;,
+        &quot;text&quot;: &quot;Invalid departure date: must be in the future. Current date is 2026-11-26.&quot;
+      }
+    ],
+    &quot;isError&quot;: true
+  }
+}
+</code></pre>
+<p>模型看到当前日期提示后，下一轮马上就能把参数修正为合法日期并完成预订，不再需要人工打断。类似地，前面提到的显式状态句柄如果过期了，服务端也应当用 <code>isError: true</code> 明确回复 <code>&quot;basket bsk_a1b2c3 has expired&quot;</code>，引导模型重新调用创建工具，而不是扔一个冰冷的 <code>&quot;invalid argument&quot;</code>。</p>
+<p>无状态传输、强类型 <code>inputSchema</code>/<code>outputSchema</code>、<code>structuredContent</code> 多模态返回和可自愈的错误边界都齐备之后，客户端执行工具的方式迎来了质变。下一章我们看 Phil Schmid 文章里的第一个重头戏：Code Mode 如何借着这套强类型契约，彻底改写 Agent 调用 MCP 的成本曲线。</p>
+</div></section><section class="book-section" id="04-code-mode"><header class="chapter-head"><div class="chapter-number">04</div><h1>Code Mode：终结上下文膨胀与 N 轮串行调用</h1></header><div class="prose"><p>让一个 Agent 做件日常排障活：先去 Linear 拉出 <code>core</code> 团队所有未关闭的 issue，挑出最高优先级 P0 的那几条，再分别去 Sentry 查它们过去 24 小时的报错次数和 P95 延迟，最后输出一张汇总表。按 2025 年最常见的 plain tool calling 跑法，事情会立刻变得既慢又贵。宿主先把两台 MCP Server 的几十个工具 JSON Schema 全量塞进系统提示；第一轮模型调用 <code>linear.listIssues</code>，返回 20 条带长描述的 issue 原始 JSON，整包灌进对话历史；第二轮模型挑出 3 条 P0，再逐一调用 <code>sentry.getIssueStats</code>，每一条多走一轮推理，又把一大段堆栈和标签写回上下文。把两台服务器的数据拼在一起，实际是拿昂贵的模型上下文窗口当内存，拿串行模型推理当 <code>for</code> 循环。</p>
+<p>Philipp Schmid 在《Why I&#39;m Bullish on MCP for 2027》里把 <strong>Code Mode</strong> 放到了第一条核心变化的位置，并指出这种模式正在成为 OpenCode 2.0、Claude Code、OpenAI Codex、Pi 和 Factory Droid 等新一代客户端的默认执行路径。下面这张图对比了传统串行 tool calling 和 Code Mode 在上下文占用与往返轮次上的差别。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 270" width="660" height="270" role="img" aria-label="传统 Tool Calling 与 Code Mode 上下文和往返开销对比">
+<title>传统 Tool Calling 与 Code Mode 上下文和往返开销对比</title>
+<defs>
+  <marker id="04-code-mode--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+  </marker>
+</defs>
+<text x="12" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="700" fill="var(--amber)" text-anchor="start">传统串行 Tool Calling (N+1 轮模型推理，中间数据全进上下文)</text><rect x="12" y="28" width="142" height="62" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="22" y="48" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">Turn 1: 模型</text><text x="22" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">调 linear.listIssues</text><text x="22" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">注入 50 个 Schema</text><line x1="154" y1="59" x2="174" y2="59" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#04-code-mode--arrow)"/><rect x="176" y="28" width="146" height="62" rx="4" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="186" y="48" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--amber)" text-anchor="start">20 条 Issue 原文</text><text x="186" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">全部写回对话历史</text><text x="186" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">上下文迅速膨胀</text><line x1="322" y1="59" x2="342" y2="59" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#04-code-mode--arrow)"/><rect x="344" y="28" width="142" height="62" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="354" y="48" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">Turn 2..N: 循环</text><text x="354" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">逐条查 Sentry 统计</text><text x="354" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">每步多一轮推理</text><line x1="486" y1="59" x2="506" y2="59" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#04-code-mode--arrow)"/><rect x="508" y="28" width="140" height="62" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="518" y="48" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">最终汇总</text><text x="518" y="66" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">高延迟 + 高 Token</text><text x="518" y="82" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">中间载荷污染窗口</text><line x1="12" y1="108" x2="648" y2="108" stroke="var(--line)" stroke-width="0.8" stroke-dasharray="4 4"/><text x="12" y="130" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="700" fill="var(--forest)" text-anchor="start">Code Mode (1 轮生成脚本，沙箱内存过滤 Join，沙箱外持有 OAuth)</text><rect x="12" y="140" width="174" height="92" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="22" y="160" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">Turn 1: 类型化桩代码</text><text x="22" y="178" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">由 inputSchema 与</text><text x="22" y="194" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">outputSchema 自动生成</text><text x="22" y="210" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">模型一次写出异步脚本</text><line x1="186" y1="186" x2="212" y2="186" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#04-code-mode--arrow)"/><rect x="214" y="140" width="224" height="92" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="224" y="160" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">隔离执行沙箱 (无原始凭证)</text><text x="224" y="178" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">Promise.all 并发调多 Server</text><text x="224" y="194" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">structuredContent 内存 Join</text><text x="224" y="210" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">OAuth 2.1 在沙箱外由宿主管</text><line x1="438" y1="186" x2="464" y2="186" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#04-code-mode--arrow)"/><rect x="466" y="140" width="182" height="92" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="476" y="160" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">精简结果回传模型</text><text x="476" y="178" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">仅 P0 摘要进入上下文</text><text x="476" y="194" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">图像/音频独立块保留</text><text x="476" y="210" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">Token 降幅常超一个量级</text><text x="12" y="254" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="400" fill="var(--muted)" text-anchor="start">关键前提: 服务端声明 outputSchema 并返回 structuredContent，模型才能在编码前获知返回结构。</text>
+</svg><figcaption>传统 Tool Calling 与 Code Mode 上下文和往返开销对比</figcaption></figure>
+<p>图里上半部分的普通调用链路中，全量中间数据都必须经过模型上下文窗口，哪怕最终汇报只需要三个字段，前几十 KB 的冗余文本也会跟着后面每一轮推理反复计费。下半部分的 Code Mode 则由宿主提供一个隔离执行沙箱，把远端 MCP 工具映射成带类型的可调用函数，让模型在一轮推理里写出异步脚本，把并发查询、过滤和跨服务器 Join 全部放在便宜的沙箱内存里完成，最后只把精简摘要返回给模型上下文。</p>
+<h2 id="04-code-mode--为什么-outputschema-是-code-mode-的前提">为什么 <code>outputSchema</code> 是 Code Mode 的前提<a class="anchor" href="#04-code-mode--为什么-outputschema-是-code-mode-的前提" aria-label="链接到本节">#</a></h2>
+<p>早在 2025 年，就有团队尝试让模型直接写 Python 或 TypeScript 去调外部工具，但经常写出一堆字段名猜错的崩溃代码。根源在于旧工具只声明了 <code>inputSchema</code>，没声明返回结构。模型知道该传什么参数，却不知道返回值里列表字段叫 <code>items</code>、<code>issues</code> 还是 <code>data.nodes</code>，也不确定优先级字段是 <code>&quot;P0&quot;</code> 字符串还是数字 <code>1</code>。每次碰到未知结构，模型不得不先发一轮试探调用看一眼输出，再写处理脚本，平白多出往返和试错成本。</p>
+<p>MCP 的 <code>outputSchema</code> 与 <code>structuredContent</code> 把这块拼图补齐了。只要服务端在 <code>tools/list</code> 里同时声明 <code>inputSchema</code> 和 <code>outputSchema</code>，客户端就能在模型动笔前，自动生成强类型桩代码（Typed Stubs），直接暴露给沙箱环境。Philipp Schmid 原文给出了这个最直观的 TypeScript 示例：</p>
+<pre><code class="language-typescript">// Auto-generated from MCP inputSchema + outputSchema
+// interface LinearIssue { identifier: string; title: string; priority: number }
+// interface SentryStats { count24h: number; p95Ms: number }
+//
+// declare const linear: {
+//   listIssues(args: { team: string; state: &quot;open&quot; | &quot;closed&quot; }): Promise&lt;{ items: LinearIssue[] }&gt;;
+// };
+// declare const sentry: {
+//   getIssueStats(args: { query: string }): Promise&lt;SentryStats&gt;;
+// };
+
+// Model writes 1 script instead of N tool-calling turns
+const issues = await linear.listIssues({ team: &quot;core&quot;, state: &quot;open&quot; });
+const p0s = issues.items.filter(i =&gt; i.priority === 1);
+
+const errors = await Promise.all(
+  p0s.map(i =&gt; sentry.getIssueStats({ query: i.identifier }))
+);
+
+// Only the joined summary enters model context
+return p0s.map((i, idx) =&gt; ({
+  id: i.identifier,
+  title: i.title,
+  events24h: errors[idx].count24h,
+}));
+</code></pre>
+<p>这段不到 15 行的脚本体现了 Code Mode 的四个工程收益。<strong>推理轮次从 $N+1$ 压到 1</strong>，原本要串行跑四五轮的查询，现在由 <code>Promise.all</code> 在单次沙箱执行里并发完成，端到端延迟显著下降。<strong>过滤与聚合落在廉价计算层</strong>，在第 14 章的教学基准测试（<code>test_09_code_mode_slashes_turns_and_context_bytes</code>）里，面对 20 条带 600 字节正文的 issue 和对应带堆栈的 Sentry 统计，普通 tool calling 需要 4 轮推理并向模型上下文灌入上万字节原始载荷，Code Mode 只用 1 轮推理，进入上下文的最终摘要体积缩小了超过 20 倍。<strong>静态类型提前挡住字段幻觉</strong>，只要沙箱开启 TypeScript 类型检查或运行前校验，把 <code>i.priority === &quot;p0&quot;</code> 写错成字符串类型在执行前就会报错，根本不需要等到远端接口失败。<strong>提示词里的工具列表大幅瘦身</strong>，宿主无需把 50 个冗长的 JSON Schema 原文塞进系统提示，只需提供精简的类型签名索引，甚至按需动态检索子集。</p>
+<h2 id="04-code-mode--三种工具调用路线的真实取舍">三种工具调用路线的真实取舍<a class="anchor" href="#04-code-mode--三种工具调用路线的真实取舍" aria-label="链接到本节">#</a></h2>
+<p>工程落地时，普通 tool calling、本地 CLI 管道和 MCP Code Mode 各有适用边界，把三者放在同一张表里对照，选型会非常清晰：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>普通 Tool Calling</th>
+<th>本地 CLI + 管道（<code>jq</code>/<code>curl</code>）</th>
+<th>MCP Code Mode</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>多步跨系统 Join</td>
+<td>每步一轮模型推理，中间数据全进上下文</td>
+<td>沙箱内一次完成，但需要人工或模型手写解析正则</td>
+<td>沙箱内并发执行，按 <code>outputSchema</code> 强类型 Join</td>
+</tr>
+<tr>
+<td>多模态返回</td>
+<td>支持图像、音频、资源块</td>
+<td>标准输出为纯文本字节流，需落盘临时文件拼路径</td>
+<td>同时返回 <code>structuredContent</code> 给代码和独立图像/音频块给模型</td>
+</tr>
+<tr>
+<td>凭证隔离与授权</td>
+<td>宿主托管 OAuth 2.1，模型不见密钥</td>
+<td>依赖磁盘配置文件或环境变量，沙箱内代码可直接读取 API Key</td>
+<td>OAuth 2.1 与作用域控制留在沙箱外，沙箱仅通过受控桥接调工具</td>
+</tr>
+<tr>
+<td>非研发用户可用性</td>
+<td>高，零本地安装</td>
+<td>低，需要终端、包管理器与环境配置</td>
+<td>高，宿主透明提供轻量沙箱（如 JS/Wasm 隔离区）</td>
+</tr>
+<tr>
+<td>适用场景</td>
+<td>单次简单工具调用、快速确认动作</td>
+<td>本地代码库操作、Git、编译测试与系统运维</td>
+<td>跨多台远程 SaaS 的批量过滤、统计聚合与复杂编排</td>
+</tr>
+</tbody></table></div>
+<p>这里最容易被低估的是<strong>沙箱外 OAuth 边界</strong>与<strong>原生多模态</strong>。很多开发者喜欢在本地终端里用 <code>gh</code>、<code>stripe</code>、<code>aws</code> 等 CLI 工具配 <code>SKILL.md</code>，在个人开发机上确实顺手。可一旦把这套方案搬到企业团队或云端托管 Agent，CLI 往往逼着你把宽权限 API Key 塞进容器环境变量。只要沙箱里执行的脚本读了一段带提示注入的外部文档，攻击者一句 <code>env</code> 或 <code>cat ~/.config/...</code> 就能把凭证偷走。</p>
+<p>而在 MCP Code Mode 架构里，代码沙箱本身是无网、无磁盘凭证的纯计算隔离区（例如 V8 Isolate、QuickJS/Wasm 或无密钥子进程）。沙箱里的 <code>linear.listIssues(...)</code> 和 <code>sentry.getIssueStats(...)</code> 只是向沙箱外宿主发起的受控 RPC 桥接；真正的 OAuth 2.1 Access Token、作用域校验、人工审批弹窗和出站 HTTPS 连接全都由沙箱外的 MCP Client 负责。即使沙箱里的脚本被恶意输入诱导，它也看不到任何原始密钥，更无法绕过宿主允许的工具清单去访问任意外网地址。</p>
+<p>多模态场景同样如此。如果一个 BI 或监控 MCP Server 返回了图表 PNG 图像和底层指标数组，Code Mode 脚本可以直接拿 <code>structuredContent</code> 里的数组算同比增长率，同时把 <code>content</code> 里带 <code>type: &quot;image&quot;</code> 的独立块原样透传给多模态模型看图，不用在脚本里折腾 Base64 落盘和文件路径传递。</p>
+<h2 id="04-code-mode--落地-code-mode-时绕不开的三个工程细节">落地 Code Mode 时绕不开的三个工程细节<a class="anchor" href="#04-code-mode--落地-code-mode-时绕不开的三个工程细节" aria-label="链接到本节">#</a></h2>
+<p>把 Code Mode 真正做稳，服务端和宿主各有几件不能偷懒的事。</p>
+<p>对 <strong>MCP Server 作者</strong>而言，第一件事是把 <code>outputSchema</code> 当成一等公民来写，哪怕返回的是数组或嵌套对象，也要给足准确的字段类型和 <code>required</code> 列表，并保证 <code>structuredContent</code> 严格遵守该 Schema。只返回一坨 Markdown 表格的工具，在 Code Mode 里会退化成难解析的字符串，直接拖累调用成功率。第二件事是注意分页和体积上限：即使沙箱内存比上下文窗口便宜得多，无限制拉取十万条记录照样会触发沙箱 OOM 或执行超时，工具设计时应当提供明确的过滤参数（如 <code>team</code>、<code>state</code>、<code>limit</code>）与分页游标。</p>
+<p>对 <strong>宿主与客户端作者</strong>而言，第一件事是隔离沙箱必须锁死资源配额与出站网络：限制 CPU 时间、内存上限、单次脚本并发 RPC 数量，禁用原生 <code>fetch</code>/文件系统/环境变量访问，所有对外交互只留 MCP 桥接函数这一个窄口。第二件事是把人工确认（Human-in-the-Loop）和写操作拦截依然卡在宿主层：沙箱脚本调用只读工具可以静默并发放行，但一旦触发破坏性写操作或服务端返回 <code>InputRequiredResult</code>，宿主必须能暂停脚本执行、把确认弹窗推给用户，等拿到结果再恢复 Promise，或者直接拒绝并抛异常给脚本处理。第三件事是错误堆栈的回传策略：脚本里某次 <code>tools/call</code> 返回 <code>isError: true</code> 时，宿主应当把这条可执行错误信息映射成可读异常，既允许脚本内 <code>try/catch</code> 自行兜底，也在未捕获时完整还给模型，让模型在下一轮迅速修正脚本。</p>
+<p>当沙箱脚本在执行半途遇到服务端需要人工确认或外部授权，或者普通远程调用需要向用户追问额外参数时，无状态的集群怎么在没有粘性会话的前提下把这一来一回接上？下一章我们拆解 <code>2026-07-28</code> 的多往返请求机制（MRTR）和 URL Mode Elicitation。</p>
+</div></section><section class="book-section" id="05-mrtr-elicitation"><header class="chapter-head"><div class="chapter-number">05</div><h1>多往返请求（MRTR）与无状态追问</h1></header><div class="prose"><p>设想一个线上发布工具 <code>deploy_release</code>。用户让 Agent 把 <code>v2.4.0</code> 发到生产环境，客户端把 <code>tools/call</code> 发给了负载均衡器后面的副本 A。副本 A 检查策略后发现：生产发布必须先让操作人二次确认，或者需要先去第三方平台补录一个一次性审批凭证。</p>
+<p>在 <code>2025-11-25</code> 及以前的协议里，服务端要想反过来问客户端要信息，必须顺着正在打开的 HTTP SSE 响应流，倒着发一条服务端发起的 JSON-RPC 请求（<code>elicitation/create</code>），然后副本 A 的工作线程就得死死挂在那里干等。问题马上就来了：客户端回答后发回的 POST 必须精准路由回同一台副本 A，否则新落地的副本 B 根本不知道刚才那条挂起的协程在哪；如果用户喝了杯咖啡两分钟才点确认，中间网关或 Serverless 早就把长连接掐断了。</p>
+<p><code>2026-07-28</code> 通过 <strong><code>SEP-2322</code>（Multi Round-Trip Requests，简称 MRTR）</strong> 彻底终结了服务端主动发请求的历史。新规则非常干脆：服务端绝不在任何流上发送独立的 JSON-RPC Request；当处理请求需要额外输入时，直接结束本次请求并返回一个 <code>InputRequiredResult</code>，等客户端收集完输入，再带着原参数和服务端签发的不透明状态令牌重试一次。下面这张图把 MRTR 无状态追问与沙箱外 OAuth 2.1 的完整边界串在了一起。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 250" width="660" height="250" role="img" aria-label="MRTR 无状态多往返追问与沙箱外 OAuth 2.1 授权流程">
+<title>MRTR 无状态多往返追问与沙箱外 OAuth 2.1 授权流程</title>
+<defs>
+  <marker id="05-mrtr-elicitation--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+  </marker>
+</defs>
+<text x="12" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="12" font-weight="700" fill="var(--ink)" text-anchor="start">无粘性会话的 MRTR 追问与沙箱外 OAuth 2.1 授权边界</text><rect x="12" y="32" width="190" height="74" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="22" y="52" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">1. Host / MCP Client</text><text x="22" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">持有 OAuth 2.1 Token</text><text x="22" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">(按 RFC 8707 绑定 aud)</text><text x="22" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">发起 tools/call (id=1)</text><line x1="202" y1="69" x2="232" y2="69" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#05-mrtr-elicitation--arrow)"/><rect x="234" y="32" width="190" height="74" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="244" y="52" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">2. Replica A (无状态)</text><text x="244" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">校验 Token 与 Scope</text><text x="244" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">需人工确认或外部授权</text><text x="244" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">签发 AEAD requestState</text><line x1="424" y1="69" x2="454" y2="69" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#05-mrtr-elicitation--arrow)"/><rect x="456" y="32" width="192" height="74" rx="4" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="466" y="52" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--amber)" text-anchor="start">3. InputRequiredResult</text><text x="466" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">resultType: input_required</text><text x="466" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">inputRequests: elicitation</text><text x="466" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">附带不透明 requestState</text><line x1="552" y1="106" x2="552" y2="134" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#05-mrtr-elicitation--arrow)"/><rect x="336" y="136" width="312" height="76" rx="4" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="346" y="156" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--amber)" text-anchor="start">4. 人工确认或 URL Mode 带外授权</text><text x="346" y="174" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">Form Mode: 宿主弹窗采集非敏感字段</text><text x="346" y="190" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">URL Mode: 跳浏览器直连服务端，密钥不经 LLM</text><text x="346" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">服务端核对 sub 身份，防钓鱼与会话劫持</text><line x1="336" y1="174" x2="306" y2="174" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#05-mrtr-elicitation--arrow)"/><rect x="12" y="136" width="292" height="76" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="22" y="156" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">5. 重试落地到任意 Replica B (id=2)</text><text x="22" y="174" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">原样回传 requestState 与 inputResponses</text><text x="22" y="190" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">Replica B 验签: principal + TTL + paramsDigest</text><text x="22" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">无需粘性路由即可返回 resultType: complete</text><text x="12" y="234" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="400" fill="var(--muted)" text-anchor="start">安全红线: 沙箱内代码绝不接触原始 API Key; URL Mode 敏感凭证绝不回流到 MCP Client 或模型上下文。</text>
+</svg><figcaption>MRTR 无状态多往返追问与沙箱外 OAuth 2.1 授权流程</figcaption></figure>
+<p>图里第 1 到第 3 步发生在副本 A 上：副本 A 校验完 OAuth 2.1 Bearer Token 后发现缺少人工确认，于是直接签发带完整性保护的 <code>requestState</code>，随 <code>InputRequiredResult</code> 一起返回，然后立即释放当前 HTTP 连接，内存中不留任何会话状态。第 4 步由宿主在本地完成表单弹窗或跳转浏览器执行带外授权。第 5 步客户端换一个新的 JSON-RPC <code>id</code> 重试原请求，哪怕负载均衡器把重试打到了另一台毫无上下文的副本 B，副本 B 也能靠验签 <code>requestState</code> 重建上下文并直接产出最终结果。</p>
+<h2 id="05-mrtr-elicitation--resulttype-inputrequiredresult-与允许触发的边界"><code>resultType</code>、<code>InputRequiredResult</code> 与允许触发的边界<a class="anchor" href="#05-mrtr-elicitation--resulttype-inputrequiredresult-与允许触发的边界" aria-label="链接到本节">#</a></h2>
+<p>为了把正常完成和需要补充输入这两种结果清晰分开，<code>2026-07-28</code> 规定<strong>所有</strong>协议结果都必须带上 <code>resultType</code> 鉴别字段（<code>docs/specification/2026-07-28/basic/patterns/mrtr.mdx</code>）：</p>
+<ul>
+<li><code>&quot;complete&quot;</code>，表示本次 RPC 已经执行完毕，返回标准结果。如果客户端连上了旧版本服务端、结果里缺了该字段，客户端必须按 <code>&quot;complete&quot;</code> 处理。</li>
+<li><code>&quot;input_required&quot;</code>，表示本次请求需要客户端补充输入后再重试，即 <code>InputRequiredResult</code>。（此外，第 9 章的 Tasks 扩展还引入了 <code>&quot;task&quot;</code>。）</li>
+</ul>
+<p>规范严格限定了只有三个客户端方法允许返回 <code>InputRequiredResult</code>：<strong><code>tools/call</code></strong>、<strong><code>resources/read</code></strong> 和 <strong><code>prompts/get</code></strong>，其他任何方法都不允许触发 MRTR。而且服务端在返回 <code>inputRequests</code> 之前，必须检查本次请求 <code>_meta.io.modelcontextprotocol/clientCapabilities</code> 里客户端是否明确声明支持对应能力（比如 <code>elicitation</code> 里的 <code>form</code> 或 <code>url</code> 模式）。如果客户端没声明，服务端绝不能强行下发，而是应当视情况降级，或者返回 <code>-32021</code>（<code>MissingRequiredClientCapability</code>）明确告知缺少哪些能力。</p>
+<p>看一组完整的往返报文。第一次请求（<code>id: 1</code>）触发了表单追问：</p>
+<pre><code class="language-json">{
+  &quot;jsonrpc&quot;: &quot;2.0&quot;,
+  &quot;id&quot;: 1,
+  &quot;result&quot;: {
+    &quot;resultType&quot;: &quot;input_required&quot;,
+    &quot;inputRequests&quot;: {
+      &quot;confirm_prod&quot;: {
+        &quot;method&quot;: &quot;elicitation/create&quot;,
+        &quot;params&quot;: {
+          &quot;mode&quot;: &quot;form&quot;,
+          &quot;message&quot;: &quot;Confirm deploying v2.4.0 to prod?&quot;,
+          &quot;requestedSchema&quot;: {
+            &quot;type&quot;: &quot;object&quot;,
+            &quot;properties&quot;: {
+              &quot;approved&quot;: { &quot;type&quot;: &quot;boolean&quot; }
+            },
+            &quot;required&quot;: [&quot;approved&quot;]
+          }
+        }
+      }
+    },
+    &quot;requestState&quot;: &quot;eyJwcm...signature&quot;
+  }
+}
+</code></pre>
+<p>客户端弹窗征得用户同意后，发起第二次独立请求。注意规范的两条硬要求：第一，重试请求的 JSON-RPC <code>id</code> <strong>必须不同于</strong>首次请求（这里变成 <code>id: 2</code>），因为它们是两个完全独立的请求；第二，如果服务端返回了 <code>requestState</code>，客户端必须一字不差地原样回传，<strong>不得</strong>解析、篡改，也不得把它套用到并行发出的其他请求上。如果服务端没返回 <code>requestState</code>，客户端重试时则不得凭空带上该字段。</p>
+<pre><code class="language-json">{
+  &quot;jsonrpc&quot;: &quot;2.0&quot;,
+  &quot;id&quot;: 2,
+  &quot;method&quot;: &quot;tools/call&quot;,
+  &quot;params&quot;: {
+    &quot;name&quot;: &quot;deploy_release&quot;,
+    &quot;arguments&quot;: { &quot;version&quot;: &quot;v2.4.0&quot; },
+    &quot;inputResponses&quot;: {
+      &quot;confirm_prod&quot;: {
+        &quot;action&quot;: &quot;accept&quot;,
+        &quot;content&quot;: { &quot;approved&quot;: true }
+      }
+    },
+    &quot;requestState&quot;: &quot;eyJwcm...signature&quot;
+  }
+}
+</code></pre>
+<p>如果客户端漏填了必需的回答，规范建议服务端继续返回新的 <code>InputRequiredResult</code> 重新索要，而不是直接抛协议错误；如果客户端多塞了服务端不认识的额外字段，服务端应当静默忽略。同时回想第 2 章的缓存规则：任何 <code>resultType: &quot;input_required&quot;</code> 中间结果，以及携带了 <code>inputResponses</code> 或 <code>requestState</code> 的重试响应，都绝对禁止写入客户端缓存。</p>
+<h2 id="05-mrtr-elicitation--把-requeststate-当作不可信外部输入来防">把 <code>requestState</code> 当作不可信外部输入来防<a class="anchor" href="#05-mrtr-elicitation--把-requeststate-当作不可信外部输入来防" aria-label="链接到本节">#</a></h2>
+<p>因为 <code>requestState</code> 完整绕道了客户端，恶意或被攻破的客户端完全可能篡改、重放、跨账号移植或者调包参数。<code>mrtr.mdx</code> 给服务端列出了非常具体的密码学防护清单：</p>
+<ol>
+<li><strong>强制完整性保护</strong>：只要 <code>requestState</code> 会影响鉴权、资源访问或业务逻辑，服务端<strong>必须</strong>使用 HMAC 或 AEAD（如 AES-GCM）保护其完整性和机密性，验签失败直接拒绝。只有在篡改顶多导致请求失败的无害场景下，才允许省略完整性校验。</li>
+<li><strong>绑定三要素防重放</strong>：受保护的 <code>requestState</code> 载荷内应当编码三项数据并在收到重试时逐一核验：<ul>
+<li><strong>当前已鉴权主体（<code>principal</code> / <code>sub</code>）</strong>：拒绝由其他账号呈递的状态令牌；</li>
+<li><strong>短有效期（TTL）</strong>：拒绝超过过期窗口的陈旧令牌；</li>
+<li><strong>原始请求指纹（方法名加关键参数摘要）</strong>：防止攻击者拿着审批 <code>v2.4.0</code> 拿到的 <code>requestState</code>，在重试时偷偷把参数调包成 <code>v9.9.9-evil</code>。</li>
+</ul>
+</li>
+<li><strong>一次性消费必须由服务端落库保证</strong>：规范特意加了一段警告，上述三项只能收窄重放窗口、防跨人和防调包，本身<strong>不能</strong>保证严格一次性消费（Single-use）。像一次性核销、转账扣款这类不能被重放两次的操作，服务端必须在共享存储里记录消费状态（如 nonce 或幂等键）。</li>
+</ol>
+<p>这套防线已经在第 14 章的 <code>MrtrReplica</code> 与 <code>test_10</code>/<code>test_11</code> 中完整跑通：副本 A 签发的 <code>requestState</code> 在副本 B 上正常续跑，而篡改签名、换账号重放、超时、调包参数和复用 JSON-RPC <code>id</code> 五种攻击全部被准确拦截。</p>
+<h2 id="05-mrtr-elicitation--form-mode-与-url-mode-elicitation-sep-1036">Form Mode 与 URL Mode Elicitation（<code>SEP-1036</code>）<a class="anchor" href="#05-mrtr-elicitation--form-mode-与-url-mode-elicitation-sep-1036" aria-label="链接到本节">#</a></h2>
+<p>MRTR 承接的交互请求里，因为 Roots 和 Sampling 已在 <code>2026-07-28</code> 正式弃用，真正面向 2027 的主角是 <strong>Elicitation</strong>（<code>docs/specification/2026-07-28/client/elicitation.mdx</code>）。它分两种模式，安全边界划得泾渭分明。</p>
+<p>**Form Mode（表单模式）**用于采集非敏感的结构化信息，数据会经由客户端回传服务端。为了让各种桌面、网页和命令行宿主都能稳定渲染表单，<code>requestedSchema</code> 被刻意限制在扁平对象（Flat Object）子集内，属性只允许 <code>string</code>（支持 <code>email</code>、<code>uri</code>、<code>date</code>、<code>date-time</code> 格式）、<code>number</code>/<code>integer</code>、<code>boolean</code>，以及单选或多选枚举（<code>SEP-1330</code> 规范了带 <code>title</code> 的 <code>oneOf</code>/<code>anyOf</code> 与无标题的 <code>enum</code> 写法，<code>SEP-1034</code> 补齐了所有原始类型的 <code>default</code> 默认值）。深度嵌套对象和普通数组被明确禁止。用户的响应统一采用三态模型：<code>&quot;accept&quot;</code>（提交并附带 <code>content</code>）、<code>&quot;decline&quot;</code>（明确拒绝）和 <code>&quot;cancel&quot;</code>（关闭弹窗或按 Esc 放弃）。</p>
+<p>规范划了一条不可逾越的红线：<strong>服务端绝不能用 Form Mode 向用户索要密码、API Key、访问令牌或支付凭证</strong>。凡是涉及敏感秘密或第三方系统授权的交互，都必须走 <strong>URL Mode（<code>SEP-1036</code>）</strong>。</p>
+<p>在 URL Mode 中，服务端只返回一个带 <code>mode: &quot;url&quot;</code>、<code>message</code> 和目标 <code>url</code> 的 <code>elicitation/create</code> 请求，客户端向用户展示完整域名并征得明确同意后，通过安全隔离的系统浏览器（比如 iOS 上允许 <code>SFSafariViewController</code>，禁止客户端可窥探内容的 <code>WKWebView</code>）打开页面。用户直接在可信网页里输入敏感凭证或走完第三方 OAuth 流程，凭证直接存在 MCP Server 后端，<strong>全程不经过 LLM 上下文，也不经过 MCP Client</strong>。客户端重试原请求时，<code>inputResponses</code> 里只有 <code>{&quot;action&quot;: &quot;accept&quot;}</code>（没有 <code>content</code>），表示用户同意打开链接；至于带外操作有没有完成，由服务端根据回传的 <code>requestState</code> 和后端状态自行判断。</p>
+<p>这里有一个 <code>2026-07-28</code> 相比 <code>2025-11-25</code> 的关键精简：旧版曾经定义过 <code>elicitationId</code> 和服务端主动推送的 <code>notifications/elicitation/complete</code> 通知。在全面转向 MRTR 后，客户端靠重试原请求就能得知带外流程结果，服务端需要关联状态时直接把自己的标识放进 <code>requestState</code> 即可，于是这两个冗余元素被彻底删掉了。</p>
+<h2 id="05-mrtr-elicitation--防钓鱼与防令牌透传-url-mode-的两道必考安全题">防钓鱼与防令牌透传：URL Mode 的两道必考安全题<a class="anchor" href="#05-mrtr-elicitation--防钓鱼与防令牌透传-url-mode-的两道必考安全题" aria-label="链接到本节">#</a></h2>
+<p>URL Mode 把用户引到了外部浏览器，立刻引入了两个经典安全陷阱，规范在 <code>elicitation.mdx</code> 里花了不少篇幅给出标准解法：</p>
+<p>第一是<strong>禁止拿 URL Mode 替代 MCP 自身授权，更禁止 Token Passthrough</strong>。MCP Client 访问 MCP Server 的身份授权必须走下一章讲的标准 OAuth 2.1；URL Mode 只用来处理 MCP Server 作为第三方 API 客户端时的外部授权，而且服务端绝不能把客户端发来的 MCP Bearer Token 透传给第三方 API，也不能把第三方凭证发回给 MCP Client。</p>
+<p>第二是<strong>防链接转发钓鱼（Account Takeover）</strong>。设想恶意用户 Alice 触发了一个第三方授权 URL，她自己不点，而是把链接发给同一台 MCP Server 的受害者 Bob。如果服务端直接把用户送到第三方 OAuth 授权页，Bob 点完授权后，第三方回调回来，服务端错把 Bob 的第三方令牌绑到了 Alice 的账号下，导致账号接管。标准防线是：服务端给的 URL 不应该是直接指向第三方授权页的裸链接，而是先指向 MCP Server 自己的受保护入口（例如 <code>https://mcp.example.com/connect?...</code>），且 URL 里禁止包含敏感信息或预鉴权令牌。浏览器打开该页面后，服务端必须先校验浏览器里的登录态（如 Session Cookie 对应的 <code>sub</code> 身份）与发起 MRTR 的 MCP 鉴权 <code>sub</code> 完全一致，确认是同一个人操作后，才把浏览器重定向到第三方授权服务器。同时，客户端侧禁止预抓取 URL 元数据、必须高亮展示完整域名并对 Punycode 混淆域名发出警告。</p>
+<p>理清了服务端如何向用户安全追问之后，下一章我们把目光转向整个 MCP 远程服务的入口闸门：OAuth 2.1、受保护资源元数据、CIMD 无预注册发现与企业 IdP 集中管控。</p>
+</div></section><section class="book-section" id="06-oauth-auth"><header class="chapter-head"><div class="chapter-number">06</div><h1>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</h1></header><div class="prose"><p>把远程 MCP Server 推向公司内部时，最先卡住的几乎从来不是工具写得好不好，而是安全团队的三个问题：第一，陌生客户端连上来之前既没有预分配的 <code>client_id</code>，企业 IdP 又为了防滥用关掉了动态客户端注册（DCR），怎么在不手工建几百个 OAuth 应用的前提下完成登录？第二，员工连了十几个 MCP Server，每个服务都要弹一次浏览器授权，员工离职时怎么保证一键回收全部 Agent 访问权限？第三，如果一个恶意 MCP Server 诱骗客户端把发给别家服务的 Token 拿来复用，或者用恶意授权服务器实施 Mix-Up 混肴攻击，协议层有没有硬防线？</p>
+<p><code>2026-07-28</code> 规范以及稳定版官方授权扩展仓库 <code>modelcontextprotocol/ext-auth</code>，已经把这一整套基于 IETF 标准协议栈的身份边界搭了起来。对 HTTP 传输层来说，授权是可选的，一旦启用就必须遵守这套规范；而本地 <code>stdio</code> 传输则明确<strong>不应</strong>套用 HTTP OAuth 流程，应从本地受控环境获取凭证。</p>
+<h2 id="06-oauth-auth--标准协议栈与三方角色">标准协议栈与三方角色<a class="anchor" href="#06-oauth-auth--标准协议栈与三方角色" aria-label="链接到本节">#</a></h2>
+<p>MCP 没有自己发明一套专有鉴权协议，而是把九份成熟 IETF/OIDC 标准拼成了一条可互操作的链路（<code>docs/specification/2026-07-28/basic/authorization/index.mdx</code>）：</p>
+<ul>
+<li><strong>OAuth 2.1（draft-ietf-oauth-v2-1-13）与 RFC 6750</strong>：要求 HTTPS、强制 PKCE（<code>S256</code>）、仅允许 <code>Authorization: Bearer &lt;token&gt;</code> 请求头（严禁把 Token 放进 URI 查询参数）、公开客户端强制 Refresh Token 轮换。</li>
+<li><strong>RFC 9728（OAuth 2.0 Protected Resource Metadata，<code>SEP-985</code>）</strong>：明确 MCP Server 是 OAuth <strong>资源服务器（Resource Server）</strong>，通过元数据向客户端指明背后对应的授权服务器（Authorization Server）是谁。</li>
+<li><strong>RFC 8414 与 OpenID Connect Discovery 1.0</strong>：客户端发现授权服务器端点与能力的标准机制。</li>
+<li><strong>RFC 8707（Resource Indicators）</strong>：把 Access Token 严格绑定到目标 MCP Server 的规范 URI（Canonical URI），从协议源头杜绝令牌跨服务滥用和 Token Passthrough。</li>
+<li><strong>OAuth Client ID Metadata Documents（CIMD，<code>SEP-991</code>）</strong>：用 HTTPS URL 作为 <code>client_id</code>，取代已弃用的 RFC 7591 动态注册。</li>
+<li><strong>RFC 9207（<code>SEP-2468</code>）</strong>：在授权响应里校验 <code>iss</code> 参数，防 OAuth Mix-Up 攻击。</li>
+</ul>
+<p>把 MCP Server 定位成标准 OAuth 资源服务器的好处非常直接：鉴权逻辑可以完全委托给专门的授权服务器（如 Okta、Auth0、Keycloak、Stytch、WorkOS 或自建 IdP），MCP Server 只需做好无状态的令牌验签、受众核对和作用域检查。</p>
+<h2 id="06-oauth-auth--授权服务器发现与受众绑定">授权服务器发现与受众绑定<a class="anchor" href="#06-oauth-auth--授权服务器发现与受众绑定" aria-label="链接到本节">#</a></h2>
+<p>客户端第一次无令牌访问受保护的 MCP Server 时，整条发现与换票链按严格顺序走完：</p>
+<ol>
+<li><strong>受保护资源发现（RFC 9728）</strong>：MCP Server 返回 <code>HTTP 401 Unauthorized</code>，并在 <code>WWW-Authenticate</code> 头里给出 <code>resource_metadata</code> URL（以及可选的最小初始 <code>scope</code> 建议）。客户端必须优先解析该头里的地址；如果头里没带，则依次探测路径级 <code>/.well-known/oauth-protected-resource/&lt;mcp-path&gt;</code> 和根路径 <code>/.well-known/oauth-protected-resource</code>。</li>
+<li><strong>授权服务器元数据发现（RFC 8414 / OIDC）</strong>：拿到 <code>authorization_servers</code> 后，客户端必须按优先级依次尝试路径插入和追加的 <code>.well-known/oauth-authorization-server</code> 与 <code>.well-known/openid-configuration</code> 端点。拉回文档后，客户端<strong>必须</strong>按 RFC 8414 Section 3.3 核对文档里的 <code>issuer</code> 字段与构造 URL 所用的发行方标识完全一致，否则立刻拒收（防止恶意站点伪造诚实发行方的元数据）。客户端还<strong>必须</strong>检查 <code>code_challenge_methods_supported</code> 存在以确认支持 PKCE，缺失则拒绝继续。</li>
+<li><strong>强制 <code>resource</code> 参数（RFC 8707）</strong>：客户端在授权请求和换票请求中都<strong>必须</strong>带上目标 MCP Server 的规范 URI（如 <code>https://mcp.example.com/mcp</code>，不含 fragment，一般不带末尾斜杠）。MCP Server 在收到每条带 Bearer Token 的请求时，<strong>必须</strong>验证令牌的受众（<code>aud</code>）确实指向自己，不匹配就返回 <code>401</code>。</li>
+</ol>
+<p>规范在 <code>2026-07-28</code> 补齐了一项容易踩坑的多授权服务器隔离要求（<code>SEP-2352</code>）：如果一个受保护资源列出多个授权服务器，或者后续切换了授权服务器，客户端<strong>必须</strong>按 <code>issuer</code> 标识分桶持久化客户端凭证和令牌，绝不能把 A 授权服务器颁发的 <code>client_id</code> 拿去 B 授权服务器复用。</p>
+<h2 id="06-oauth-auth--从-dcr-到-cimd-sep-991-与防-mix-up-sep-2468">从 DCR 到 CIMD（<code>SEP-991</code>）与防 Mix-Up（<code>SEP-2468</code>）<a class="anchor" href="#06-oauth-auth--从-dcr-到-cimd-sep-991-与防-mix-up-sep-2468" aria-label="链接到本节">#</a></h2>
+<p>在早期的 MCP 规范里，面对客户端和服务端素不相识的场景，默认推荐的是 RFC 7591 动态客户端注册（DCR）。但运行一年后，DCR 暴露了两个现实顽疾：大量企业 IdP 出于防垃圾注册和合规考虑根本不开放公开 <code>/register</code> 接口；而在代理型 MCP Server 场景下，DCR 叠加静态上游 <code>client_id</code> 和浏览器 Consent Cookie，还会诱发严重的 Confused Deputy 攻击（攻击者注册一个指向自己域名的恶意客户端，利用用户浏览器里残留的同意 Cookie 静默跳过授权确认页，偷走授权码）。</p>
+<p>于是 <code>2026-07-28</code> 正式将 DCR 标为 Deprecated（<code>PR #2858</code>），并把 <strong>Client ID Metadata Documents（CIMD，<code>SEP-991</code>）</strong> 扶正为无预置关系时的首选注册方案（最新 <code>draft/</code> 规范已将其引用升级到 <code>draft-ietf-oauth-client-id-metadata-document-03</code>）。</p>
+<p>CIMD 的思路非常清爽：客户端把自己的元数据 JSON 托管在一个带路径的 HTTPS URL 上，比如 <code>https://app.example.com/oauth/client-metadata.json</code>，文档内包含 <code>client_id</code>（必须与文档 URL 逐字符一致）、<code>client_name</code> 和 <code>redirect_uris</code>。发授权请求时，直接把这个 URL 当作 <code>client_id</code> 传给授权服务器。授权服务器看到 URL 形态的 <code>client_id</code>，主动 GET 拉取并缓存这份文档，核验 <code>client_id</code> 一致性、<code>redirect_uri</code> 白名单以及自身信任策略（例如按域名白名单管控，并做好出站 SSRF 防护），无需预先建库、也无需跨授权服务器反复注册，同一个 URL <code>client_id</code> 天生跨所有支持 <code>client_id_metadata_document_supported: true</code> 的授权服务器通用。</p>
+<p>客户端注册的推荐优先级由此收敛为四档：优先用预注册凭证，其次用 CIMD，再次回退到 DCR（且 OIDC 场景下按 <code>SEP-837</code> 必须显式指定 <code>application_type: &quot;native&quot;</code> 或 <code>&quot;web&quot;</code> 以免本地回调 URI 冲突），最后才提示用户手动填写。</p>
+<p>但 CIMD 的静态文档无法为每个不同发行方配唯一的 <code>redirect_uri</code>，这让多 IdP 环境下的 OAuth Mix-Up 攻击风险抬头。为此，<code>2026-07-28</code> 并入了 <strong><code>SEP-2468</code>（RFC 9207 <code>iss</code> 校验）</strong>：客户端重定向前必须在与 PKCE <code>code_verifier</code> 相同的单次请求记录里保存预期 <code>issuer</code>；收到回调时（包括错误回调），只要响应里带了 <code>iss</code>，或者授权服务器元数据声明了 <code>authorization_response_iss_parameter_supported: true</code>，客户端就<strong>必须</strong>在兑换授权码前用逐字符精确匹配（严禁大小写折叠、默认端口省略或路径归一化）核对 <code>iss</code>。声明支持却缺 <code>iss</code>、或者 <code>iss</code> 对不上，一律立刻中止，且不得把错误响应里的 <code>error_description</code> 展示给用户。</p>
+<h2 id="06-oauth-auth--最小权限渐进提权与-refresh-token-约定">最小权限渐进提权与 Refresh Token 约定<a class="anchor" href="#06-oauth-auth--最小权限渐进提权与-refresh-token-约定" aria-label="链接到本节">#</a></h2>
+<p>MCP 遵循最小权限原则，并不鼓励客户端一上来就索要全部读写删权限。如果客户端拿着只读令牌调用了写操作工具，MCP Server 返回 <code>HTTP 403 Forbidden</code>，并在 <code>WWW-Authenticate</code> 头里明确给出本操作所需作用域：</p>
+<pre><code class="language-http">HTTP/1.1 403 Forbidden
+WWW-Authenticate: Bearer error=&quot;insufficient_scope&quot;,
+                         scope=&quot;files:write&quot;,
+                         resource_metadata=&quot;https://mcp.example.com/.well-known/oauth-protected-resource&quot;
+</code></pre>
+<p>服务端应当在单次挑战里一次性给出当前操作所需的全部作用域，避免逐个挤牙膏导致用户连点好几次授权页。客户端收到挑战后执行 <strong>Step-Up 授权流</strong>：计算已有作用域与新挑战作用域的并集重新发起授权（避免丢掉先前其他操作已获批的权限），并限制重试次数防止死循环。</p>
+<p>对于长时运行所需的 Refresh Token，<code>SEP-2207</code> 补齐了 OAuth 2.1 与 OIDC 的互操作细节：需要刷新令牌的客户端应当在元数据 <code>grant_types</code> 里声明 <code>refresh_token</code>，并在授权服务器 <code>scopes_supported</code> 包含 <code>offline_access</code> 时主动追加该作用域；反过来，MCP Server（资源服务器）<strong>不应</strong>把 <code>offline_access</code> 放进 <code>WWW-Authenticate</code> 或受保护资源元数据中，因为刷新令牌是客户端与授权服务器之间的事，不是资源本身的访问权限。</p>
+<h2 id="06-oauth-auth--企业级两大稳定授权扩展">企业级两大稳定授权扩展<a class="anchor" href="#06-oauth-auth--企业级两大稳定授权扩展" aria-label="链接到本节">#</a></h2>
+<p>当 MCP 离开个人浏览器、进入后台流水线和万人规模企业内网时，核心规范的交互式登录就不够用了。官方 <code>ext-auth</code> 仓库已经把两项扩展推到了 <strong>Stable</strong> 阶段：</p>
+<p><strong>机器对机器授权（<code>io.modelcontextprotocol/oauth-client-credentials</code>，<code>SEP-1046</code>）</strong>，面向 CI/CD 流水线、定时后台代理和服务端到服务端集成。客户端通过 <code>grant_type=client_credentials</code> 直接拿应用凭证换票，依然必须携带 <code>resource</code> 参数绑定目标 MCP Server。规范强烈推荐采用 <strong>RFC 7523 JWT Bearer 断言</strong>（私钥签发短效 JWT，且按 RFC 10070 规定 <code>aud</code> 只能填授权服务器 <code>issuer</code> 标识，不得填 token 端点 URL），避免在环境里存放一旦泄露就长期有效的明文 <code>client_secret</code>。官方 SDK 示例还特意要求配置 <code>expectedIssuer</code> 钉死颁发凭证的授权服务器，拒绝把密钥发给任何第三方广告的未知授权端点。</p>
+<p><strong>企业托管授权（<code>io.modelcontextprotocol/enterprise-managed-authorization</code>，<code>SEP-990</code>）</strong>，彻底解决文章开头安全团队问的第二个问题：员工不需要逐个去几十个 SaaS MCP Server 点同意，IT 管理员直接在企业 IdP（如 Okta、PingFederate、Descope、Athenz、ThunderID 等）里集中配置访问策略。流程基于 IETF 正在推进的 <strong>ID-JAG（Identity Assertion JWT Authorization Grant）</strong> 草案与 <strong>RFC 8693 Token Exchange</strong>：</p>
+<ol>
+<li>员工使用企业 SSO 登录 MCP Client，客户端拿到企业 IdP 签发的 OIDC ID Token 或 SAML 断言。</li>
+<li>客户端连接企业批准的 MCP Server 时，拿着该身份断言去企业 IdP 的 Token 端点发起 RFC 8693 令牌交换（<code>requested_token_type: urn:ietf:params:oauth:token-type:id-jag</code>），指定目标 MCP 授权服务器的 <code>audience</code> 和可选的 <code>resource</code>。</li>
+<li>企业 IdP 实时评估群组、角色和条件访问策略，策略通过才签发 ID-JAG；离职或无权限员工在这一步就被挡住，客户端拿不到任何票据。</li>
+<li>客户端用 <code>urn:ietf:params:oauth:grant-type:jwt-bearer</code> 拿着 ID-JAG 向 MCP 授权服务器直接换取访问令牌，全程无须弹窗跳转，且后续在企业 IdP 侧一键吊销即可全局生效。</li>
+</ol>
+<p>截至 2026 年 11 月官方扩展文档记录，Okta（Cross App Access）、PingFederate 13.1+、Athenz、Descope、Janssen、ThunderID 已正式支持签发与校验 ID-JAG，Auth0、Keycloak、Stytch、WorkOS、Cloudflare <code>workers-oauth-provider</code> 和 FastMCP 4.0 也已进入可用或早期体验阶段。而在官方 2026 年 8 月路线图里，新筹建的 Agent Identity 工作组正沿着这条线继续往深处走：推动 <strong>DPoP</strong>（防截获令牌重放的持有证明）、<strong>工作负载身份联邦（SEP-1933）</strong>，以及面向无头子代理的窄权限委托（与 IETF WIMSE 协同）。</p>
+<p>至此，MCP 的无状态传输、强类型原语、MRTR 追问和企业级身份底座已经全部立稳。接下来的问题是如何让协议既能快速长出 Skills、Tasks、Events、Apps 这些高迭代能力，又不至于把核心规范撑成一个臃肿难改的巨无霸。下一章我们看 <code>SEP-2133</code> 与 <code>SEP-3392</code> 的扩展治理框架。</p>
+</div></section><section class="book-section" id="07-extensions-framework"><header class="chapter-head"><div class="chapter-number">07</div><h1>扩展机制与治理边界</h1></header><div class="prose"><p>任何通用协议在爆火后的第二年都会撞上同一堵墙：社区每周都在提新需求，有的想要异步长任务，有的想要嵌入式交互 UI，有的想要企业 IdP 策略接入，有的想要事件推送或文件上传。把这些特性全部塞进核心规范，结果一定是核心体积失控、SDK 维护者疲于奔命、每一次小改动都要拉动整个社区做破坏性升级；反过来，如果核心规范一概拒之门外，各家大厂和开源项目就会各自发明互不兼容的私有 <code>_meta</code> 字段和魔改方法，协议很快四分五裂。</p>
+<p>MCP 在 <code>2026-07-28</code> 给出的工程解法，是把核心规范瘦身到最小公约数，再用 <strong><code>SEP-2133</code>（Extensions）</strong> 与 <strong><code>SEP-3392</code>（Extension Lifecycle）</strong> 搭出一套分层演进的扩展治理体系。今天我们看到的 Skills、Tasks、Events、Apps、Server Cards 和企业授权，全都是这套机制运转出来的产物。</p>
+<h2 id="07-extensions-framework--命名空间-能力协商与默认关闭原则">命名空间、能力协商与默认关闭原则<a class="anchor" href="#07-extensions-framework--命名空间-能力协商与默认关闭原则" aria-label="链接到本节">#</a></h2>
+<p>扩展机制的设计非常克制，不引入额外握手，直接复用核心协议的能力声明结构（<code>docs/extensions/overview.mdx</code>）。</p>
+<p><strong>反向域名标识符</strong>，每个扩展用 <code>{vendor-prefix}/{extension-name}</code> 格式唯一命名，前缀强制必填。官方扩展统一使用 <code>io.modelcontextprotocol/</code> 前缀（如 <code>io.modelcontextprotocol/skills</code>、<code>io.modelcontextprotocol/ui</code>）；第三方或企业内部扩展则使用自己拥有的反向域名（如 <code>com.example/my-extension</code>），从命名源头杜绝冲突。</p>
+<p><strong>双向按需协商</strong>，服务端在 <code>server/discover</code> 的 <code>capabilities.extensions</code> 中声明自己支持哪些扩展及配置对象；客户端则在每条请求的 <code>_meta[&quot;io.modelcontextprotocol/clientCapabilities&quot;].extensions</code> 中显式声明自己当前请求开启了哪些扩展。空对象 <code>{}</code> 表示开启该扩展且无额外参数。如果客户端连接的是 <code>2025-11-25</code> 旧版服务端，许多 SDK 也支持在旧 <code>initialize</code> 握手的 <code>capabilities.extensions</code> 里兼容传递相同结构。</p>
+<p><strong>默认关闭与优雅降级</strong>，规范定了一条硬规则：<strong>无论扩展处于哪个成熟阶段，在 SDK 和客户端里都默认关闭，必须由开发者或宿主显式选择启用（opt-in）</strong>。SDK 维护者拥有完全自主权决定支持哪些扩展，不受核心一致性测试的强制捆绑。当通信双方只有一侧支持某扩展时，支持方必须回退到核心协议行为（例如支持 MCP Apps 的服务端在面对纯文本客户端时，依然要返回可读的文本 <code>content</code>）；只有当该扩展对业务属于硬前提时（比如某工具必须异步创建 Task 或强制走企业托管授权），服务端才通过 <code>-32021</code>（<code>MissingRequiredClientCapability</code>）或授权错误明确拒掉请求。</p>
+<h2 id="07-extensions-framework--sep-3392-四阶段成熟度生命周期"><code>SEP-3392</code>：四阶段成熟度生命周期<a class="anchor" href="#07-extensions-framework--sep-3392-四阶段成熟度生命周期" aria-label="链接到本节">#</a></h2>
+<p>早期的 <code>SEP-2133</code> 只区分了实验仓库（<code>experimental-ext-*</code>）和官方仓库（<code>ext-*</code>），结果很快暴露出一个现实问题：实现者分不清哪个官方扩展已经定型可以放心上生产，哪个还在剧烈改动。为了把成熟度信号透明化，<code>SEP-3392</code> 在 2026 年 9 月落地，把扩展生命周期明确划成了四个阶段，并直接用仓库目录路径标明状态：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>仓库与目录路径</th>
+<th>允许的变更范围</th>
+<th>审批权限</th>
+<th>准入门槛</th>
+<th>对实现者的承诺</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Experimental</strong></td>
+<td><code>experimental-ext-&lt;name&gt;</code> 或 <code>ext-&lt;area&gt;/specification/experimental/</code></td>
+<td>随时可做任意变更，无预先通知</td>
+<td>Extension Maintainer</td>
+<td>关联 WG/IG，维护者即可创建</td>
+<td>无稳定承诺，建议锁死 tag 或 commit</td>
+</tr>
+<tr>
+<td><strong>Beta</strong></td>
+<td><code>ext-&lt;area&gt;/specification/beta/&lt;name&gt;</code></td>
+<td>优先增量变更；破坏性变更应罕见、打包公告并递增 <code>revision</code></td>
+<td>Extension Maintainer</td>
+<td>提交 Extensions Track SEP，且至少有 1 份官方 SDK 参考实现</td>
+<td>欢迎真实业务试用，文档记录破坏性变更</td>
+</tr>
+<tr>
+<td><strong>Stable</strong></td>
+<td><code>ext-&lt;area&gt;/specification/stable/&lt;name&gt;/&lt;revision&gt;/</code></td>
+<td>已发布修订版不可变，改动只在核心协议新版本发布时生效</td>
+<td>Extension Maintainer（升阶需 Core Maintainer 批）</td>
+<td>第二份 Extensions Track SEP，须具备客户端与服务端两份独立互操作实现及一致性测试场景</td>
+<td>在同一核心协议版本内行为完全冻结</td>
+</tr>
+<tr>
+<td><strong>Core</strong></td>
+<td>原扩展移入 <code>specification/archived/</code></td>
+<td>并入主规范，遵循核心发布周期</td>
+<td>Core Maintainers</td>
+<td>Standards Track SEP</td>
+<td>成为核心协议默认能力，无需再单独声明扩展</td>
+</tr>
+</tbody></table></div>
+<p>这里有一个精巧的版本处理细节。按 <code>SEP-2133</code> 最初的写法，只要发生破坏性变更就必须换新标识符（如 <code>-v2</code>），容易造成标识符泛滥。<code>SEP-3392</code> 修正了这一点：阶段跃迁时标识符保持不变；Experimental 和 Beta 阶段如果确实需要破坏性变更，可以在扩展设置对象里增加或递增 <code>revision</code> 字符串，对端不认识该 <code>revision</code> 就自动不启用扩展；到了 Stable 阶段，扩展行为直接锚定在双方协商的核心协议版本号上（如 <code>2026-07-28</code>）。只有当新旧两种不兼容行为必须在同一个核心协议版本里并存时，才需要启用 <code>-v2</code> 新标识符。</p>
+<h2 id="07-extensions-framework--截至-2026-11-24-的官方扩展全景与客户端矩阵">截至 2026-11-24 的官方扩展全景与客户端矩阵<a class="anchor" href="#07-extensions-framework--截至-2026-11-24-的官方扩展全景与客户端矩阵" aria-label="链接到本节">#</a></h2>
+<p>把 <code>docs/extensions/overview.mdx</code> 和 <code>docs/extensions/client-matrix.mdx</code> 的最新记录整理成一张状态表，就能看清 2027 年 Agent 运行时栈的真实成熟度，既不把 Beta 当成已经凝固的铁律，也不低估已经大规模落地的能力：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>官方扩展</th>
+<th>标识符</th>
+<th>仓库</th>
+<th>当前阶段（2026-11-24）</th>
+<th>社区矩阵记录的代表支持客户端</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>OAuth Client Credentials</td>
+<td><code>io.modelcontextprotocol/oauth-client-credentials</code></td>
+<td><code>ext-auth</code></td>
+<td><strong>Stable</strong></td>
+<td><code>mcpc</code> MCP CLI 及官方 TS/Python SDK</td>
+</tr>
+<tr>
+<td>Enterprise-Managed Auth</td>
+<td><code>io.modelcontextprotocol/enterprise-managed-authorization</code></td>
+<td><code>ext-auth</code></td>
+<td><strong>Stable</strong></td>
+<td>Archestra.AI、<code>mcpc</code>、Glean</td>
+</tr>
+<tr>
+<td>MCP Apps</td>
+<td><code>io.modelcontextprotocol/ui</code></td>
+<td><code>ext-apps</code></td>
+<td><strong>Stable</strong></td>
+<td>Claude Web/Desktop、ChatGPT、Cursor、VS Code Copilot、M365 Copilot、Goose、Postman、MCPJam、Glean</td>
+</tr>
+<tr>
+<td>MCP Tasks</td>
+<td><code>io.modelcontextprotocol/tasks</code></td>
+<td><code>ext-tasks</code></td>
+<td><strong>Beta（目标并入 Core）</strong></td>
+<td>Claude Web、Claude Code、MCPJam、Glean</td>
+</tr>
+<tr>
+<td>Skills over MCP</td>
+<td><code>io.modelcontextprotocol/skills</code></td>
+<td><code>ext-skills</code></td>
+<td><strong>Beta</strong></td>
+<td>Claude Web、Claude Code、VS Code Copilot、MCPJam、Glean、Archestra.AI；ChatGPT/fast-agent/Inspector 部分支持</td>
+</tr>
+<tr>
+<td>MCP Events</td>
+<td><code>io.modelcontextprotocol/events</code></td>
+<td><code>ext-events</code></td>
+<td><strong>Beta</strong></td>
+<td>MCPJam（全模式）；ChatGPT（Webhook 部分支持）</td>
+</tr>
+<tr>
+<td>MCP Server Cards</td>
+<td><code>ext-server-card</code></td>
+<td><code>ext-server-card</code></td>
+<td><strong>Beta</strong></td>
+<td>Python/Go SDK 与 Goose 实验性实现</td>
+</tr>
+</tbody></table></div>
+<p>除了这七项已毕业进入 Beta/Stable 的官方扩展，GitHub <code>modelcontextprotocol</code> 组织下还有五个处于 <strong>Experimental</strong> 孵化期的前沿方向，很值得做平台架构的团队提前留意：</p>
+<ul>
+<li><code>experimental-ext-interceptors</code>：拦截、校验和变换工具调用与资源读取的中间件协议。</li>
+<li><code>experimental-ext-variants</code>：让同一台服务器暴露多个变体供客户端按场景挑选。</li>
+<li><code>experimental-ext-tool-annotations</code>：更细粒度的动作元数据与信任注解草案。</li>
+<li><code>experimental-ext-file-uploads</code>：客户端与工具之间的带外文件传输机制。</li>
+<li><code>experimental-ext-filesystems</code>：超越单次 <code>resources/read</code> 的资源目录列举、搜索与写入操作。</li>
+</ul>
+<p>看清这张全景图，团队在做 2027 技术选型时就能掌握节奏：凡是已经进入 <strong>Stable</strong> 的能力（<code>2026-07-28</code> 无状态核心、<code>ext-auth</code>、<code>ext-apps</code>），可以放心按规范长期投入；处于 <strong>Beta</strong> 的高价值扩展（<code>tasks</code>、<code>skills</code>、<code>events</code>、<code>server-card</code>），架构上应当尽早按其接口契约预留抽象层，同时通过特性开关和适配器隔离协议小幅演进带来的变动成本。</p>
+<p>接下来四章，我们逐一深入拆解决定 2027 年 Agent 形态的四项核心扩展：先从终结 CLI 配合 <code>SKILL.md</code> 与 MCP 对立之争的 <strong>Skills over MCP</strong> 开始。</p>
+</div></section><section class="book-section" id="08-skills-over-mcp"><header class="chapter-head"><div class="chapter-number">08</div><h1>Skills 进入 MCP：<code>io.modelcontextprotocol/skills</code></h1></header><div class="prose"><p>2026 年上半年，团队用 Agent Skills 配合外部服务时，普遍撞上了一个维护噩梦：研发一边维护远端的 SaaS MCP Server 或命令行工具，一边还得单独建一个 Git 仓库分发 <code>SKILL.md</code> 和配套参考文档，挨个催同事拉取更新。一旦后端工作流改了参数约定、公司新上线了一条工单分派规则，半数人的本机硬盘里跑的还是三个月前的过期 <code>SKILL.md</code>。把几百行工作流硬塞进 <code>server/discover</code> 的 <code>instructions</code> 字段也不行，比如 <code>SEP-2640</code> 里提到的 <code>mcpGraph</code> 技能光一份说明书就超过 875 行，全量常驻系统提示会把上下文吃光。</p>
+<p><strong>Skills over MCP</strong>（<code>io.modelcontextprotocol/skills</code>，<code>SEP-2640</code> 已达 Final，扩展目前处于 Beta 阶段）把 Agent Skills 正式搬进了 MCP 协议内部，直接复用核心的 Resources 原语作为传输层，技能目录格式与渐进披露规范则完整委托给上游 <code>agentskills.io</code> 规范，不在 MCP 里重复定义。Philipp Schmid 在原文中指出，Anthropic 已在 Claude 和 Claude Code 上向公众开放了 Skills over MCP 测试版，Shopify、HubSpot 和 Atlassian 等服务已经能够按当前登录用户的账号与组织，实时下发定制化的业务 Playbook。下面这张图展示了从轻量目录发现到 SHA-256 摘要校验与热更新的完整生命周期。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 256" width="660" height="256" role="img" aria-label="Skills over MCP 渐进披露与 SHA-256 摘要更新流程">
+<title>Skills over MCP 渐进披露与 SHA-256 摘要更新流程</title>
+<defs>
+  <marker id="08-skills-over-mcp--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+  </marker>
+</defs>
+<text x="12" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="12" font-weight="700" fill="var(--ink)" text-anchor="start">io.modelcontextprotocol/skills 渐进披露与 SHA-256 完整性校验</text><rect x="12" y="32" width="192" height="78" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="22" y="52" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">阶段 1: 连接期轻量发现</text><text x="22" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">调用 skills/list (带 ttlMs)</text><text x="22" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">仅将 name + description</text><text x="22" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">注入系统指令，零全文膨胀</text><line x1="204" y1="71" x2="232" y2="71" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#08-skills-over-mcp--arrow)"/><rect x="234" y="32" width="192" height="78" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="244" y="52" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">阶段 2: 锚定清单与审批</text><text x="244" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">按账号返回定制 Playbook</text><text x="244" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">列出文件 URI/size/sha256</text><text x="244" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">用户审批严格绑定整份清单</text><line x1="426" y1="71" x2="454" y2="71" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#08-skills-over-mcp--arrow)"/><rect x="456" y="32" width="192" height="78" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="466" y="52" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">阶段 3: 按需读取验签</text><text x="466" y="70" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">调用 resources/read</text><text x="466" y="86" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">校验字节数 + SHA-256</text><text x="466" y="102" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">核对 frontmatter 一致</text><line x1="552" y1="110" x2="552" y2="138" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#08-skills-over-mcp--arrow)"/><rect x="336" y="140" width="312" height="78" rx="4" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="346" y="160" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--amber)" text-anchor="start">阶段 4: 远端变更与热更新</text><text x="346" y="178" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">服务端更新 SKILL.md -&gt; 摘要变化</text><text x="346" y="194" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">本地缓存未命中或校验报错，立即拒绝旧内容</text><text x="346" y="210" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">刷新 skills/get，撤销旧审批并重新确认</text><line x1="336" y1="179" x2="306" y2="179" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#08-skills-over-mcp--arrow)"/><rect x="12" y="140" width="292" height="78" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="22" y="160" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">本地缓存与来源隔离</text><text x="22" y="178" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">按 (serverId, uri, sha256) 落盘缓存</text><text x="22" y="194" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">排除出本地文件系统技能自动发现路径</text><text x="22" y="210" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">跨 Server 读取须双方显式逐次授权</text><text x="12" y="240" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="400" fill="var(--muted)" text-anchor="start">未列举技能可通过 skills/get(uri) 直接按需加载; 单个 Skill 建议不超过 512 文件或 16 MiB。</text>
+</svg><figcaption>Skills over MCP 渐进披露与 SHA-256 摘要更新流程</figcaption></figure>
+<p>图里把整个流程切成了四个清晰阶段：连接期只注入极轻的元数据，按需加载前必须核对清单和用户审批，拉回来的每个文件都要校验字节数与 SHA-256 摘要，远端一旦改动技能内容，旧审批自动失效并触发刷新重确认，彻底结束了手工同步 <code>SKILL.md</code> 的割裂时代。</p>
+<h2 id="08-skills-over-mcp--skill-寻址规则与三个新增协议方法"><code>skill://</code> 寻址规则与三个新增协议方法<a class="anchor" href="#08-skills-over-mcp--skill-寻址规则与三个新增协议方法" aria-label="链接到本节">#</a></h2>
+<p>在 <code>SEP-2640</code> 中，一个 Skill 依然是一个包含根目录 <code>SKILL.md</code> 及可选支撑文件（<code>references/</code>、<code>scripts/</code>、<code>examples/</code> 等）的逻辑目录，每个文件都作为一条标准 MCP Resource 暴露。服务端<strong>应当</strong>使用 <code>skill://</code> URI 方案，结构为：</p>
+<pre><code class="language-text">skill://&lt;skill-path&gt;/&lt;file-path&gt;
+</code></pre>
+<p>其中 <code>&lt;skill-path&gt;</code> 可以是单段（如 <code>skill://git-workflow/SKILL.md</code>），也可以带任意层级的组织前缀（如 <code>skill://acme/billing/refunds/SKILL.md</code>），但最后一段<strong>必须</strong>与 <code>SKILL.md</code> 头部 YAML Frontmatter 里的 <code>name</code> 字段完全一致。规范特意强调两点：第一，<code>skill://</code> 的首段在 RFC 3986 语法里占了 authority 位置，但这里没有任何网络含义，客户端绝不能对它做 DNS 或网络解析；第二，服务端也可以用自有域名的方案（如 <code>github://owner/repo/skills/refunds/SKILL.md</code>），宿主<strong>严禁</strong>仅凭 URI 协议头就认定某个资源是技能，唯一可信的认定来源只有 <code>skills/list</code> 或 <code>skills/get</code> 的返回记录。</p>
+<p>声明 <code>io.modelcontextprotocol/skills</code> 扩展的服务端必须同时声明核心 <code>resources</code> 能力，并实现以下方法（<code>docs/extensions/skills/overview.mdx</code>）：</p>
+<ul>
+<li><strong><code>skills/list</code>（必填）</strong>：枚举服务端公开的技能清单，支持 <code>cursor</code>/<code>nextCursor</code> 分页与 <code>SEP-2549</code> 的 <code>ttlMs</code>/<code>cacheScope</code> 缓存字段。每个条目必须是原子完整的（清单不得跨页拆分），包含 <code>uri</code>、原封不动解析出的 <code>frontmatter</code>（至少含 <code>name</code> 和 <code>description</code>），以及完整文件清单 <code>resources</code>（每项含 <code>uri</code>、<code>digest</code> 和字节 <code>size</code>），或者针对动态生成技能标注 <code>&quot;resources&quot;: &quot;dynamic&quot;</code>。</li>
+<li><strong><code>skills/get</code>（必填）</strong>：按 URI 直接获取单个技能条目。规范允许目录极其庞大或按需生成的服务端在 <code>skills/list</code> 里只返回空列表或精选子集，但对它服务的每一个技能都<strong>必须</strong>响应 <code>skills/get</code>，未知 URI 返回 <code>-32602</code>（Invalid params）。这样，用户、另一个技能或 <code>server/discover</code> 的 <code>instructions</code> 可以直接指向一个未列举技能的 URI，由宿主按需拉取。</li>
+<li><strong><code>resources/read</code>（复用核心原语）</strong>：读取 <code>SKILL.md</code> 及支撑文件的实际字节内容。</li>
+<li><strong><code>resources/directory/read</code>（可选）</strong>：仅当服务端在扩展设置里显式声明 <code>directoryRead: true</code> 时客户端才可调用，用来分页列举目录的直接子项（子目录使用 <code>mimeType: &quot;inode/directory&quot;</code>，目录 URI 不带末尾斜杠）。</li>
+</ul>
+<p>规范还给服务端划出了体量建议：单个 Skill 包含 <code>SKILL.md</code> 在内<strong>不应超过 512 个文件或 16 MiB</strong>，宿主则必须能完整支撑这一上限。</p>
+<h2 id="08-skills-over-mcp--渐进披露怎么压住上下文开销">渐进披露怎么压住上下文开销<a class="anchor" href="#08-skills-over-mcp--渐进披露怎么压住上下文开销" aria-label="链接到本节">#</a></h2>
+<p>把 Skills 搬进 MCP 之所以不会重演 2025 年上下文膨胀的老路，靠的是严格的三段式渐进披露，规范甚至用了 <strong>MUST NOT</strong> 约束宿主不得偷懒预加载：</p>
+<ol>
+<li><strong>连接期只取摘要</strong>：宿主调用 <code>skills/list</code>，只把每条技能的 <code>name</code>、<code>description</code> 和来源服务器标识放进系统提示，不拉取任何文件内容。规范明文规定，宿主在连接、列举甚至请求用户审批期间，<strong>都不得提前读取技能文件</strong>，用户审批直接绑定到清单元数据即可。</li>
+<li><strong>命中后再读正文</strong>：只有当模型或用户明确选用某个技能，且通过所需审批后，宿主才调用 <code>resources/read</code> 拉取对应的 <code>SKILL.md</code>。注意，普通路径直接调 <code>resources/read</code> 读到一份 <code>SKILL.md</code> 并不会自动激活技能；必须经过宿主的技能加载通道完成校验后，才算真正载入上下文。</li>
+<li><strong>支撑文件按需延迟加载</strong>：<code>SKILL.md</code> 里提到的相对路径（如 <code>references/checklist.md</code>）由客户端相对于技能根目录解析成 <code>skill://code-review/references/checklist.md</code>，等执行流程真走到那一步，再向同一台来源服务器按需读取。</li>
+</ol>
+<p>如果服务端连接的是登录态远程 SaaS（如 Shopify、Atlassian 或内部运维平台），<code>skills/list</code> 还可以根据当前 OAuth 令牌代表的账号或组织（配合 <code>cacheScope: &quot;private&quot;</code>），动态返回专属的团队工单模板、审批规范或店铺运营剧本。这是静态托管在 Git 仓库里的本地 <code>SKILL.md</code> 根本做不到的能力。</p>
+<h2 id="08-skills-over-mcp--sha-256-清单-热更新与五条防投毒红线">SHA-256 清单、热更新与五条防投毒红线<a class="anchor" href="#08-skills-over-mcp--sha-256-清单-热更新与五条防投毒红线" aria-label="链接到本节">#</a></h2>
+<p>把远程服务器下发的 Markdown 指令直接喂给 Agent，天然带着供应链篡改和提示注入风险。<code>SEP-2640</code> 在完整性和信任边界上写得相当严密，核心靠清单里的 SHA-256 摘要把热更新和安全审批绑成了一体：</p>
+<ol>
+<li><strong>严格限定在保留清单内读取</strong>：技能处于活跃期（至少直到 <code>SKILL.md</code> 移出模型上下文）内，宿主必须保留加载时的条目清单，禁止通过该技能读取任何不在清单里的 URI。即使调用了 <code>resources/directory/read</code> 看到了服务端新冒出来的文件，宿主也不得把它当作当前已批准技能的一部分，必须走刷新和重审批流程。</li>
+<li><strong>三重落地校验</strong>：每次 <code>resources/read</code> 拿到字节流后，宿主在交付模型前<strong>必须</strong>校验三项：原始字节长度是否等于清单 <code>size</code>、计算出的 SHA-256 是否等于清单 <code>digest</code>、解析出的 <code>SKILL.md</code> YAML Frontmatter 是否与条目里的 <code>frontmatter</code> 逐字段一致。任意一项不符，立刻丢弃内容，不得给模型看。</li>
+<li><strong>变更即撤销旧审批</strong>：持久化的用户审批必须绑定到<strong>完整的（文件 URI，摘要）集合</strong>。只要远端厂商修改、新增或删除了技能里的任意一个文件，哪怕改了一个标点，摘要就会立刻变化，本地以 <code>(serverId, uri, sha256)</code> 为键的缓存自动失效，旧审批随之作废；宿主调用 <code>skills/get</code> 拉取新清单并再次向用户确认后，才能加载新版本。对于没有固定摘要的 <code>&quot;resources&quot;: &quot;dynamic&quot;</code> 技能，宿主有权直接拒载，若允许加载也绝不能把历史审批泛化覆盖到未来任意动态生成的内容上。</li>
+<li><strong>来源标识与跨服务器隔离</strong>：技能的唯一身份是 <code>(originatingServerId, skillURI)</code>，光靠 <code>name</code> 不唯一，宿主绝不能允许两个不同服务器的同名技能静默互相覆盖。所有加载进上下文的技能内容必须打上来源服务器标签，且所有支撑文件读取必须锁死在来源服务器上；如果一段技能指令试图诱导 Agent 去读另一台服务器上的资源，宿主必须拦截并弹出明确标明双方服务器名称的逐次确认框。</li>
+<li><strong>不可信内容与防嵌套提权</strong>：技能正文一律视为不可信外部输入。凡是涉及宿主侧代码执行或类似 <code>allowed-tools</code> 的权限扩张，都必须按技能逐一获得显式人工批准。如果一个技能目录的子目录里嵌套了另一份 <code>SKILL.md</code>，父技能读取它时只能把它当普通参考文本，宿主严禁静默解析并激活嵌套技能的 Frontmatter；想激活嵌套技能，必须走独立加载和全新同意流程。落盘缓存的远端技能文件还必须设为对模型、工具及其他用户只读不可篡改（或每次读取重验哈希），并且<strong>必须排除出本地文件系统技能自动发现路径</strong>，防止重启后失去 MCP 来源标记被宿主误当成受信任的本机技能。</li>
+</ol>
+<p>这一整套机制在第 14 章的 <code>SkillsServer</code>、<code>SkillHostLoader</code> 以及 <code>test_13</code> 至 <code>test_15</code> 中都有零依赖代码验证。</p>
+<p>当服务端不仅能交付强类型工具，还能交付带版本校验和账号定制的工作流剧本之后，同步拉取这一侧的短板基本补齐了。但现实工程里还有大量活根本不可能在几秒钟的 HTTP 请求里跑完，比如跑一次 15 分钟的 CI 流水线、做一轮全库迁移、或者等一位审核人半小时后点批准。下一章我们看面向长程异步作业的 <strong>MCP Tasks</strong>。</p>
+</div></section><section class="book-section" id="09-tasks-async"><header class="chapter-head"><div class="chapter-number">09</div><h1>长程异步执行：MCP Tasks</h1></header><div class="prose"><p>在 <code>2026-07-28</code> 之前，想让一个 MCP 工具跑一趟 8 分钟的端到端测试或者云端视频转码，开发者手里只有两个别扭的选择。要么硬扛着 HTTP 连接不放，祈祷沿途的 Nginx、Cloudflare、公司出口代理和客户端 SDK 全都别在 60 秒或 120 秒时把空闲连接掐断；要么在业务层自己手搓一套 <code>start_job</code> / <code>check_job_status</code> / <code>get_job_result</code> 的自定义工具三件套，每家服务器字段名和状态枚举各写各的，客户端宿主完全看不出这是一条挂起中的异步任务，断线重启后也无法统一接管恢复。</p>
+<p><code>2025-11-25</code> 曾经通过 <code>SEP-1686</code> 把实验性 Tasks 塞进过核心规范，但经过大半年真实落地，暴露出三个结构性毛病。第一，握手极其脆弱：客户端必须先调 <code>tools/list</code> 查每个工具的 <code>execution.taskSupport</code>，才能决定调用时带不带 <code>task</code> 参数，不能用统一方式透明调用所有工具。第二，<code>tasks/result</code> 是个阻塞陷阱：旧设计要求任务进入 <code>input_required</code> 时，客户端提前调用阻塞式的 <code>tasks/result</code> 撑开一条 SSE 通道，好让服务端倒着往回塞 <code>elicitation/create</code> 请求，这直接撞上了 <code>2026-07-28</code> 禁止服务端主动发请求的铁律（<code>SEP-2260</code>）。第三，<code>tasks/list</code> 在无会话架构下根本没法安全界定归属范围：删掉 <code>Mcp-Session-Id</code> 后，对于未鉴权或弱绑定场景，服务端只认一个个独立的高熵 <code>taskId</code>，一旦开放全局 <code>tasks/list</code> 就会导致跨用户任务泄露。</p>
+<p>于是 <code>2026-07-28</code> 通过 <strong><code>SEP-2663</code></strong> 做了一次彻底重设计：把旧版实验 Tasks 移出核心，发布为官方扩展 <strong><code>io.modelcontextprotocol/tasks</code></strong>（目前处于 Beta 阶段，路线图明确标定目标为成熟后晋升 Core），用一套干脆利落的纯异步状态机彻底替换掉了阻塞式旧模型。</p>
+<h2 id="09-tasks-async--服务端主导的多态返回-告别-tools-list-预热">服务端主导的多态返回：告别 <code>tools/list</code> 预热<a class="anchor" href="#09-tasks-async--服务端主导的多态返回-告别-tools-list-预热" aria-label="链接到本节">#</a></h2>
+<p>新版 MCP Tasks 最舒服的改动，是把要不要创建异步任务的决定权完全交给了服务端，客户端再也不用提前探测每个工具支不支持异步（<code>docs/seps/2663-tasks-extension.mdx</code>）。</p>
+<p>协商只需要一步：服务端在 <code>server/discover</code> 里声明 <code>&quot;io.modelcontextprotocol/tasks&quot;: {}</code>，客户端在每条请求的 <code>_meta[&quot;io.modelcontextprotocol/clientCapabilities&quot;].extensions</code> 里带上同一键名。声明之后，客户端照常发一条普通的 <code>tools/call</code> 请求，既不需要多传特殊标志，也不用先拉 <code>tools/list</code>。服务端根据当前任务的实际预估耗时，<strong>按单次请求动态决策</strong>：</p>
+<ul>
+<li>几百毫秒能算完的，直接返回标准 <code>CallToolResult</code>（<code>resultType: &quot;complete&quot;</code>）。</li>
+<li>需要几分钟跑完的，先把任务持久化落盘，再返回 <code>CreateTaskResult</code>（<code>resultType: &quot;task&quot;</code>）。</li>
+</ul>
+<p>注意规范的持久化顺序要求：服务端在返回 <code>CreateTaskResult</code> 之前，任务<strong>必须已经持久化落成</strong>，确保客户端紧接着发来的第一次 <code>tasks/get</code> 一定能查到，在最终一致性存储上也要等写入可见后再回包。如果一个工具必须以异步任务运行，但来访客户端的请求 <code>_meta</code> 里没有声明 <code>io.modelcontextprotocol/tasks</code>，服务端绝不能擅自返回 <code>CreateTaskResult</code>，而是必须返回 <code>-32021</code>（<code>MissingRequiredClientCapability</code>）并在 <code>data.requiredCapabilities</code> 里指明缺少该扩展。</p>
+<p>对于不想改动上层业务签名的客户端 SDK，规范给出了很实用的实现提示：SDK 内部完全可以在 <code>callTool()</code> 里透明拦截 <code>resultType: &quot;task&quot;</code>，自动走完后台轮询并把最终 <code>CallToolResult</code> 返回给调用方；而具备异步编排能力的高级 Agent 宿主，则可以把 <code>taskId</code> 直接暴露为后台作业句柄，让主代理一边并行干别的事，一边等任务终态。</p>
+<h2 id="09-tasks-async--五态生命周期与三个精简-rpc">五态生命周期与三个精简 RPC<a class="anchor" href="#09-tasks-async--五态生命周期与三个精简-rpc" aria-label="链接到本节">#</a></h2>
+<p>删掉阻塞式的 <code>tasks/result</code> 和高风险的 <code>tasks/list</code> 后，整个 Tasks 扩展只剩三个清晰的方法：<code>tasks/get</code>、<code>tasks/update</code> 和 <code>tasks/cancel</code>，围绕五个状态流转（<code>docs/extensions/tasks/overview.mdx</code>）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>任务状态</th>
+<th>性质</th>
+<th>携带附加字段</th>
+<th>含义与流转规则</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>working</code></td>
+<td>进行中</td>
+<td>可选 <code>statusMessage</code></td>
+<td>任务正在后台执行</td>
+</tr>
+<tr>
+<td><code>input_required</code></td>
+<td>进行中（挂起）</td>
+<td><code>inputRequests</code></td>
+<td>执行中途需要客户端提供人工确认或输入，等待 <code>tasks/update</code></td>
+</tr>
+<tr>
+<td><code>completed</code></td>
+<td>终态（不可变）</td>
+<td><code>result</code></td>
+<td>原始请求执行完毕，内联原始结果（包含 <code>isError: true</code> 的工具业务报错）</td>
+</tr>
+<tr>
+<td><code>failed</code></td>
+<td>终态（不可变）</td>
+<td><code>error</code></td>
+<td>执行期间发生 JSON-RPC 协议级错误（不得混用普通业务错误）</td>
+</tr>
+<tr>
+<td><code>cancelled</code></td>
+<td>终态（不可变）</td>
+<td>可选 <code>statusMessage</code></td>
+<td>任务在完成前被取消</td>
+</tr>
+</tbody></table></div>
+<p>一旦进入 <code>completed</code>、<code>failed</code> 或 <code>cancelled</code> 三个终态之一，任务状态永久冻结，不再变化。还要留意一个容易写错的细节：<code>completed</code> 和 <code>failed</code> 的划分严格对齐 <code>SEP-1303</code>，如果一个工具任务正常跑完了但业务上返回了 <code>isError: true</code>（比如目标仓库里测试没过），任务状态应当是 <strong><code>completed</code></strong> 且在 <code>result</code> 里原样携带带 <code>isError: true</code> 的 <code>CallToolResult</code>，让模型看到测试失败详情；只有发生 JSON-RPC 级异常（如服务端内部崩溃或任务超过 TTL 失效）才用 <code>failed</code>。</p>
+<p>在 <code>tasks/get</code> 轮询中，服务端通过 <code>pollIntervalMs</code> 给出建议轮询间隔（且允许在任务生命周期内动态调整，比如前期慢、收尾快），客户端应当遵守该间隔，以免被服务端限流，同时<strong>应当持久化 <code>taskId</code></strong>，这样哪怕客户端进程崩溃或网络断开，重启后照样能凭 ID 接上进度。如果不想纯轮询，服务端也可以支持通过 <code>subscriptions/listen</code> 传入 <code>notifications: { taskIds: [...] }</code>，由服务端在状态变化时直接推送携带完整 <code>DetailedTask</code> 的 <code>notifications/tasks</code> 通知，省掉额外一次 <code>tasks/get</code> 往返。注意，Tasks 扩展明确禁止在监听流上混发 <code>notifications/progress</code> 或 <code>notifications/message</code>。</p>
+<h2 id="09-tasks-async--任务中途追问-tasks-update-与协作取消-tasks-cancel">任务中途追问（<code>tasks/update</code>）与协作取消（<code>tasks/cancel</code>）<a class="anchor" href="#09-tasks-async--任务中途追问-tasks-update-与协作取消-tasks-cancel" aria-label="链接到本节">#</a></h2>
+<p>长程任务跑着跑着常常需要人工拍板，比如批量迁移脚本扫出 3 张高危表，需要管理员确认后再继续删旧索引。<code>SEP-2663</code> 复用了 MRTR 的 <code>inputRequests</code>/<code>inputResponses</code> 数据结构，但明确区分了两个时机：</p>
+<ul>
+<li><strong>建任务之前</strong>需要补充信息（比如连参数都没齐、还决定不了要不要建任务）：直接在原始 <code>tools/call</code> 上同步走第 5 章的 MRTR（<code>InputRequiredResult</code>）解决。</li>
+<li><strong>建任务之后</strong>执行到半途需要输入：任务状态切到 <code>input_required</code>，在下一次 <code>tasks/get</code>（或 <code>notifications/tasks</code>）里附带当前所有未满足的 <code>inputRequests</code> 快照。</li>
+</ul>
+<p>客户端看到 <code>input_required</code> 后，把请求呈现给用户，拿到答复后调用 <code>tasks/update</code> 提交 <code>inputResponses</code>，服务端返回空确认即可（允许最终一致性，不必等后台状态立刻翻回 <code>working</code> 才回包）。为了防止连续两次轮询把同一个确认弹窗反复弹给用户，规范定了两条互保约束：服务端保证同一个 <code>taskId</code> 整个生命周期内，<strong><code>inputRequests</code> 的每个键名绝不复用</strong>；客户端按已处理键名做去重，服务端则静默忽略重复或已失效的键。</p>
+<p>取消任务同样走专门的 <code>tasks/cancel</code> 方法，规范明文禁止用核心的 <code>notifications/cancelled</code> 去取消 Task。取消是<strong>协作式（Cooperative）且最终一致的</strong>：服务端收到 <code>tasks/cancel</code> 只需立刻返回空确认并尽量通知后台作业停手，但并不保证一定能拦住已经走到最后一毫秒的写入，因此任务最终仍有可能落到 <code>completed</code> 而非 <code>cancelled</code>；客户端发完取消后即可自行清理本地记录，无需死等状态翻转。</p>
+<h2 id="09-tasks-async--路由头-高熵能力令牌与-ttl-安全边界">路由头、高熵能力令牌与 TTL 安全边界<a class="anchor" href="#09-tasks-async--路由头-高熵能力令牌与-ttl-安全边界" aria-label="链接到本节">#</a></h2>
+<p>把 Tasks 跑在分布式 HTTP 集群里，还有三道架构与安全约束不能漏：</p>
+<ol>
+<li><strong><code>Mcp-Name</code> 承载 <code>taskId</code> 实现网关路由</strong>：在 Streamable HTTP 下，发送 <code>tasks/get</code>、<code>tasks/update</code> 或 <code>tasks/cancel</code> 时，客户端<strong>必须</strong>把 HTTP 头 <code>Mcp-Name</code> 设为 <code>params.taskId</code>（<code>Mcp-Method</code> 照常设为对应方法名）。如果某些服务端的后台作业状态只存在特定分片或节点上，中间网关无需拆解 JSON Body 就能按 <code>Mcp-Name</code> 精准路由。</li>
+<li><strong>高熵 <code>taskId</code> 与权限重验</strong>：如果服务端有 OAuth 2.1 鉴权，每次 <code>tasks/get</code>、<code>tasks/update</code> 和 <code>tasks/cancel</code> 都必须重新校验调用方身份是否匹配任务创建者（<code>owner_principal</code>），不能只凭猜到或捡到一个 <code>taskId</code> 就偷看别人任务的结果；对于无鉴权场景，<code>taskId</code> 必须具备至少 128 位密码学随机熵（例如 32 位十六进制随机串或 UUIDv4），防止枚举撞库。</li>
+<li><strong><code>ttlMs</code> 兜底与资源回收</strong>：每个任务都有自创建起算的 <code>ttlMs</code>（<code>null</code> 表示无过期上限）。超过 <code>createdAt + ttlMs</code> 后，服务端有权把未完成任务标为 <code>failed</code> 并回收存储，客户端也应把超时未刷新的任务视作失效，避免僵尸轮询永远挂在调度器里。</li>
+</ol>
+<p>Tasks 解决的是 Agent 自己发起长耗时作业后如何持续追踪直到完成。但现实工作流还有另一半完全相反的方向：凌晨两点生产环境爆了一条 P0 安全告警、客户发来一封紧急索赔邮件、或者 GitHub 仓库里合并了一个新 PR，此时用户压根没打开对话框，Agent 根本不知道发生了什么。下一章我们看让 Agent 真正跨入常驻与多人协作时代的 <strong>MCP Events</strong>。</p>
+</div></section><section class="book-section" id="10-events-always-on"><header class="chapter-head"><div class="chapter-number">10</div><h1>常驻与多人协作代理：MCP Events</h1></header><div class="prose"><p>凌晨两点十四分，<code>auth-api</code> 触发了一条 P0 安全告警。在 2026 年秋以前，就算你的团队接好了二十台 MCP Server，Agent 这会儿也在呼呼大睡。传统 MCP 是纯拉取驱动的：用户或模型不发问，服务端就永远沉默。核心规范里虽然有 <code>subscriptions/listen</code> 和 <code>notifications/resources/updated</code>，但它们根本扛不起异步事件驱动的三项硬要求：第一，核心通知只报某个 URI 变了，不带订阅过滤参数，也没有载荷 Schema，表达不了只订阅 <code>auth-api</code> 的 P0 告警；第二，核心通知要求客户端死死挂着一条长连接，一断网就什么也收不到；第三，没有游标（cursor），断线期间发生的所有事直接丢进黑洞，客户端甚至不知道自己漏了消息。</p>
+<p><strong>MCP Events</strong>（<code>io.modelcontextprotocol/events</code>，<code>SEP-3415</code> 已达 Final，扩展处于 Beta 阶段，要求核心协议 <code>2026-07-28</code> 及以上）补齐了 Agent 运行时最关键的最后一块动态能力：把 MCP 从被动应答的远程工具箱，推进到外部事件触发、离线可唤醒、多人可协作的常驻代理平面。Philipp Schmid 在原文里提到，Shop MCP（订单变更）和 Vercel（<code>deployment.succeeded</code>）等早期服务已经上线了事件支持，OpenCode 2.4.0 等宿主则把事件订阅封装成了自动化工具，ChatGPT 等远程持久化宿主开始开放回调端点，在用户离线时也能接住告警并自动拉日志完成初筛。下面这张图把 MCP Events 的三种投递模式、去重消费层和 MCP Tasks 的协同链路画了出来。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 256" width="660" height="256" role="img" aria-label="MCP Events 三种投递模式与 MCP Tasks 异步编排回路">
+<title>MCP Events 三种投递模式与 MCP Tasks 异步编排回路</title>
+<defs>
+  <marker id="10-events-always-on--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+  </marker>
+</defs>
+<text x="12" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="12" font-weight="700" fill="var(--ink)" text-anchor="start">MCP Events 三种投递模式与 MCP Tasks 长程异步编排</text><rect x="12" y="34" width="196" height="54" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="22" y="54" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">Webhook (events/subscribe)</text><text x="22" y="72" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">HTTPS + whsec_ HMAC 签名</text><text x="22" y="88" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">适合远程常驻与离线唤醒</text><rect x="12" y="98" width="196" height="54" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="22" y="118" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">Push (events/stream)</text><text x="22" y="136" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">长连接流 + heartbeatMs 心跳</text><text x="22" y="152" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">适合 stdio 与在线实时日志</text><rect x="12" y="162" width="196" height="54" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="22" y="182" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">Poll (events/poll)</text><text x="22" y="200" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">客户端按 nextPollMs 拉取</text><text x="22" y="216" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">适合 NAT 后 CLI / 无状态服</text><line x1="208" y1="61" x2="242" y2="114" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#10-events-always-on--arrow)"/><line x1="208" y1="125" x2="242" y2="125" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#10-events-always-on--arrow)"/><line x1="208" y1="189" x2="242" y2="136" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#10-events-always-on--arrow)"/><rect x="244" y="68" width="188" height="114" rx="4" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="254" y="88" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--amber)" text-anchor="start">Client SDK 事件消费层</text><text x="254" y="106" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">持久化 cursor 断点续传</text><text x="254" y="122" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">truncated: true 感知缺口</text><text x="254" y="138" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">按 (订阅, eventId) 去重</text><text x="254" y="154" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">同轨迹续跑 / 隔离新轨迹</text><text x="254" y="170" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">载荷视同不可信输入</text><line x1="432" y1="125" x2="460" y2="125" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#10-events-always-on--arrow)"/><rect x="462" y="34" width="186" height="182" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="472" y="54" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">Agent + MCP Tasks</text><text x="472" y="72" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">唤醒 Agent 发起排查</text><text x="472" y="88" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">长任务返回 resultType:task</text><text x="472" y="104" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">128 位高熵 taskId 轮询</text><text x="472" y="120" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">遇阻转 input_required</text><text x="472" y="136" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">经 tasks/update 补输入</text><text x="472" y="152" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">终态 immutable 回写结果</text><text x="472" y="168" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">tasks/cancel 协作取消</text><text x="12" y="240" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="400" fill="var(--muted)" text-anchor="start">职责边界: 监听外部未知时刻发生的事用 Events; 追踪自己发起的长耗时作业用 Tasks。</text>
+</svg><figcaption>MCP Events 三种投递模式与 MCP Tasks 异步编排回路</figcaption></figure>
+<p>图里左侧的三条分支对应不同部署形态的投递选择，中间的 Client SDK 消费层统一吸收游标持久化、缺口感知、<code>eventId</code> 去重与不可信输入隔离，右侧则由唤醒后的 Agent 按需触发工具或把耗时的修复排查工作转成 MCP Tasks 持续跟踪。</p>
+<h2 id="10-events-always-on--为什么必须同时定义三种投递模式">为什么必须同时定义三种投递模式<a class="anchor" href="#10-events-always-on--为什么必须同时定义三种投递模式" aria-label="链接到本节">#</a></h2>
+<p><code>SEP-3415</code> 最务实的设计决定，是没有强推某一种统一传输，而是按部署现实同时定义了 <strong>Webhook</strong>、<strong>Push</strong> 和 <strong>Poll</strong> 三种模式。原因很直白：Serverless 服务端挂不住成千上万条常驻推送连接；跑在开发者笔记本或内网 NAT 后面的 CLI 客户端没有公网 HTTPS 回调地址；对电池和费用敏感的移动端或托管宿主又不该无休止空转轮询。任何单一模式都会把至少一类真实场景拒之门外。</p>
+<p>因此在 <code>events/list</code> 返回的每个事件类型描述符里，除了事件名 <code>name</code>、订阅过滤参数 <code>inputSchema</code>（同样支持 <code>x-mcp-header</code> 镜像到 HTTP 头）和事件载荷 <code>payloadSchema</code> 之外，服务端通过 <code>delivery</code> 数组声明该事件支持哪几种模式（三选其一至全选皆可，没有强制项），客户端 SDK 根据自身运行环境自动择优（典型优先级：有公网回调就选 Webhook，能保活连接就选 Push，其余走 Poll）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>投递模式</th>
+<th>协议方法</th>
+<th>服务端状态与保活机制</th>
+<th>适用部署形态</th>
+<th>顺序保证</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Webhook</strong></td>
+<td><code>events/subscribe</code> / <code>events/unsubscribe</code></td>
+<td>服务端保存带可续期 TTL（<code>refreshBefore</code>）的回调订阅，支持 <code>ttlMs: null</code> 申请永不过期（服务端可拒绝并给有限值）</td>
+<td>远程无状态/云端常驻宿主、支持前向代理（Forward Proxy）中转</td>
+<td>尽力有序，以 <code>timestamp</code> 为准</td>
+</tr>
+<tr>
+<td><strong>Push</strong></td>
+<td><code>events/stream</code></td>
+<td>单条订阅一条长生命周期请求（HTTP POST 返回 SSE，stdio 走 stdout 按 <code>subscriptionId</code> 解复用），服务端按 <code>heartbeatMs</code>（默认建议 30 秒）发 JSON-RPC 心跳推进游标</td>
+<td>本地 <code>stdio</code> 服务、常在线桌面端或实时构建/部署日志流</td>
+<td>订阅内严格有序</td>
+</tr>
+<tr>
+<td><strong>Poll</strong></td>
+<td><code>events/poll</code></td>
+<td>服务端无需保存每客户端订阅状态；首次传 <code>cursor: null</code> 拿到起点游标，后续按 <code>nextPollMs</code> 轮询（客户端应设 1000ms 下限防死循环），<code>hasMore: true</code> 时立即连拉清积压</td>
+<td>Serverless 无状态服务端、NAT 后简单 CLI</td>
+<td>订阅内严格有序</td>
+</tr>
+</tbody></table></div>
+<p>有一条架构原则贯穿三种模式：<strong>客户端永远是订阅清单的唯一权威来源</strong>。服务端不提供 <code>events/subscriptions/list</code> 枚举接口；如果服务端重启丢了内存里的短 TTL 订阅，客户端下一次续期或重连时带着本地持久化的订阅参数和 <code>cursor</code> 就能无损重建。还要注意 Push 模式的心跳细节：Streamable HTTP 下，<code>events/stream</code> 的心跳故意不用 SSE 注释行（<code>: keepalive</code>），而是发正式的 <code>notifications/events/heartbeat</code> JSON-RPC 通知，因为心跳帧里必须携带最新的 <code>cursor</code>，防止长时间静默导致客户端手里攥着过老的游标落出上游保留窗口。客户端连续三个 <code>heartbeatMs</code> 没收到任何帧，就判定流已死并带随机抖动（jitter）重连。</p>
+<h2 id="10-events-always-on--webhook-契约-standard-webhooks-签名与续期机制">Webhook 契约、Standard Webhooks 签名与续期机制<a class="anchor" href="#10-events-always-on--webhook-契约-standard-webhooks-签名与续期机制" aria-label="链接到本节">#</a></h2>
+<p>回到凌晨两点的 P0 安全告警场景。远程宿主（比如 ChatGPT 或企业后台调度器）暴露一个 HTTPS 回调地址，调 <code>events/subscribe</code> 注册过滤条件与密钥（注意 <code>SEP-3415</code> 中 Webhook 投递对象使用 <code>delivery.mode: &quot;webhook&quot;</code> 和 <code>delivery.url</code> 字段，早期草案及部分示例写法使用 <code>type</code>/<code>callbackUrl</code>，对接具体服务端时需按其 <code>revision</code> 与 Schema 对齐）：</p>
+<pre><code class="language-json">{
+  &quot;jsonrpc&quot;: &quot;2.0&quot;,
+  &quot;id&quot;: 2,
+  &quot;method&quot;: &quot;events/subscribe&quot;,
+  &quot;params&quot;: {
+    &quot;name&quot;: &quot;security.alert.opened&quot;,
+    &quot;arguments&quot;: { &quot;severity&quot;: &quot;p0&quot; },
+    &quot;delivery&quot;: {
+      &quot;mode&quot;: &quot;webhook&quot;,
+      &quot;url&quot;: &quot;https://host.example/mcp/webhook/sub_01H&quot;,
+      &quot;secret&quot;: &quot;whsec_bXlzZWNyZXRrZXkyNGR5dGVzbWluaW11bQ==&quot;
+    },
+    &quot;cursor&quot;: null,
+    &quot;maxAgeMs&quot;: 300000,
+    &quot;ttlMs&quot;: 3600000
+  }
+}
+</code></pre>
+<p>这里有四条规范级细节非常值得工程团队记牢：</p>
+<ol>
+<li><strong>密钥必须由客户端生成且符合 Standard Webhooks 规范</strong>：<code>delivery.secret</code> 必填，格式必须是字面前缀 <code>whsec_</code> 后接 24 到 64 字节密码学随机数的 Base64 编码，服务端遇到不合规密钥必须以 <code>InvalidParams</code> 拒收。投递时服务端按 Standard Webhooks 规范对消息 ID、时间戳和原始 Body 计算 HMAC-SHA256 签名；接收端必须验签并校验时间戳窗口以防重放。</li>
+<li><strong>服务端派生确定性 <code>id</code></strong>：响应返回的 <code>id</code>（如 <code>sub_a3f1c8e2b0d49f7e</code>）由服务端根据 <code>(principal, delivery.url, name, arguments)</code> 确定性计算，每次投递放在 <code>X-MCP-Subscription-Id</code> HTTP 头里供接收端路由。重复调用同一组键的 <code>events/subscribe</code> 是幂等的，既用来刷新 <code>refreshBefore</code> 租约，也用来在服务端重启后原地重建订阅。</li>
+<li><strong>回调端点防 SSRF</strong>：回调 URL 必须走 <code>https</code>，服务端在真正投递前必须先验证端点并校验解析出的目标 IP，拦截私有网段、回环地址和云元数据地址（如 <code>169.254.169.254</code>），防止攻击者借事件订阅把 MCP Server 当内网探测跳板。</li>
+<li><strong>前向代理（Forward Proxy）解耦模式</strong>：规范特意指出，Webhook 回调地址不必就是最终运行模型的客户端本身。很多桌面或移动宿主会部署一个轻量的公网前向代理统一接住远程 MCP Server 的签名 Webhook，再通过 Push 或 Poll 转交回内网客户端，把公网暴露面收敛到单一网关。</li>
+</ol>
+<h2 id="10-events-always-on--游标-缺口感知-eventid-去重与轨迹续跑">游标、缺口感知、<code>eventId</code> 去重与轨迹续跑<a class="anchor" href="#10-events-always-on--游标-缺口感知-eventid-去重与轨迹续跑" aria-label="链接到本节">#</a></h2>
+<p>外部事件投递在分布式系统里天然是至少一次（at-least-once）语义。<code>SEP-3415</code> 用一套克制的字段把可靠消费的边界讲清了：</p>
+<p>每一条事件发生对象 <code>EventOccurrence</code> 都包含 <code>{eventId, name, timestamp, data, cursor}</code>。服务端应当直接复用上游系统自带的稳定事件 ID（如 Stripe 的 <code>evt_*</code>、GitHub 投递 GUID、Kafka offset 或邮件 Message-ID），这样哪怕同一事件同时从 Webhook 和断线补拉（Poll backfill）两条路径送达，客户端也能精准识别重复。去重的作用域严格限定在<strong>单条订阅 <code>(name, arguments)</code> 内</strong>；如果用户同时订了某个频道的所有消息和某位老板发的所有消息，同一条消息触发了两条不同订阅，两边拿到相同 <code>eventId</code> 并不算重复，各自都要投递。</p>
+<p>游标 <code>cursor</code> 对客户端完全不透明，支持上游可重放时用于断线续传；如果上游本身没有历史日志，服务端返回 <code>cursor: null</code>，客户端接受断线期间事件不可恢复的事实。客户端还可以在重连或轮询时传入 <code>maxAgeMs</code>（有界回放），避免一台离线一周的笔记本一开机就把过去七天积压的几万条事件瞬间灌进 Agent。如果客户端传来的旧游标已经落出了上游保留窗口，服务端不会报错中断，而是返回 <code>truncated: true</code> 和最新起点游标，明确提示中间可能存在漏掉的事件，让 Agent 视业务重要性决定要不要主动调工具重新拉取一次权威状态。</p>
+<p>事件通过验签和去重交给 Harness 之后，真正决定产品体验的是<strong>轨迹续跑策略（Continuation）</strong>，Philipp Schmid 在原文里点明了两种截然不同的路由模式：</p>
+<ul>
+<li><strong>同轨迹续跑（Same Trajectory）</strong>：把新事件直接注入发起订阅的那条对话线程里，适合围绕同一项持续工作（比如盯着某个 PR 的 CI 与评审进展、跟进一个线上事故工单）保持完整上下文记忆。</li>
+<li><strong>隔离新轨迹（Isolated Trajectory）</strong>：每来一条新事件就派生一条全新的独立执行轨迹，适合每收到一封高优客户邮件或每出现一条新 P0 安全告警这类彼此独立的工单分诊，防止多起不相关事件把同一条长对话搅成一锅粥，也能把某一条恶意外来事件里的提示注入严格隔离在单次沙箱轨迹内。</li>
+</ul>
+<h2 id="10-events-always-on--events-与-tasks-的分工和组合">Events 与 Tasks 的分工和组合<a class="anchor" href="#10-events-always-on--events-与-tasks-的分工和组合" aria-label="链接到本节">#</a></h2>
+<p>架构评审里最常被问到的问题是：MCP Tasks 和 MCP Events 都在解决异步，到底什么时候用哪个？官方规范划出的分界线非常清楚：<strong>等待自己刚发起的长耗时作业出结果，用 MCP Tasks；监听外部系统在未知时刻发生的业务活动，用 MCP Events。</strong></p>
+<p>两者组合起来就是 2027 年无人值守代理的完整执行回路：</p>
+<ol>
+<li>团队提前通过 <code>events/subscribe</code> 订阅 <code>security.alert.opened</code>（过滤 <code>severity: &quot;p0&quot;</code>）并写好常驻处置指令。</li>
+<li>凌晨两点告警触发，服务端签名 POST 到宿主回调，宿主验签去重后在隔离轨迹中唤醒 Agent。</li>
+<li>Agent 拿到最小载荷（只有 <code>alertId</code> 和 <code>service</code>，遵循安全规范绝不把整段外部日志塞进事件体），随后用 OAuth 2.1 令牌调用日志和代码仓 MCP Server 查明根因。注意：<strong>收到事件本身绝不授予 Agent 任何执行权限</strong>，后续所有工具调用仍须走完整的 OAuth 校验，且服务端在订阅期满或账号权限被撤销时必须立即终止事件投递。</li>
+<li>如果排查或回滚需要跑一趟耗时 10 分钟的自动化验证流水线，Agent 调起部署工具拿到一个 <strong>MCP Task</strong> 句柄，在后台持续轮询或监听状态，跑完后把根因摘要和修复链接发到值班频道，等值班工程师早上打开电脑就能直接拍板。</li>
+</ol>
+<p>文本回复、类型化脚本、异步任务和事件唤醒都已经就位，但工程师和业务人员终究不只是盯着纯文本日志工作。当你面对一张 P95 延迟趋势图、一个需要筛选几十个维度的发布看板、或者一份需要缩放批注的 PDF 和设计稿时，纯文本和原始 JSON 远远不够。下一章我们看已经进入 <strong>Stable</strong> 阶段的 <strong>MCP Apps</strong>。</p>
+</div></section><section class="book-section" id="11-mcp-apps"><header class="chapter-head"><div class="chapter-number">11</div><h1>产品原生智能体化：MCP Apps</h1></header><div class="prose"><p>用户在对话窗口里提出要求：把上个季度各区域的营收异常和 P95 延迟对比拉出来，顺便把核心服务的发布单配好。如果 MCP Server 只返回一段 Markdown 表格和四条外部链接，用户接下来就得切出对话、连续点开四个浏览器标签页，在四个不同后台之间来回复制 ID、筛选时间范围、再切回聊天框告诉 Agent 自己选了哪几项。一旦需要多维交互筛选、表单联动配置、3D 模型/地图钻取或者实时监控看板，纯文本和静态图片很快就不够用了。</p>
+<p><strong>MCP Apps</strong>（<code>io.modelcontextprotocol/ui</code>，<code>SEP-1865</code> 已达 Final，扩展本身在 <code>ext-apps</code> 仓库中已达到 <strong>Stable</strong> 阶段）把交互式界面正式纳入了 MCP 协议。根据官方客户端支持矩阵与 Philipp Schmid 原文记录，目前 Claude（Web 与 Desktop）、ChatGPT、Cursor、VS Code GitHub Copilot、Microsoft 365 Copilot、Slack 新版 MCP 客户端、Google Antigravity、Goose、Postman、MCPJam 和 Glean 等主流宿主都已经落地了这一模式，覆盖行内聊天卡片、侧边发布看板和自定义文件查看器三种核心形态。</p>
+<h2 id="11-mcp-apps--为什么不在工具结果里直接返回-html-而是用预声明-ui-资源">为什么不在工具结果里直接返回 HTML，而是用预声明 <code>ui://</code> 资源<a class="anchor" href="#11-mcp-apps--为什么不在工具结果里直接返回-html-而是用预声明-ui-资源" aria-label="链接到本节">#</a></h2>
+<p>早期的社区实验（如 MCP-UI 早期方案）曾尝试让工具调用直接在返回体里内联一段 HTML，虽然写起来省事，但很快在宿主侧暴露出三个硬伤：第一，每次工具执行完才开始传输前端代码包，首屏渲染延迟高，无法流式展示工具输入；第二，界面模板和业务数据搅在一起，宿主没法缓存 UI 壳子；第三，安全团队无法在执行前对 UI 资源做静态审查或版本核验。</p>
+<p>因此 <code>SEP-1865</code> 统一了 MCP-UI 与 OpenAI Apps SDK 两条路线，确立了<strong>工具声明加预声明 <code>ui://</code> 资源</strong>的双原语解耦架构（<code>docs/extensions/apps/overview.mdx</code> 与 <code>docs/seps/1865-mcp-apps-interactive-user-interfaces-for-mcp.mdx</code>）：</p>
+<ol>
+<li><strong>能力协商</strong>：客户端在每条请求的 <code>_meta[&quot;io.modelcontextprotocol/clientCapabilities&quot;].extensions</code> 里声明支持 <code>io.modelcontextprotocol/ui</code> 及可渲染的 MIME 类型（目前首发基线为 <code>text/html;profile=mcp-app</code>）；服务端在 <code>server/discover</code> 中广告同一扩展。面对不支持该扩展的纯文本或命令行客户端，服务端必须按优雅降级原则继续返回有意义的文本或 <code>structuredContent</code>。</li>
+<li><strong>元数据绑定与预加载</strong>：需要交互界面的工具在工具描述中挂上 <code>_meta.ui.resourceUri</code>，指向一个 <code>ui://</code> 资源（例如 <code>ui://analytics/latency-dashboard</code>）。因为资源地址在 <code>tools/list</code> 阶段就已经声明，宿主完全可以在工具真正被调用之前就预取并缓存 HTML 模板，甚至在工具还在流式输出参数时提前把界面架子撑起来。</li>
+<li><strong>资源获取与策略解析</strong>：宿主通过核心 <code>resources/read</code> 拉取该 <code>ui://</code> 资源，拿到打包好的 HTML/JS/CSS（资源元数据 <code>_meta.ui</code> 内还可声明 <code>csp</code> 外链白名单与 <code>permissions</code> 如麦克风/摄像头请求）。</li>
+<li><strong>受限 iframe 渲染与双向 JSON-RPC</strong>：Web 或桌面宿主把 HTML 放进严格受限的沙箱 <code>&lt;iframe&gt;</code> 中渲染。App 与宿主之间不发明专有私有消息格式，也不向 iframe 注入宿主私有全局对象，而是通过浏览器标准 <code>window.postMessage</code> 通道收发 <strong>MCP 风格的 JSON-RPC 消息</strong>（复用 <code>tools/call</code> 等核心方法，加上 <code>ui/initialize</code> 等 <code>ui/</code> 前缀专用方法）。</li>
+</ol>
+<p>下面这条完整交互链路最能体现 MCP Apps 相比独立 Web 应用的优势：</p>
+<ul>
+<li>模型调用 <code>get_latency_report</code> 工具，服务端返回底层的 <code>structuredContent</code> 指标，宿主把结果推送进对话里已渲染好的折线图 iframe；</li>
+<li>用户直接在图上拖拽时间区间、点选某条毛刺曲线，iframe 通过 <code>postMessage</code> 向宿主发一条 <code>tools/call</code> 请求下钻该时间段慢查询；</li>
+<li>宿主按现有 MCP 鉴权与权限策略（必要时弹窗征求用户同意）转发给 MCP Server，拿到最新数据推回 iframe 刷新图表；</li>
+<li>用户选中某条异常慢查询并触发助手分析动作，iframe 通过上下文更新消息把选中项回传给宿主和模型，对话直接接着往下走，全程零跳转、零重复登录、零手写外部前端鉴权代码。</li>
+</ul>
+<p>更重要的是，iframe 里的 App 还可以把跨域动作<strong>委托给宿主能力</strong>。比如一个项目管理 MCP App 需要发一封延期通知邮件，它不需要自己去对接 Gmail 或 Outlook 的 OAuth 接口，只需向宿主发出意图请求，由宿主经用户确认后路由给用户早已接好的邮件 MCP Server 执行。</p>
+<h2 id="11-mcp-apps--三种宿主视图形态与产品边界">三种宿主视图形态与产品边界<a class="anchor" href="#11-mcp-apps--三种宿主视图形态与产品边界" aria-label="链接到本节">#</a></h2>
+<p>在 Philipp Schmid 的观察和主流宿主落地实践中，MCP Apps 已经分化出三种各司其职的呈现形态：</p>
+<ul>
+<li><strong>对话行内视图（Inline in Chat）</strong>：适合延迟图表、审批确认单、代码差异对比、地图点选和小型配置表单，紧贴上下文讨论，看完即走。</li>
+<li><strong>独立侧栏工作区（Side Panels）</strong>：适合发布看板（Release Board）、持续刷新的实时监控面板、多步骤工单分诊队列，让用户一边在左侧和 Agent 讨论，一边在右侧持续操作持久视图。</li>
+<li><strong>自定义文件查看器（Custom Viewers）</strong>：适合 PDF 批注、3D 场景（如 <code>ext-apps</code> 官方示例中的 Three.js 与 CesiumJS 地球仪）、音频乐谱、白板（如 Excalidraw）等富媒体内容，替代简陋的纯文本预览。</li>
+</ul>
+<p>反过来，官方指南也很清醒地划出了<strong>不该做 MCP App 的边界</strong>：如果你的界面与对话上下文无关、不需要模型协助决策、也不需要复用宿主已连接的其他工具能力，做个普通独立 Web 应用反而更简单、屏幕空间也更大。MCP Apps 的真实价值在于把人机协作最频繁的那几步可视化确认和钻取无缝嵌进 Agent 工作流，而不是把整套后台管理系统硬塞进聊天框。</p>
+<h2 id="11-mcp-apps--沙箱边界与宿主侧安全治理">沙箱边界与宿主侧安全治理<a class="anchor" href="#11-mcp-apps--沙箱边界与宿主侧安全治理" aria-label="链接到本节">#</a></h2>
+<p>把第三方 MCP Server 返回的可执行 HTML/JavaScript 直接放进用户主应用里跑，如果不把隔离做死，后果比普通跨站脚本更严重。<code>SEP-1865</code> 和 <code>ext-apps</code> 的安全模型（宿主侧官方提供了 <code>@modelcontextprotocol/ext-apps</code> 的 <code>AppBridge</code> 与 <code>@mcp-ui/client</code> 组件）守住了四道关口：</p>
+<ol>
+<li><strong>强隔离 iframe 沙箱</strong>：iframe 无法访问父页面 DOM、无法读取宿主 Cookie 和 <code>localStorage</code>、无法顶层导航劫持父页面，也不能在父窗口上下文里执行脚本。</li>
+<li><strong>严格 CSP 与最小能力授权</strong>：除非资源的 <code>_meta.ui.csp</code> 明确声明且宿主安全策略放行，默认封死任意外域脚本加载与外联请求，防止界面偷偷把对话推送进来的敏感业务数据外传（Data Exfiltration）。类似 <code>sendOpenLink</code>、麦克风、剪贴板等宿主能力默认关闭，按需受控开放。</li>
+<li><strong>可审计的 JSON-RPC 桥接</strong>：UI 发起的每一次 <code>tools/call</code> 或上下文注入都必须经过宿主的 <code>postMessage</code> 桥接层。宿主可以完整记录审计日志、限制该 App 只能调用自身所属服务器的白名单工具，并对所有写操作强制弹人工确认框。</li>
+<li><strong>防界面侧间接提示注入</strong>：UI 回传给模型的上下文更新同样来自不可信的第三方代码。如果一个恶意 MCP App 在用户无感知的情况下偷偷往模型上下文里塞进隐藏指令（比如诱导模型去调另一台服务器的删除工具），宿主必须把 UI 上下文更新明确标示来源，并对跨服务器工具调用保持严格的人工审批门禁。</li>
+</ol>
+<p>说到这里，我们已经把 2027 年 MCP 运行时最亮眼的拼图全部摊开了：无状态 HTTP 内核、强类型契约与 Code Mode、MRTR 与 OAuth 2.1/企业 IdP、Skills、Tasks、Events 和 Apps。但 Philipp Schmid 在文章后半段特意泼了一盆很务实的冷水：这套体系还有三块硬骨头没啃完。下一章我们直面这些未解的工程缺口，把发现机制、意图可观测性和纵深安全攻击面一次拆透。</p>
+</div></section><section class="book-section" id="12-discovery-observability-security"><header class="chapter-head"><div class="chapter-number">12</div><h1>未解难题：发现、可观测性与纵深安全</h1></header><div class="prose"><p>把一个远程 MCP Server 做到符合 <code>2026-07-28</code> 规范，上线后的第一个月往往还是会遇到三类扎手的运营难题。第一类来自上线推广：厂商为了被不同客户端找到，得把同一份服务器配置挨个提交给五个互不相通的目录和市场，版本一升级到处失步。第二类来自线上排障和产品迭代：后台监控日志每天刷过几十万次 <code>tools/call</code>，工具成功率 99.5%，可产品经理根本不知道用户为什么调它、模型是不是绕了三圈弯路才勉强凑齐参数、最后到底帮没帮用户把事办成。第三类来自安全评审：每给协议加上一项新扩展（Code Mode、Webhook Events、iframe Apps、一键本地安装），攻击面就实打实往外扩一圈。</p>
+<p>Philipp Schmid 在原文的 What still needs work 一节里直接点出了这三块缺口：发现、可观测性与意图、纵深安全。对照 <code>mcp-spec</code> 仓库现有的 Registry 文档、<code>SEP-2127</code>、安全最佳实践与 <code>SEP-1024</code>，我们可以准确分辨哪些已经有标准雏形，哪些在 2027 年依然悬而未决。</p>
+<h2 id="12-discovery-observability-security--发现层-从中心化-registry-到-well-known-server-cards">发现层：从中心化 Registry 到 <code>/.well-known</code> Server Cards<a class="anchor" href="#12-discovery-observability-security--发现层-从中心化-registry-到-well-known-server-cards" aria-label="链接到本节">#</a></h2>
+<p>目前 MCP 社区的发现体系正在两条轨道上并行演进，各有明确职责边界。</p>
+<p>第一条轨道是官方 <strong>MCP Registry</strong>（<code>docs/registry/about.mdx</code>，目前处于 preview 阶段，由 Anthropic、GitHub、PulseMCP 和 Microsoft 等维护）。它是一个中立、不做主观评分的中心化元数据仓库，通过反向 DNS 命名空间验证（GitHub、DNS 或 HTTP 挑战，例如 <code>io.github.user/server-name</code> 或 <code>com.example/server</code>）确保发布者真实身份，以统一的 <code>server.json</code> 格式指向 npm/PyPI/Docker 包或公网远程 URL。注意它的三个明确设计边界：</p>
+<ul>
+<li><strong>不托管二进制代码，也不做私有服务托管</strong>：代码依然留在 npm、PyPI 和 Docker Hub，企业内网私有 MCP Server（如 <code>mcp.acme-corp.internal</code>）需要自行实现符合 Registry OpenAPI 规范的私有注册表。</li>
+<li><strong>不直接面向终端宿主，而是供下游聚合器拉取</strong>：官方预期各类应用市场和聚合器按小时拉取元数据，再叠加评分、策展和额外安全扫描。</li>
+<li><strong>本身不做代码级安全扫描</strong>：官方明确把漏洞扫描与恶意代码检测委托给了底层包仓库和下游聚合器，主站只负责命名空间认证、字段校验和人工下架。</li>
+</ul>
+<p>第二条轨道就是 Philipp Schmid 点名看好的去中心化域名发现：<strong>MCP Server Cards</strong>（<code>SEP-2127</code> 已达 Final，扩展处于 Beta 阶段，<code>ext-server-card</code>）。它要解决的是连接前发现：客户端拿到一个域名（如 <code>restaurant-a.com</code>），无需人工去五个市场翻找，也无需提前打开 MCP 连接，直接访问域名下的 <strong><code>/.well-known/ai-catalog.json</code></strong> 就能找到该域名关联的若干 MCP Server Card（推荐托管在 <code>&lt;streamable-http-url&gt;/server-card</code>），一次静态 HTTP GET 就能读出服务器身份、远程传输 URL、支持协议版本与连接指引，且天然兼容 CDN 缓存和自动化索引。</p>
+<p><code>SEP-2127</code> 做了一个极其关键的安全取舍：<strong>Server Card 故意不包含工具、资源和提示词列表，也不声明运行时扩展能力</strong>。因为这些列表可能因登录账号、权限 Scope、灰度开关和部署状态而异，如果允许静态卡片直接广告工具清单，客户端就会基于过期或被篡改的静态文档做权限和安全判断。静态卡片只回答服务器在哪、怎么连；连上之后的一切能力与工具清单，一律以带鉴权的实时 <code>server/discover</code> 和 <code>tools/list</code> 为准，两者冲突时始终以实时结果为准。</p>
+<p>尽管如此，发现层离真正省心还差最后一公里：当域名发现普及后，自动化供应链扫描、恶意工具描述检测（Tool Poisoning）和可信签名背书怎么无缝接入客户端安装流，目前社区里还没有统一的强制标准。</p>
+<h2 id="12-discovery-observability-security--可观测性与意图黑洞-隔离原则带来的天然张力">可观测性与意图黑洞：隔离原则带来的天然张力<a class="anchor" href="#12-discovery-observability-security--可观测性与意图黑洞-隔离原则带来的天然张力" aria-label="链接到本节">#</a></h2>
+<p>回顾第 1 章提到的 MCP 四条核心设计原则之一：<strong>服务端不得读取完整对话，也不得窥探其他服务器</strong>（<code>docs/specification/2026-07-28/architecture/index.mdx</code>）。这条隐私隔离红线保护了用户，却给服务端可观测性留了一个大坑。</p>
+<p>从服务端视角看，每天收到的是一堆孤立的 JSON-RPC 请求：有人查了三次列表、调了一次详情、接着没下文了。服务端根本不知道这是模型顺利完成了任务，还是返回字段写得太晦涩导致模型看懵放弃了；也不知道用户原本想做数据分析、排障还是写代码。</p>
+<p>目前协议层已经落地的可观测性标准只有 <strong><code>SEP-414</code></strong>，它约定了在 <code>_meta</code> 里透传 OpenTelemetry 的 <code>traceparent</code>、<code>tracestate</code> 和 <code>baggage</code> 字段，解决了分布式链路追踪的串连问题。但链路 ID 只能告诉你哪几个 RPC 属于同一次调用，回答不了为什么调和效果好不好。</p>
+<p>Philipp Schmid 在原文里提到了两条正在试水的补充手段：一是客户端在请求元数据里传递脱敏后的高层意图标签（如 <code>telemetry.intent</code>）；二是服务端主动暴露轻量反馈工具（类似 Cloudflare 的 <code>submit_feedback</code>），允许模型在遇到工具描述模糊、参数难凑或结果缺失时提交结构化改进反馈。工程上这里有一个微妙的平衡点：意图元数据绝不能变成变相泄露用户完整聊天记录的后门，必须限制在粗粒度任务分类或用户显式同意的遥测范围内；而反馈工具也必须防模型滥用刷屏或把敏感业务上下文误塞进反馈正文里。如何用标准扩展既保护对话隐私、又让服务端看懂调用意图，是 2027 年非常值得关注的演进方向。</p>
+<h2 id="12-discovery-observability-security--纵深安全-2027-新扩展带来的五重攻击面">纵深安全：2027 新扩展带来的五重攻击面<a class="anchor" href="#12-discovery-observability-security--纵深安全-2027-新扩展带来的五重攻击面" aria-label="链接到本节">#</a></h2>
+<p>随着 MCP 从纯工具调用进化成完整运行时，安全边界远不止校验 OAuth Token 那么简单。把官方 <code>security_best_practices.mdx</code>、<code>SEP-1024</code> 和 Phil Schmid 的风险清单合并起来，工程团队在上线前必须逐项核查五类攻击面：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>攻击面</th>
+<th>典型攻击手法</th>
+<th>规范与工程防线</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>1. 身份与代理链路</strong></td>
+<td>令牌透传（Token Passthrough）、OAuth Mix-Up 混肴、代理型服务器 Confused Deputy、本地 <code>localhost</code> 回调劫持</td>
+<td>严格验证 RFC 8707 <code>aud</code> 受众；校验 RFC 9207 <code>iss</code>；代理服务器对每个注册客户端单独实施带 <code>__Host-</code> Cookie 与防点击劫持的二次同意页；弃用 DCR 转向 CIMD 域名信任策略</td>
+</tr>
+<tr>
+<td><strong>2. 提示注入与工具投毒</strong></td>
+<td>恶意或被攻破的外部工具在 <code>description</code>、返回文本或资源内容中藏匿隐藏指令（Tool Poisoning / Indirect Prompt Injection），诱导模型调用另一台高权限服务器</td>
+<td>永远把工具注解、返回内容、技能正文、事件载荷视为不可信输入；跨服务器写操作和敏感读取强制人机确认；宿主打通来源标签隔离</td>
+</tr>
+<tr>
+<td><strong>3. 不可信 Webhook 与 SSRF</strong></td>
+<td>攻击者利用 <code>events/subscribe</code> 或 CIMD 元数据拉取功能，让服务端向内网 <code>169.254.169.254</code>、<code>127.0.0.1</code> 或内网管理端口发起请求；伪造或重放事件 POST</td>
+<td>强制 HTTPS 与目标 IP 校验（拦截私有、回环、链路本地网段，防范 DNS 重绑定）；严格校验 Standard Webhooks HMAC 签名与时间戳窗口；事件载荷最小化，事件触发隔离新轨迹</td>
+</tr>
+<tr>
+<td><strong>4. Code Mode 沙箱与 MCP Apps iframe</strong></td>
+<td>沙箱脚本试图读取宿主机磁盘、环境变量或直连外网外泄数据；恶意 MCP App 突破 iframe 偷取宿主 Cookie 或静默伪造模型上下文</td>
+<td>Code Mode 运行在无磁盘凭证、无直连外网的隔离沙箱，OAuth 留在沙箱外；MCP Apps 锁死受限 iframe + 严格 CSP，所有 <code>postMessage</code> JSON-RPC 经宿主白名单审计</td>
+</tr>
+<tr>
+<td><strong>5. 本地服务器安装与 DNS 重绑定（<code>SEP-1024</code>）</strong></td>
+<td>钓鱼链接诱导用户一键安装恶意本地 MCP Server 静默执行任意命令；远程网页通过 DNS 重绑定攻击监听 <code>0.0.0.0</code> 的本地 HTTP MCP Server</td>
+<td><code>SEP-1024</code> 强制规定：安装前弹窗展示<strong>未截断的完整命令和全部参数</strong>并要求用户显式点击确认；本地 Streamable HTTP 仅绑定 <code>127.0.0.1</code> 且强制校验 <code>Origin</code> 头，非法 <code>Origin</code> 一律回 <code>HTTP 403</code></td>
+</tr>
+</tbody></table></div>
+<p>此外，在企业网关侧还有一个实战细节：千万不要以为把 MCP Server 藏在公司 VPC 里就高枕无忧了。凡是支持 CIMD、远程资源读取、URL Mode Elicitation 或 Events Webhook 的服务端，都会主动向外发 HTTP 请求，必须统一经过带出口白名单与私网黑名单的专用 Egress Proxy（出口代理），不能直接给服务端容器开放任意出站网络权限。</p>
+<p>把安全边界拉直之后，最后还剩一个最具前瞻性的架构命题：如果一台客户端已经集齐了 Code Mode、Typed Tools、Skills、Tasks、Events 和 Apps，多代理协作本身还需要另发明一套全新的协议吗？下一章我们拆解 Philipp Schmid 原文最后抛出的核心判断：把 Agent Harness 本身做成 MCP Server，以及为什么把整个 SaaS 包成单个 <code>ask_agent</code> 工具是必须避开的架构反模式。</p>
+</div></section><section class="book-section" id="13-harness-as-mcp"><header class="chapter-head"><div class="chapter-number">13</div><h1>超越远程工具：把 Harness 做成 MCP Server 与架构反模式</h1></header><div class="prose"><p>2026 年做多代理（Multi-Agent）系统的团队，几乎都重复干过一件吃力不讨好的事：给主代理和子代理之间自己画一套专有通信协议。有人用 Redis Pub/Sub 拼任务队列，有人自己写了一套 HTTP 回调网关管子代理生命周期，有人又另造一套共享黑板 API 给同伴代理同步进度。结果每换一个外部编排器或者想把两支团队的 Agent 接在一起，又得从头写一遍胶水适配器、鉴权转发和超时重试逻辑。</p>
+<p>Philipp Schmid 在《Why I&#39;m Bullish on MCP for 2027》的结尾给出了一个非常犀利的判断：**2027 年胜出的 Agent Harness 不仅要做好 MCP 客户端集成，Harness 自己也应该暴露成一台 MCP Server。**与其另起炉灶发明一套私有跨代理协议，不如让多代理协作直接复用它们本来就精通的那同一套 MCP 原语。下面这张图把 Harness-as-MCP-Server 的编排平面，连同前文拆解的四重安全防线与三大工程缺口收束在了一张总览里。</p>
+<figure class="concept-diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 266" width="660" height="266" role="img" aria-label="Harness 作为 MCP Server 的协作模型与四重安全边界">
+<title>Harness 作为 MCP Server 的协作模型与四重安全边界</title>
+<defs>
+  <marker id="13-harness-as-mcp--arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+  </marker>
+</defs>
+<text x="12" y="18" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="12" font-weight="700" fill="var(--ink)" text-anchor="start">把 Harness 暴露为 MCP Server 的多代理协作与四重安全边界</text><rect x="12" y="34" width="304" height="116" rx="4" fill="var(--paper-2)" stroke="var(--forest)" stroke-width="1.5"/><text x="22" y="54" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--forest)" text-anchor="start">Harness-as-MCP-Server 编排平面</text><text x="22" y="72" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">子代理执行 -&gt; MCP Tasks (异步句柄 + 轮询)</text><text x="22" y="88" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">共享 Swarm Board -&gt; 类型化 Tools (发发现/认领)</text><text x="22" y="104" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">协作者唤醒 -&gt; MCP Events (任务终态或新进展)</text><text x="22" y="120" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">设计铁律: 常规 SaaS 暴露工具，而非单一 ask_agent</text><line x1="316" y1="92" x2="342" y2="92" stroke="var(--muted)" stroke-width="1.2" marker-end="url(#13-harness-as-mcp--arrow)"/><rect x="344" y="34" width="304" height="116" rx="4" fill="var(--paper-2)" stroke="var(--amber)" stroke-width="1.5"/><text x="354" y="54" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--amber)" text-anchor="start">纵深安全四重攻击面与防线</text><text x="354" y="72" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">1. Untrusted Webhook: 验 HMAC + 防 SSRF + 隔离</text><text x="354" y="88" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">2. Code Mode 沙箱: 无磁盘凭证，OAuth 由宿主管</text><text x="354" y="104" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">3. MCP Apps iframe: 受限沙箱 + CSP + 审计 RPC</text><text x="354" y="120" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">4. 本地安装 SEP-1024: 完整命令展示 + 显式同意</text><rect x="12" y="168" width="636" height="62" rx="4" fill="var(--paper-2)" stroke="var(--line)" stroke-width="0.9"/><text x="22" y="188" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="11.5" font-weight="600" fill="var(--ink)" text-anchor="start">2027 尚未完全闭合的三大工程缺口</text><text x="22" y="206" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">发现层: 摆脱多注册表重复提交 -&gt; Server Cards + /.well-known/ai-catalog.json + 自动安全扫描</text><text x="22" y="222" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10" font-weight="400" fill="var(--muted)" text-anchor="start">可观测性: 服务端看不到完整对话 -&gt; 规范化 telemetry.intent 与反馈工具，兼顾最小上下文隔离原则</text><text x="12" y="250" font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif" font-size="10.5" font-weight="400" fill="var(--muted)" text-anchor="start">同一套原语向下接业务系统、向上做多代理协作，但每新增一种扩展面就必须配套对应信任边界。</text>
+</svg><figcaption>Harness 作为 MCP Server 的协作模型与四重安全边界</figcaption></figure>
+<p>图里左侧展示了同一套 MCP 协议如何向下连业务系统、向上做多代理协作；右侧对应每新增一层扩展能力就必须同步补齐的四重安全边界；底部则提醒架构师在 2027 年落地时持续盯着发现层与意图可观测性两块未完拼图。</p>
+<h2 id="13-harness-as-mcp--用现成-mcp-原语拼出多代理协作平面">用现成 MCP 原语拼出多代理协作平面<a class="anchor" href="#13-harness-as-mcp--用现成-mcp-原语拼出多代理协作平面" aria-label="链接到本节">#</a></h2>
+<p>把一个 Agent Harness 暴露成 MCP Server 后，多代理系统里最麻烦的三件事，全部能严丝合缝地映射到我们前面几章刚拆过的标准协议能力上，不需要发明任何一个专有新字段：</p>
+<ol>
+<li><strong>子代理派发即 MCP Tasks（<code>io.modelcontextprotocol/tasks</code>）</strong>，主代理或外部协调者调用类似 <code>spawn_subagent</code> 的工具，Harness 立即返回一个 <code>resultType: &quot;task&quot;</code> 的高熵 <code>taskId</code> 句柄。子代理在后台跑几分钟甚至半小时，协调者按 <code>pollIntervalMs</code> 轮询进度或通过 <code>subscriptions/listen</code> 接收 <code>notifications/tasks</code>；子代理中途卡在需要人工审批或信息补全时，状态自然切到 <code>input_required</code>，经 <code>tasks/update</code> 拿到输入后继续跑；任务超时或不再需要时，通过 <code>tasks/cancel</code> 协作取消。子代理崩了、协调者重启了，句柄都在，状态机清晰可追。</li>
+<li><strong>共享协作看板（Swarm Board）即强类型 Tools</strong>，多个并行工作的子代理需要共享中间发现、认领未分配子任务、避免重复踩同一个坑。Harness 直接暴露一组带 <code>inputSchema</code> 与 <code>outputSchema</code> 的看板工具（例如 <code>board.post_finding</code>、<code>board.claim_work</code>、<code>board.list_open_items</code>），配合显式 <code>board_id</code> 句柄（遵循 <code>SEP-2567</code>），子代理甚至可以用 Code Mode 在沙箱里一次性拉取并过滤整个看板的未认领项，再写回结构化结论。</li>
+<li><strong>跨代理唤醒即 MCP Events（<code>io.modelcontextprotocol/events</code>）</strong>，协调者或同伴代理不必傻傻地开一堆高频定时器空转。Harness 暴露 <code>task.completed</code>、<code>board.finding_posted</code>、<code>review.requested</code> 等标准事件类型；当某个子代理把测试跑绿、或者在看板上贴出一条阻断级缺陷时，Harness 通过 Push（本机/同集群）或 Webhook（跨团队/跨云常驻）瞬间唤醒协调者或负责修复的同伴代理，并且天然自带 <code>cursor</code> 断点续传与 <code>eventId</code> 去重。</li>
+</ol>
+<p>这种设计最实在的工程红利，是<strong>复用既有鉴权、网关与工具链</strong>。给一个跨部门协作代理划定权限，直接用第 6 章的 OAuth 2.1 Scope 和企业 IdP ID-JAG 策略管控（比如只允许外部伙伴代理认领特定队列的任务、只读某块看板）；监控和限流直接复用第 2 章的标准 <code>Mcp-Method</code>/<code>Mcp-Name</code> HTTP 网关；连给新同事解释怎么把新子代理接进来，都可以直接用第 8 章的 Skills over MCP 下发协作 Playbook。</p>
+<h2 id="13-harness-as-mcp--必须避开的架构反模式-别把-saas-包成单个-ask-agent-工具">必须避开的架构反模式：别把 SaaS 包成单个 <code>ask_agent</code> 工具<a class="anchor" href="#13-harness-as-mcp--必须避开的架构反模式-别把-saas-包成单个-ask-agent-工具" aria-label="链接到本节">#</a></h2>
+<p>看到这里，有些 SaaS 团队可能会动一个极具诱惑力的念头：既然 Harness 可以做成 MCP Server，干脆把整个 CRM、工单系统或数据库平台也藏在一个自带内部小模型的 <code>ask_crm_agent(prompt: string)</code> 单一端点后面，省得设计那么多精细工具。</p>
+<p>Philipp Schmid 在文章最后一段直接给这种做法判了死刑：<strong>好的 MCP Server 是面向 Agent 暴露工具，而不是把 Agent 伪装成工具（Good MCP servers expose tools for agents, not agents as tools）。</strong></p>
+<p>把整个常规 SaaS 产品包成一个单一的 <code>ask_agent</code> 端点，在实际工程里会立刻踩中四颗大雷：</p>
+<ol>
+<li><strong>严重的上下文饥饿（Context Starvation）</strong>，用户手里的主 Agent 掌握着完整的对话历史、本机代码仓库、Slack 讨论、Sentry 报错和另一台业务系统的数据；而被关在黑盒里的 <code>ask_crm_agent</code> 只能看到主 Agent 临时塞进 <code>prompt</code> 参数的那两句话。它既不知道用户真正的约束，也没法参考其他系统的数据，只能盲人摸象般给出泛泛回答。</li>
+<li><strong>彻底废掉 Code Mode 与跨系统组合能力</strong>，单一自然语言接口没有精细的 <code>outputSchema</code>，主 Agent 无法在沙箱里把 CRM 客户列表和 Stripe 账单、Linear 工单做内存 Join，只能退回低效的自然语言传话游戏，每传一次就多一层信息衰减和幻觉放大。</li>
+<li><strong>双层模型推理叠高延迟、成本和不可控性</strong>，主模型花一轮组织提问，黑盒里的次级模型再花五轮调内部 API 并润色成散文，主模型再花一轮把散文读懂并提取字段，端到端延迟翻倍，出错时几乎无法定位到底是主模型没问清，还是黑盒代理自己编错了。</li>
+<li><strong>破坏统一的审计与最小权限边界</strong>，原本清晰可审计的 <code>list_customers</code>（只读）和 <code>refund_invoice</code>（破坏性写操作，需人工确认）全部被揉进了同一个 <code>ask_agent</code> 字符串入口里，宿主和企业网关根本无法在调用前分辨这次自然语言提问背后到底会触发只读查询还是删库改单。</li>
+</ol>
+<p>把这两种模式什么时候该用、什么时候绝不能用，压成一张选型判断表：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>场景特征</th>
+<th>推荐架构形态</th>
+<th>典型例子</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>常规 SaaS、数据库、内部微服务、运维 API</td>
+<td><strong>暴露清晰、原子、强类型的 Tools + Resources + Skills + Events</strong></td>
+<td>Linear、Notion、Sentry、Stripe、GitHub、Atlassian、Spanner</td>
+</tr>
+<tr>
+<td>需要在宿主的 Code Mode 里与其他系统数据做过滤与 Join</td>
+<td><strong>必须提供 <code>outputSchema</code> 与 <code>structuredContent</code></strong></td>
+<td>跨工单、监控、账单系统的联合排障与报表</td>
+</tr>
+<tr>
+<td>多步骤、耗时数分钟至数小时的自主子任务编排</td>
+<td><strong>Harness-as-MCP-Server（用 MCP Tasks + Swarm Board + Events）</strong></td>
+<td>派生后台编码子代理、自动化安全审计代理、跨团队/跨公司长程协作流程</td>
+</tr>
+<tr>
+<td>拥有严密私有知识推理流程、仅需向外交付最终异步结论的独立组织边界</td>
+<td><strong>谨慎采用 Agent-as-MCP-Server，且显式走 MCP Tasks + 结构化入参出参</strong></td>
+<td>外部合规审核代理、跨企业供应链议价代理</td>
+</tr>
+</tbody></table></div>
+<p>一条简单好记的实战铁律：<strong>只要对方是用户自己的主 Agent 需要随时调取数据并与其他系统自由拼装的业务能力，就老老实实暴露干净、强类型、权限分明的工具与结构化数据；只有当任务跨越了长程异步执行边界、跨子代理编排边界或跨团队/跨公司组织边界时，才把整个 Agent Harness 作为 MCP Server 暴露出来。</strong></p>
+<p>到这里，全书的协议原理、扩展机制与架构取舍已经全部拆解完毕。但架构理解不能只停在纸面上，下一章我们直接运行本书配套的零依赖 Python 教学运行时和 21 个单元测试，把无状态头校验、TTL 缓存隔离、Code Mode 字节对比、跨副本 MRTR 续传、Skills SHA-256 审批撤销、Tasks 状态机以及 Events HMAC 防重放与 SSRF 拦截逐一跑通。</p>
+</div></section><section class="book-section" id="14-mini-mcp-lab"><header class="chapter-head"><div class="chapter-number">14</div><h1>动手验证：零依赖 Python MCP 2027 教学运行时</h1></header><div class="prose"><p>协议规范里写满了 <code>MUST</code> 和 <code>SHOULD</code>，光靠通读文档很容易漏掉边界细节。比如：当 <code>Mcp-Name</code> 恰好包含中文或者字面量以 <code>=?base64?</code> 开头时，编解码会不会出错？当负载均衡把 MRTR 重试打到另一台没有任何内存状态的新副本，而攻击者顺手调包了参数或复用了 JSON-RPC <code>id</code> 时，服务端到底靠哪几道校验把它拦下来？当远端服务器静默修改了 <code>SKILL.md</code> 的某一个支撑文件，宿主的缓存和持久化审批是怎么同步失效的？</p>
+<p>为了把全书最核心的协议不变量变成可执行、可单步调试的实证代码，我们在本书仓库的 <code>examples/</code> 目录下用纯 Python 3.10+ 标准库（零外部依赖）编写了一份约 570 行的教学运行时 <code>examples/mini_mcp_2027.py</code> 和 21 个单元测试 <code>examples/test_mini_mcp_2027.py</code>。</p>
+<h2 id="14-mini-mcp-lab--模块设计与协议映射">模块设计与协议映射<a class="anchor" href="#14-mini-mcp-lab--模块设计与协议映射" aria-label="链接到本节">#</a></h2>
+<p>整份教学模型把前十三章拆解的八块关键机制收拢成了八个独立组件，每个组件都直接对应具体的规范章节与 SEP 提案：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>运行时组件（<code>examples/mini_mcp_2027.py</code>）</th>
+<th>核验的协议规范与 SEP</th>
+<th>核心验证的不变量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>encode_mcp_header_value</code> / <code>decode_mcp_header_value</code></td>
+<td><code>SEP-2243</code></td>
+<td>非 ASCII、首尾空格、换行符及哨兵字面量走 <code>=?base64?...?=</code> 编码并无损往返</td>
+</tr>
+<tr>
+<td><code>StatelessMcpServer</code></td>
+<td><code>SEP-2575</code> / <code>SEP-2243</code> / <code>SEP-1303</code></td>
+<td>头与 Body 逐项核对（不符返 <code>-32020</code>）、版本协商（<code>-32022</code>）、未知方法 <code>404/-32601</code>、<code>x-mcp-header</code> 校验、入参缺失按 <code>isError: true</code> 返回工具执行错误</td>
+</tr>
+<tr>
+<td><code>McpListCache</code></td>
+<td><code>SEP-2549</code></td>
+<td><code>ttlMs</code> 懒惰过期判定、<code>public</code> 跨身份复用与 <code>private</code> 按授权上下文严格隔离、<code>list_changed</code> 立即失效</td>
+</tr>
+<tr>
+<td><code>OAuthResourceGuard</code></td>
+<td>OAuth 2.1 / RFC 8707 / RFC 6750</td>
+<td>令牌受众 <code>aud</code> 必须精确匹配规范资源 URI（不符返 <code>401</code>）；作用域不足返回 <code>403</code> 与 <code>insufficient_scope</code> 提权挑战头</td>
+</tr>
+<tr>
+<td><code>simulate_plain_tool_calling</code> vs <code>simulate_code_mode</code></td>
+<td>第 4 章 Code Mode 对比</td>
+<td>量化对比 20 条 issue 与 Sentry 统计跨服务 Join 时的推理轮次与进入模型上下文的字节开销</td>
+</tr>
+<tr>
+<td><code>MrtrReplica</code></td>
+<td><code>SEP-2322</code></td>
+<td>副本 A 签发 HMAC-SHA256 <code>requestState</code>，零共享内存的副本 B 验签续跑；拦截篡改、跨主体重放、超时、参数调包和复用 JSON-RPC <code>id</code></td>
+</tr>
+<tr>
+<td><code>SkillsServer</code> + <code>SkillHostLoader</code></td>
+<td><code>SEP-2640</code></td>
+<td><code>skills/list</code> 与未列举技能 <code>skills/get</code>、未知 URI 返 <code>-32602</code>、加载前校验字节数与 SHA-256、远端文件变更自动撤销旧审批、禁止越清单读取</td>
+</tr>
+<tr>
+<td><code>TasksManager</code></td>
+<td><code>SEP-2663</code></td>
+<td>缺失扩展能力返 <code>-32021</code>、128 位高熵 <code>taskId</code>、<code>input_required</code> 中途追问与 <code>tasks/update</code> 续跑、终态不可变、属主隔离与 <code>ttlMs</code> 超时失效</td>
+</tr>
+<tr>
+<td><code>EventBroker</code> + <code>EventHarnessConsumer</code></td>
+<td><code>SEP-3415</code></td>
+<td><code>whsec_</code> 24 至 64 字节密钥校验、HTTPS 与防 SSRF 私网拦截、Standard Webhooks HMAC 签名与时间窗校验、单订阅内 <code>eventId</code> 去重、跨订阅同 <code>eventId</code> 不误杀、<code>truncated: true</code> 缺口感知与同轨迹/隔离轨迹续跑</td>
+</tr>
+</tbody></table></div>
+<h2 id="14-mini-mcp-lab--几个最值得细看的实现片段">几个最值得细看的实现片段<a class="anchor" href="#14-mini-mcp-lab--几个最值得细看的实现片段" aria-label="链接到本节">#</a></h2>
+<p>先看 <code>StatelessMcpServer</code> 中对 <code>x-mcp-header</code> 和 <code>SEP-1303</code> 参数校验的处理逻辑。当请求体进入 <code>tools/call</code> 时，服务端先核验所有标注了 <code>x-mcp-header</code> 的自定义请求头是否与请求体里的实际参数一致（防代理网关与后端解析分裂），不符直接回 HTTP <code>400</code> 和 <code>-32020</code>；只有通过传输层校验后，才做业务参数完整性校验，一旦缺少必填字段，不再抛 <code>-32602</code> 协议错误，而是返回 HTTP <code>200</code> 加上 <code>isError: true</code> 的工具执行错误，把缺失字段名清晰地交还给模型自纠错：</p>
+<pre><code class="language-python"># Validate x-mcp-header mirrored parameters (SEP-2243)
+for arg_name, hdr_suffix in spec.x_mcp_headers.items():
+    hdr_key = f&quot;mcp-param-{hdr_suffix.lower()}&quot;
+    if arg_name in arguments and arguments[arg_name] is not None:
+        if hdr_key not in norm_headers:
+            err = McpProtocolError(400, ERR_HEADER_MISMATCH, f&quot;Missing header Mcp-Param-{hdr_suffix}&quot;)
+            return err.http_status, err.to_jsonrpc(req_id)
+        decoded = decode_mcp_header_value(norm_headers[hdr_key])
+        if decoded != expected_str:
+            err = McpProtocolError(400, ERR_HEADER_MISMATCH, f&quot;Mcp-Param-{hdr_suffix} mismatch&quot;)
+            return err.http_status, err.to_jsonrpc(req_id)
+
+# Validate required input arguments per SEP-1303 (tool execution error isError=True)
+missing_fields = [f for f in required_fields if f not in arguments]
+if missing_fields:
+    return 200, {
+        &quot;jsonrpc&quot;: &quot;2.0&quot;,
+        &quot;id&quot;: req_id,
+        &quot;result&quot;: {
+            &quot;resultType&quot;: &quot;complete&quot;,
+            &quot;isError&quot;: True,
+            &quot;content&quot;: [{&quot;type&quot;: &quot;text&quot;, &quot;text&quot;: f&quot;Input validation error: missing required fields {missing_fields}&quot;}],
+        },
+    }
+</code></pre>
+<p>再看 <code>MrtrReplica</code> 如何只靠一把集群共享 HMAC 密钥，就在完全无状态的两个副本（<code>replica-a</code> 与 <code>replica-b</code>）之间安全完成多往返追问：</p>
+<pre><code class="language-python">state_payload = {
+    &quot;principal&quot;: principal,
+    &quot;method&quot;: &quot;tools/call&quot;,
+    &quot;paramsDigest&quot;: params_digest,
+    &quot;initialReqId&quot;: req_id,
+    &quot;exp&quot;: now_s + 300.0,
+}
+</code></pre>
+<p>当重试打到 <code>replica-b</code> 时，代码依次校验签名、<code>principal</code>、<code>now_s &lt;= state[&quot;exp&quot;]</code>、<code>paramsDigest</code>（防止把 <code>v2.4.0</code> 偷换成 <code>v9.9.9-evil</code>）以及 <code>req_id != state[&quot;initialReqId&quot;]</code>（遵循重试必须更换 JSON-RPC <code>id</code> 的要求）。五道门禁任意一道没过立刻抛出异常。</p>
+<p>再看 <code>EventHarnessConsumer</code> 对 <code>eventId</code> 去重与双轨迹续跑的处理。规范明确规定去重作用域是单条订阅（<code>sub_id</code>），而不是全局，因此已见集合按 <code>sub_id</code> 分桶；验证完 Standard Webhooks HMAC 签名与时间窗后，若同一个 <code>eventId</code> 落在同一条订阅上则直接返回 <code>None</code> 丢弃，落在另一条不同订阅上则照常投递，并按 <code>same_thread</code> 或 <code>isolated</code> 路由到对应轨迹：</p>
+<pre><code class="language-python">seen_for_sub = self._seen.setdefault(sub_id, set())
+if event_id in seen_for_sub:
+    return None  # Duplicate within the same subscription
+seen_for_sub.add(event_id)
+if occ.get(&quot;cursor&quot;):
+    self.cursors[sub_id] = occ[&quot;cursor&quot;]
+traj_id = f&quot;thread:{sub_id}&quot; if continuation_mode == &quot;same_thread&quot; else f&quot;isolated:{sub_id}:{event_id}&quot;
+</code></pre>
+<h2 id="14-mini-mcp-lab--本地复现与实测输出">本地复现与实测输出<a class="anchor" href="#14-mini-mcp-lab--本地复现与实测输出" aria-label="链接到本节">#</a></h2>
+<p>在本书仓库根目录运行下面这条命令，无需安装任何第三方包，几毫秒内就能跑完全部 21 个单元测试：</p>
+<pre><code class="language-bash">python3 -m unittest discover -s examples -v
+</code></pre>
+<p>在当前快照环境实测结果如下（全部 21 项通过，耗时约 0.001 秒）：</p>
+<pre><code class="language-text">test_09_code_mode_slashes_turns_and_context_bytes ... ok
+test_07_list_cache_ttl_public_vs_private_and_invalidation ... ok
+test_08_oauth21_audience_binding_and_step_up_scope_challenge ... ok
+test_19_webhook_ssrf_and_secret_validation ... ok
+test_20_webhook_hmac_verification_eventid_dedup_and_continuation_modes ... ok
+test_21_poll_cursor_and_truncated_gap_detection ... ok
+test_16_task_requires_capability_declaration ... ok
+test_17_task_lifecycle_midflight_input_and_terminal_immutability ... ok
+test_18_task_owner_isolation_and_ttl_expiry ... ok
+test_10_mrtr_roundtrip_resumes_on_different_replica ... ok
+test_11_mrtr_rejects_tampered_state_wrong_principal_expired_and_same_id ... ok
+test_12_mrtr_rejects_client_without_elicitation_capability ... ok
+test_13_skills_list_and_unlisted_skills_get ... ok
+test_14_skills_digest_verification_and_approval_revocation_on_update ... ok
+test_15_skills_blocks_read_outside_retained_manifest ... ok
+test_01_header_base64_sentinel_roundtrip ... ok
+test_02_discover_and_unsupported_version_negotiation ... ok
+test_03_header_body_mismatch_rejected_with_32020 ... ok
+test_04_x_mcp_header_validation_passes_and_catches_spoofing ... ok
+test_05_unknown_method_returns_404_and_32601 ... ok
+test_06_sep1303_input_validation_error_is_tool_execution_error ... ok
+
+----------------------------------------------------------------------
+Ran 21 tests in 0.001s
+
+OK
+</code></pre>
+<p>读者在搭建自己的 MCP Server、企业网关或 Agent Harness 时，可以直接把 <code>examples/test_mini_mcp_2027.py</code> 里的 21 个测试场景改写成自家集成测试清单：只要这 21 条协议不变量全绿，至少在无状态路由、缓存隔离、OAuth 边界、MRTR 防重放、Skills 验签、Tasks 状态机和 Events 安全消费上，就已经稳稳站在了 <code>2026-07-28</code> 规范与 2027 扩展栈的正确起跑线上。</p>
+</div></section><section class="book-section" id="appendix-sources"><header class="chapter-head"><div class="chapter-number">A</div><h1>附录：规范索引、关键 SEP 速查表与核验命令</h1></header><div class="prose"><p>本附录汇总全书引用的一手源文档路径、关键 SEP 编号速查表、核心术语对照，以及本书构建与核验命令，方便读者随时对照上游仓库复查任意细节。</p>
+<h2 id="appendix-sources--一手来源与固定快照">一手来源与固定快照<a class="anchor" href="#appendix-sources--一手来源与固定快照" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>主引文章</strong>：Philipp Schmid，《Why I&#39;m Bullish on MCP for 2027》，发布日期 <code>2026-11-26</code>，URL <code>https://www.philschmid.de/mcp-2027</code>。</li>
+<li><strong>官方规范仓库</strong>：<code>https://github.com/modelcontextprotocol/modelcontextprotocol</code></li>
+<li><strong>固定提交 SHA</strong>：<code>2bbace557bbf2cb5d03d6f9b48905415cd7607b0</code></li>
+<li><strong>提交日期</strong>：<code>2026-11-24 21:51:25 +0000</code>（<code>docs: fix small errors in the 2026-07-28 and draft specification (#3586)</code>）</li>
+</ul>
+<h2 id="appendix-sources--官方仓库核心文档路径索引">官方仓库核心文档路径索引<a class="anchor" href="#appendix-sources--官方仓库核心文档路径索引" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>主题领域</th>
+<th>仓库内相对路径</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>核心变更日志（<code>2026-07-28</code> 与草案）</td>
+<td><code>docs/specification/2026-07-28/changelog.mdx</code>、<code>docs/specification/draft/changelog.mdx</code></td>
+</tr>
+<tr>
+<td>历史版本变更日志</td>
+<td><code>docs/specification/2025-03-26/changelog.mdx</code>、<code>2025-06-18/changelog.mdx</code>、<code>2025-11-25/changelog.mdx</code></td>
+</tr>
+<tr>
+<td>架构与设计原则</td>
+<td><code>docs/specification/2026-07-28/architecture/index.mdx</code></td>
+</tr>
+<tr>
+<td>Streamable HTTP 与 stdio 传输</td>
+<td><code>docs/specification/2026-07-28/basic/transports/streamable-http.mdx</code>、<code>stdio.mdx</code></td>
+</tr>
+<tr>
+<td>发现与列表缓存</td>
+<td><code>docs/specification/2026-07-28/server/discover.mdx</code>、<code>server/utilities/caching.mdx</code></td>
+</tr>
+<tr>
+<td>三大核心原语</td>
+<td><code>docs/specification/2026-07-28/server/tools.mdx</code>、<code>resources.mdx</code>、<code>prompts.mdx</code></td>
+</tr>
+<tr>
+<td>多往返请求（MRTR）与追问</td>
+<td><code>docs/specification/2026-07-28/basic/patterns/mrtr.mdx</code>、<code>client/elicitation.mdx</code></td>
+</tr>
+<tr>
+<td>授权、发现、注册与安全考量</td>
+<td><code>docs/specification/2026-07-28/basic/authorization/index.mdx</code>、<code>authorization-server-discovery.mdx</code>、<code>client-registration.mdx</code>、<code>security-considerations.mdx</code></td>
+</tr>
+<tr>
+<td>弃用特性注册表</td>
+<td><code>docs/specification/2026-07-28/deprecated.mdx</code></td>
+</tr>
+<tr>
+<td>扩展总览与客户端支持矩阵</td>
+<td><code>docs/extensions/overview.mdx</code>、<code>docs/extensions/client-matrix.mdx</code></td>
+</tr>
+<tr>
+<td>五大官方扩展概览</td>
+<td><code>docs/extensions/skills/overview.mdx</code>、<code>tasks/overview.mdx</code>、<code>events/overview.mdx</code>、<code>apps/overview.mdx</code>、<code>auth/enterprise-managed-authorization.mdx</code>、<code>auth/oauth-client-credentials.mdx</code></td>
+</tr>
+<tr>
+<td>安全最佳实践</td>
+<td><code>docs/docs/2026-07-28/tutorials/security/security_best_practices.mdx</code></td>
+</tr>
+<tr>
+<td>MCP Registry 与路线图</td>
+<td><code>docs/registry/about.mdx</code>、<code>docs/development/roadmap.mdx</code></td>
+</tr>
+</tbody></table></div>
+<h2 id="appendix-sources--关键-sep-速查表">关键 SEP 速查表<a class="anchor" href="#appendix-sources--关键-sep-速查表" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>SEP 编号</th>
+<th>标题概要</th>
+<th>轨道与状态</th>
+<th>在全书对应的主要章节</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>SEP-414</td>
+<td><code>_meta</code> 透传 OpenTelemetry Trace 上下文</td>
+<td>Standards Track / Final</td>
+<td>第 1 章、第 12 章</td>
+</tr>
+<tr>
+<td>SEP-985</td>
+<td>对齐 RFC 9728 受保护资源元数据发现</td>
+<td>Standards Track / Final</td>
+<td>第 6 章</td>
+</tr>
+<tr>
+<td>SEP-986</td>
+<td>工具名称字符与长度规范</td>
+<td>Standards Track / Final</td>
+<td>第 3 章</td>
+</tr>
+<tr>
+<td>SEP-990</td>
+<td>企业 IdP 策略管控（Enterprise-Managed Auth / ID-JAG）</td>
+<td>Extensions Track / Final（Stable）</td>
+<td>第 6 章</td>
+</tr>
+<tr>
+<td>SEP-991</td>
+<td>基于 HTTPS URL 的客户端注册（CIMD）</td>
+<td>Standards Track / Final</td>
+<td>第 6 章</td>
+</tr>
+<tr>
+<td>SEP-1024</td>
+<td>本地 MCP Server 一键安装的客户端安全同意要求</td>
+<td>Standards Track / Final</td>
+<td>第 12 章</td>
+</tr>
+<tr>
+<td>SEP-1036</td>
+<td>URL Mode Elicitation 安全带外交互</td>
+<td>Standards Track / Final</td>
+<td>第 5 章</td>
+</tr>
+<tr>
+<td>SEP-1046</td>
+<td>OAuth 2.0 Client Credentials 机器对机器授权</td>
+<td>Extensions Track / Final（Stable）</td>
+<td>第 6 章</td>
+</tr>
+<tr>
+<td>SEP-1303</td>
+<td>输入参数校验错误归入工具执行错误（<code>isError: true</code>）</td>
+<td>Standards Track / Final</td>
+<td>第 3 章、第 14 章</td>
+</tr>
+<tr>
+<td>SEP-1613 / SEP-2106</td>
+<td>默认 JSON Schema 2020-12 及全关键字与任意 JSON <code>structuredContent</code></td>
+<td>Standards Track / Final</td>
+<td>第 3 章</td>
+</tr>
+<tr>
+<td>SEP-1865</td>
+<td>MCP Apps 交互式界面（<code>io.modelcontextprotocol/ui</code>）</td>
+<td>Extensions Track / Final（Stable）</td>
+<td>第 11 章</td>
+</tr>
+<tr>
+<td>SEP-2127</td>
+<td>MCP Server Cards 预连接 HTTP 发现</td>
+<td>Extensions Track / Final（Beta）</td>
+<td>第 12 章</td>
+</tr>
+<tr>
+<td>SEP-2133 / SEP-3392</td>
+<td>官方扩展机制与四阶段成熟度生命周期</td>
+<td>Standards/Process / Final</td>
+<td>第 7 章</td>
+</tr>
+<tr>
+<td>SEP-2164</td>
+<td>资源未找到错误码统一调整为 <code>-32602</code></td>
+<td>Standards Track / Final</td>
+<td>第 2 章</td>
+</tr>
+<tr>
+<td>SEP-2207</td>
+<td>OIDC 风格 Refresh Token 与 <code>offline_access</code> 指南</td>
+<td>Standards Track / Final</td>
+<td>第 6 章</td>
+</tr>
+<tr>
+<td>SEP-2243</td>
+<td>Streamable HTTP 标准请求头镜像与 <code>x-mcp-header</code></td>
+<td>Standards Track / Final</td>
+<td>第 2 章、第 14 章</td>
+</tr>
+<tr>
+<td>SEP-2322</td>
+<td>多往返请求（MRTR，<code>InputRequiredResult</code> + <code>requestState</code>）</td>
+<td>Standards Track / Final</td>
+<td>第 5 章、第 14 章</td>
+</tr>
+<tr>
+<td>SEP-2468</td>
+<td>授权响应 RFC 9207 <code>iss</code> 参数校验防 Mix-Up</td>
+<td>Standards Track / Final</td>
+<td>第 6 章</td>
+</tr>
+<tr>
+<td>SEP-2549</td>
+<td>列表与读取结果的 <code>ttlMs</code> 与 <code>cacheScope</code> 缓存规范</td>
+<td>Standards Track / Final</td>
+<td>第 2 章、第 14 章</td>
+</tr>
+<tr>
+<td>SEP-2567</td>
+<td>无会话 MCP 与显式状态句柄模式</td>
+<td>Standards Track / Final</td>
+<td>第 1 章、第 2 章</td>
+</tr>
+<tr>
+<td>SEP-2575</td>
+<td>无状态 MCP（移除 <code>initialize</code>、新增 <code>server/discover</code> 与 <code>subscriptions/listen</code>）</td>
+<td>Standards Track / Final</td>
+<td>第 1 章、第 2 章</td>
+</tr>
+<tr>
+<td>SEP-2577 / SEP-2596</td>
+<td>弃用 Roots/Sampling/Logging 及 12 个月特性弃用生命周期</td>
+<td>Standards Track / Final</td>
+<td>第 1 章</td>
+</tr>
+<tr>
+<td>SEP-2640</td>
+<td>Skills over MCP（<code>io.modelcontextprotocol/skills</code>）</td>
+<td>Extensions Track / Final（Beta）</td>
+<td>第 8 章、第 14 章</td>
+</tr>
+<tr>
+<td>SEP-2663</td>
+<td>MCP Tasks 异步任务扩展（<code>io.modelcontextprotocol/tasks</code>）</td>
+<td>Extensions Track / Final（Beta → Core）</td>
+<td>第 9 章、第 14 章</td>
+</tr>
+<tr>
+<td>SEP-3415</td>
+<td>MCP Events 事件订阅扩展（<code>io.modelcontextprotocol/events</code>）</td>
+<td>Extensions Track / Final（Beta）</td>
+<td>第 10 章、第 14 章</td>
+</tr>
+</tbody></table></div>
+<h2 id="appendix-sources--核心术语对照">核心术语对照<a class="anchor" href="#appendix-sources--核心术语对照" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>Streamable HTTP</strong>：MCP 的标准远程 HTTP 传输绑定，单一路径接收 POST，按单次请求选择返回普通 JSON 或绑定到该请求的 SSE 响应流。</li>
+<li><strong>MRTR（Multi Round-Trip Requests）</strong>：多往返请求模式。服务端通过返回 <code>resultType: &quot;input_required&quot;</code> 和不透明 <code>requestState</code> 暂停请求并索要输入，客户端收集完后换新 JSON-RPC <code>id</code> 重试，无需粘性会话。</li>
+<li><strong>Code Mode</strong>：由 Agent 宿主提供无原始凭证隔离沙箱，依据 MCP <code>inputSchema</code> 与 <code>outputSchema</code> 生成类型化函数桩，让模型一次编写脚本在沙箱内存里并发调用、过滤与 Join 多台服务器数据。</li>
+<li><strong>CIMD（Client ID Metadata Documents）</strong>：以客户端自托管的 HTTPS 元数据 URL 直接作为 <code>client_id</code> 的 OAuth 注册方式，取代已弃用的 RFC 7591 动态客户端注册。</li>
+<li><strong>ID-JAG（Identity Assertion JWT Authorization Grant）</strong>：企业托管授权扩展中，客户端拿企业 SSO 身份断言向企业 IdP 通过 RFC 8693 换取的授权断言，再通过 JWT Bearer Grant 换取目标 MCP Server 的访问令牌。</li>
+<li><strong>Explicit State Handles（显式状态句柄）</strong>：无会话架构下由创建类工具返回、由模型在后续工具参数中显式传递的不透明资源标识（如 <code>basket_id</code>）。</li>
+</ul>
+<h2 id="appendix-sources--本书构建与核验命令">本书构建与核验命令<a class="anchor" href="#appendix-sources--本书构建与核验命令" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-bash"># 1. 运行零依赖教学运行时 21 项单元测试
+python3 -m unittest discover -s examples -v
+
+# 2. 重新生成 6 张内联 SVG 架构图（含文字溢出与符号检查）
+python3 scripts/make_diagrams.py
+
+# 3. 构建多页静态阅读站、全文索引、离线单文件 HTML 与合并 Markdown
+node wiki/build.mjs
+
+# 4. 生成 EPUB 3 与印刷级 PDF
+python3 scripts/make_epub.py
+chromium --headless=new --disable-gpu --no-sandbox --no-pdf-header-footer \
+  --print-to-pdf=exports/mcp-2027-architecture.pdf wiki/book.html
+
+# 5. 校验站点全部内部链接、图片与导出包
+python3 scripts/check_links.py
+</code></pre>
+</div></section></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="#00-preface"><span>00</span>前言：从狂热、退潮到 2027 拐点</a><a href="#01-evolution"><span>01</span>协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></a><a href="#02-stateless-http"><span>02</span>无状态内核与 HTTP 标准化</a><a href="#03-primitives-schemas"><span>03</span>核心原语与强类型契约</a><a href="#04-code-mode"><span>04</span>Code Mode：终结上下文膨胀与 N 轮串行调用</a><a href="#05-mrtr-elicitation"><span>05</span>多往返请求（MRTR）与无状态追问</a><a href="#06-oauth-auth"><span>06</span>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</a><a href="#07-extensions-framework"><span>07</span>扩展机制与治理边界</a><a href="#08-skills-over-mcp"><span>08</span>Skills 进入 MCP：<code>io.modelcontextprotocol/skills</code></a><a href="#09-tasks-async"><span>09</span>长程异步执行：MCP Tasks</a><a href="#10-events-always-on"><span>10</span>常驻与多人协作代理：MCP Events</a><a href="#11-mcp-apps"><span>11</span>产品原生智能体化：MCP Apps</a><a href="#12-discovery-observability-security"><span>12</span>未解难题：发现、可观测性与纵深安全</a><a href="#13-harness-as-mcp"><span>13</span>超越远程工具：把 Harness 做成 MCP Server 与架构反模式</a><a href="#14-mini-mcp-lab"><span>14</span>动手验证：零依赖 Python MCP 2027 教学运行时</a><a href="#appendix-sources"><span>A</span>附录：规范索引、关键 SEP 速查表与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立架构研究，非官方文档 · MCP Spec 2026-07-28 · 快照 2bbace557bbf · 2026-11-27</footer>
+<script>(() => {
+  const root = document.documentElement;
+  const key = 'octop-architecture-reader';
+  let saved = {};
+  try { const value = JSON.parse(localStorage.getItem(key) || '{}'); if (value && typeof value === 'object') saved = value; } catch {}
+  let state = saved;
+  const clamp = (n) => Math.max(17, Math.min(27, n));
+  const save = (patch) => {
+    state = {...state, ...patch};
+    try { localStorage.setItem(key, JSON.stringify(state)); } catch {}
+  };
+
+  let size = clamp(saved.size || 20);
+  root.style.setProperty('--reader-size', size + 'px');
+
+  document.querySelector('[data-font-down]')?.addEventListener('click', () => {
+    size = clamp(size - 1); root.style.setProperty('--reader-size', size + 'px'); save({size});
+  });
+  document.querySelector('[data-font-up]')?.addEventListener('click', () => {
+    size = clamp(size + 1); root.style.setProperty('--reader-size', size + 'px'); save({size});
+  });
+
+  const themeButton = document.querySelector('button[data-theme]');
+  const applyTheme = (theme) => {
+    root.dataset.theme = theme;
+    if (themeButton) themeButton.textContent = theme === 'dark' ? '浅色' : '深色';
+  };
+  applyTheme(saved.theme || 'auto');
+  themeButton?.addEventListener('click', () => {
+    const current = root.dataset.theme;
+    const next = current === 'dark' ? 'light' : 'dark';
+    applyTheme(next); save({theme: next});
+  });
+
+  const pageKey = location.pathname;
+  if (document.body.dataset.chapter === 'true') {
+    const restore = saved.page === pageKey ? Number(saved.y || 0) : 0;
+    if (restore > 120 && !location.hash) requestAnimationFrame(() => scrollTo(0, restore));
+    let timer;
+    addEventListener('scroll', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => save({page: pageKey, y: Math.round(scrollY), title: document.title}), 180);
+      const h = document.documentElement.scrollHeight - innerHeight;
+      root.style.setProperty('--progress', h > 0 ? `${Math.min(100, scrollY / h * 100)}%` : '100%');
+    }, {passive: true});
+  }
+
+  document.querySelectorAll('pre').forEach((pre) => {
+    const button = document.createElement('button');
+    button.className = 'copy'; button.type = 'button'; button.textContent = '复制';
+    button.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(pre.querySelector('code')?.innerText || pre.innerText);
+      button.textContent = '已复制'; setTimeout(() => button.textContent = '复制', 1200);
+    });
+    pre.append(button);
+  });
+
+  const menu = document.querySelector('[data-menu-panel]');
+  document.querySelector('[data-menu-open]')?.addEventListener('click', () => menu?.showModal());
+  document.querySelector('[data-menu-close]')?.addEventListener('click', () => menu?.close());
+  menu?.addEventListener('click', (event) => { if (event.target === menu) menu.close(); });
+})();
+
+/* Progressive reading controls; no network and no dependency on writable storage. */
+(() => {
+  const root = document.documentElement;
+  const themeKey = 'ebook-reader:appearance';
+  const get = key => { try { return localStorage.getItem(key); } catch { return null; } };
+  const put = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
+  let theme = get(themeKey) || root.dataset.theme || 'auto';
+  if (!['auto', 'light', 'dark'].includes(theme)) theme = 'auto';
+  const old = document.querySelector('button[data-theme]');
+  const button = old ? old.cloneNode(true) : document.createElement('button');
+  button.type = 'button';
+  button.dataset.readerTheme = '';
+  button.classList.add('control');
+  if (old) old.replaceWith(button);
+  else {
+    const tools = document.querySelector('.reader-tools,.topbar .tools,.topbar,.bar-inner nav,.tools');
+    if (tools) tools.append(button);
+  }
+  function applyTheme() {
+    root.dataset.theme = theme;
+    button.textContent = {auto:'自动',light:'浅色',dark:'深色'}[theme];
+    button.setAttribute('aria-label', '外观：' + button.textContent + '，点击切换');
+    button.title = '依次切换自动、浅色、深色';
+  }
+  applyTheme();
+  button.addEventListener('click', () => {
+    theme = {auto:'light',light:'dark',dark:'auto'}[theme];
+    applyTheme(); put(themeKey, theme);
+  });
+
+  const bookNav = document.querySelector('.layout>nav.toc');
+  if (bookNav) {
+    const wrapper = document.createElement('details');
+    wrapper.className = 'reader-book-toc';
+    const wide = matchMedia('(min-width:1001px)');
+    wrapper.open = wide.matches;
+    wide.addEventListener('change', event => { wrapper.open = event.matches; });
+    const summary = document.createElement('summary'); summary.textContent = '全书目录';
+    bookNav.before(wrapper); wrapper.append(summary, bookNav);
+  }
+  const rail = document.querySelector('.chapter-rail');
+  if (rail && !document.querySelector('.reader-mobile-toc')) {
+    const list = rail.querySelector('ol');
+    const header = document.querySelector('.chapter-head');
+    if (list && header) {
+      const toc = document.createElement('details');
+      toc.className = 'reader-mobile-toc';
+      const label = document.createElement('summary');
+      label.textContent = '本章目录';
+      toc.append(label, list.cloneNode(true));
+      header.after(toc);
+    }
+  }
+  document.querySelectorAll('table').forEach(table => {
+    if (table.closest('.table-wrap')) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'table-wrap';
+    table.before(wrap); wrap.append(table);
+  });
+  document.querySelectorAll('.table-wrap').forEach(wrap => {
+    wrap.tabIndex = 0;
+    wrap.setAttribute('role', 'region');
+    if (!wrap.hasAttribute('aria-label')) wrap.setAttribute('aria-label', '数据表，可横向滚动');
+  });
+  document.querySelectorAll('pre').forEach(pre => {
+    pre.tabIndex = 0;
+    pre.setAttribute('aria-label', '代码示例，可横向滚动');
+  });
+  document.querySelectorAll('.prose pre,.content pre').forEach(pre => {
+    if (pre.querySelector('button')) return;
+    const copy = document.createElement('button');
+    copy.className = 'copy'; copy.type = 'button'; copy.textContent = '复制';
+    pre.append(copy);
+  });
+  document.querySelectorAll('button.copy').forEach(oldButton => {
+    // Replace the original listener so clipboard rejection always has a recovery.
+    const copy = oldButton.cloneNode(true);
+    oldButton.replaceWith(copy);
+    copy.setAttribute('aria-label', '复制这段代码');
+    copy.setAttribute('aria-live', 'polite');
+    copy.addEventListener('click', async () => {
+      const code = copy.closest('pre')?.querySelector('code');
+      if (!code) return;
+      try {
+        await navigator.clipboard.writeText(code.textContent);
+        copy.textContent = '已复制';
+      } catch {
+        const range = document.createRange(); range.selectNodeContents(code);
+        const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+        copy.textContent = '已选中';
+        copy.title = '浏览器限制复制，请按 Ctrl+C 或长按复制';
+      }
+      setTimeout(() => { copy.textContent = '复制'; }, 1600);
+    });
+  });
+  // Print folded examples too, then restore the reader's disclosure state.
+  let printDetails = [];
+  addEventListener('beforeprint', () => {
+    printDetails = [...new Set([...printDetails, ...document.querySelectorAll('main details:not([open])')])];
+    printDetails.forEach(details => { details.open = true; });
+  });
+  addEventListener('afterprint', () => {
+    printDetails.forEach(details => { details.open = false; });
+    printDetails = [];
+  });
+  const links = [...document.querySelectorAll('.chapter-rail a[href^="#"],.reader-mobile-toc a[href^="#"],nav.toc>a[href^="#"]')];
+  const headings = [...new Set(links.map(link => document.getElementById(decodeURIComponent(link.hash.slice(1)))).filter(Boolean))];
+  if (headings.length && 'IntersectionObserver' in window) {
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) if (entry.isIntersecting) {
+        links.forEach(link => {
+          if (decodeURIComponent(link.hash.slice(1)) === entry.target.id) link.setAttribute('aria-current','location');
+          else link.removeAttribute('aria-current');
+        });
+      }
+    }, {rootMargin:'-10% 0px -65% 0px'});
+    headings.forEach(heading => observer.observe(heading));
+  }
+})();
+</script>
+</body></html>

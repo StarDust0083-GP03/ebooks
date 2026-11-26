@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 MCP 2026-07-28 正式规范与 2027 官方扩展栈的深度中文架构拆解"><meta name="author" content="独立规范研究">
+<title>协议演进史：从 2024-11-05 到 2026-07-28 · MCP 2027</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">MCP</span><span>MCP 2027 架构与工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 01</div><div class="rail-title">协议演进史：从 2024-11-05 到 2026-07-28</div><ol><li><a href="#五个正式版本的演进主线">五个正式版本的演进主线</a></li><li><a href="#为什么必须砍掉有状态会话与常驻双向流">为什么必须砍掉有状态会话与常驻双向流</a></li><li><a href="#sep-2577-与弃用治理-核心协议的瘦身决心">SEP-2577 与弃用治理：核心协议的瘦身决心</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 01 章</div><h1>协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></h1><div class="chapter-meta">MCP Spec 2026-07-28 快照 2026-11-24 · 约 20 分钟</div></header><div class="prose"><p>2025 年秋天，做远程 Playwright MCP Server 的开发者踩进过一个典型的架构坑：用户在对话里先调用工具打开网页，紧接着下一轮让模型点一下登录按钮，结果浏览器状态凭空消失了。排查下来，服务器代码并没写错，问题出在协议本身的会话语义上。ChatGPT 和早期 Claude.ai 会为每一次单独的工具调用新建并立刻关闭一个 MCP 会话，桌面 IDE 客户端却在应用启动时建一个会话一直挂到进程退出，网页端则是刷新一次页面换一个会话。同一个 <code>Mcp-Session-Id</code>，在不同宿主手里对应着完全不同的生命周期。</p>
+<p>类似的结构性摩擦在 2025 年集中爆发：远程无服务器函数（Serverless）挂不住常驻 HTTP GET SSE 连接；放在标准 L7 负载均衡后面的集群被迫开启脆弱的粘性路由；TypeScript SDK 把会话状态存进内存私有字段，节点一重启全部断线；更麻烦的是，只要协议允许服务端按会话动态篡改 <code>tools/list</code>，任何编排器每派生一个子代理，就必须把所有已连接服务器的工具列表重新拉一遍。</p>
+<p>理解 <code>2026-07-28</code> 为什么大刀阔斧砍掉握手和会话，最直接的方式是沿着官方仓库的五个正式变更日志，把这两年的演进脉络摊开来看。</p>
+<h2 id="五个正式版本的演进主线">五个正式版本的演进主线<a class="anchor" href="#五个正式版本的演进主线" aria-label="链接到本节">#</a></h2>
+<p>截至 2026 年 11 月 24 日快照，MCP 共发布过五个正式版本，加上持续累积的 <code>draft</code> 草案分支。下表对照了每个版本的关键架构转向与核验路径：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>规范版本</th>
+<th>核心架构变化</th>
+<th>解决的工程痛点</th>
+<th>官方变更日志路径</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>2024-11-05</code></td>
+<td>首发 stdio 与 HTTP+SSE 双端点传输，定义 Tools / Resources / Prompts、Roots、Sampling、Logging</td>
+<td>打通本地进程与远程服务接入，建立最小上下文交换协议</td>
+<td><code>docs/specification/2024-11-05/</code></td>
+</tr>
+<tr>
+<td><code>2025-03-26</code></td>
+<td>引入 OAuth 2.1 授权、Streamable HTTP（替代 HTTP+SSE）、JSON-RPC 批处理、Tool Annotations、音频内容块</td>
+<td>合并远程双端点，补齐远程鉴权，标记只读与破坏性工具</td>
+<td><code>docs/specification/2025-03-26/changelog.mdx</code></td>
+</tr>
+<tr>
+<td><code>2025-06-18</code></td>
+<td>删除 JSON-RPC 批处理；新增 <code>structuredContent</code> 与 <code>outputSchema</code>、OAuth 受保护资源元数据、RFC 8707、Form Elicitation、<code>MCP-Protocol-Version</code> 头</td>
+<td>让工具返回值机器可解析，防止令牌透传与跨服务滥用</td>
+<td><code>docs/specification/2025-06-18/changelog.mdx</code></td>
+</tr>
+<tr>
+<td><code>2025-11-25</code></td>
+<td>接入 OIDC Discovery 1.0、URL Mode Elicitation（SEP-1036）、CIMD 客户端注册（SEP-991）、实验性 Tasks（SEP-1686）、参数校验归入工具错误（SEP-1303）、JSON Schema 2020-12 默认方言（SEP-1613）</td>
+<td>补齐带外敏感授权、无预注册 OAuth、模型参数自纠错与早期异步任务</td>
+<td><code>docs/specification/2025-11-25/changelog.mdx</code></td>
+</tr>
+<tr>
+<td><code>2026-07-28</code></td>
+<td>删除会话（SEP-2567）与 <code>initialize</code> 握手（SEP-2575）；引入 <code>server/discover</code>、MRTR（SEP-2322）、HTTP 头标准化（SEP-2243）、列表缓存 <code>ttlMs</code>/<code>cacheScope</code>（SEP-2549）、官方扩展框架（SEP-2133）；移出 Tasks 至扩展（SEP-2663）；弃用 Roots/Sampling/Logging（SEP-2577）与 DCR</td>
+<td>彻底云原生化与无状态化，控制核心规范体积，将高迭代能力移入扩展轨道</td>
+<td><code>docs/specification/2026-07-28/changelog.mdx</code></td>
+</tr>
+</tbody></table></div>
+<p>紧跟 <code>2026-07-28</code> 之后的 <code>docs/specification/draft/changelog.mdx</code> 只有两项小幅修订：把 OAuth Client ID Metadata Document 引用从 <code>draft-00</code> 升级到 <code>draft-03</code>，以及补回在 <code>2026-07-28</code> 重构时误删的 Elicitation/Sampling/Roots 参数与结果中的可选 <code>_meta</code> 字段（Issue <code>#3468</code>）。<code>2026-07-28</code> 已经构成了 2027 年各方实现依赖的稳定地基。</p>
+<h2 id="为什么必须砍掉有状态会话与常驻双向流">为什么必须砍掉有状态会话与常驻双向流<a class="anchor" href="#为什么必须砍掉有状态会话与常驻双向流" aria-label="链接到本节">#</a></h2>
+<p>很多习惯了 WebSocket 或本地 stdio 开发的工程师最初会怀疑：把会话改成可选不行吗，为什么要做不向后兼容的彻底删除？<code>SEP-2567</code> 和 <code>SEP-2575</code> 给出了非常硬的工程证据。</p>
+<p>最直接的瓶颈出在<strong>子代理场景下的列表缓存失效</strong>。只要协议规范允许某个服务器把 <code>tools/list</code> 绑定到会话状态（比如先调 <code>connect_database</code>，后续列表里才凭空多出 <code>query</code> 工具），客户端在连接任意陌生服务器时就无法预先判定它会不会变脸。结果就是编排器每启动一个短生命周期子代理，面对 $M$ 个服务器，就必须重跑一遍 <code>initialize</code> 和 <code>tools/list</code>，整体发现流量变成 $O(\text{subagents} \times \text{servers})$。即使 99% 的服务器工具列表在编译期就固定了，哪怕把会话改成可选项，客户端照样不敢跨会话缓存。彻底删掉会话并规定列表不得随连接状态变化，再配合 <code>SEP-2549</code> 的 <code>ttlMs</code> 缓存提示，父代理拉一次列表，所有子代理就能零成本复用，开销直接降到 $O(\text{servers})$。</p>
+<p>另一个结构性硬伤是<strong>单会话固定基数（Cardinality）与多代理共享冲突</strong>。一个会话在协议层只能隐式挂载一份状态。假设主代理派生三个子代理一起帮用户选商品，它们需要往同一个购物车里加东西，同时各自打开独立的浏览器上下文去查不同网站。在隐式会话模型里，这是一个无解的死结：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>会话分配策略</th>
+<th>购物车（期望：共享）</th>
+<th>浏览器上下文（期望：隔离）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>子代理共享父会话</td>
+<td>正常共享</td>
+<td>互相踩踏、状态错乱</td>
+</tr>
+<tr>
+<td>子代理各自建新会话</td>
+<td>各自孤立、无法汇总</td>
+<td>正常隔离</td>
+</tr>
+</tbody></table></div>
+<p>换成显式状态句柄（Explicit State Handles）后，编排器调一次 <code>create_basket()</code> 拿到 <code>basket_id</code> 发给所有子代理，每个子代理再各自调 <code>create_browser()</code> 拿到自己的 <code>browser_id</code>。协议本身甚至不需要定义新原语，句柄只是工具返回值和入参里的普通字符串，却天然支持跨对话恢复、跨代理移交和细粒度权限校验。</p>
+<p>更关键的现实数据是<strong>真实仓库里几乎没人真在用会话存业务状态</strong>。<code>SEP-2567</code> 公布了对 1000 个随机开源 MCP Server 仓库的自动化扫描结果：</p>
+<ul>
+<li><strong>90.0%</strong> 的仓库在应用层根本没有引用过 MCP Session ID；</li>
+<li><strong>3.5%</strong> 只是复制了 TypeScript SDK 样板里的 <code>Map&lt;sessionId, Transport&gt;</code> 路由表；</li>
+<li><strong>2.8%</strong> 只传了 <code>sessionIdGenerator</code> 构造参数，业务代码从未读取；</li>
+<li>真正用会话做应用层状态存储的只占 <strong>2.5%</strong>，做网关粘性路由的占 <strong>0.7%</strong>，把 OAuth 状态绑在会话上的占 <strong>0.5%</strong>。</li>
+</ul>
+<p>为了这不到 4% 且语义本就混乱的存量用法，让所有客户端和服务端承担粘性负载均衡、重启丢状态、无法缓存列表的全局税，显然不划算。</p>
+<p>与此同时，<code>SEP-2575</code> 顺手清理了依赖持久连接的一整批旧机制：删除 HTTP GET 独立 SSE 端点、删除 <code>Last-Event-ID</code> 断流续传（需要持久化和断线恢复的作业统一交给 MCP Tasks）、删除 <code>ping</code>、<code>logging/setLevel</code> 以及 <code>resources/subscribe</code>/<code>unsubscribe</code>。客户端只在真正需要接收列表变更或资源更新时，才发一条 POST 请求调用 <code>subscriptions/listen</code>，按需换回一条带 <code>io.modelcontextprotocol/subscriptionId</code> 标签的 SSE 响应流。这种按需付费（pay as you go）原则让绝大多数普通请求退化成了标准的一问一答 HTTP POST。</p>
+<h2 id="sep-2577-与弃用治理-核心协议的瘦身决心"><code>SEP-2577</code> 与弃用治理：核心协议的瘦身决心<a class="anchor" href="#sep-2577-与弃用治理-核心协议的瘦身决心" aria-label="链接到本节">#</a></h2>
+<p>协议成熟的一个重要标志，是敢于把早期设想美好但现实中无人维护的特性清出核心。<code>2026-07-28</code> 同步落地了 <code>SEP-2596</code> 特性生命周期政策，规定任何特性进入 Deprecated 状态后，享有至少 12 个月的宽限窗口，期间线协议行为保持不变，之后在最早可移除日期后的版本中正式删除。</p>
+<p>下表整理自 <code>docs/specification/2026-07-28/deprecated.mdx</code>，列出当前已进入弃用清单的全部核心特性：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>已弃用特性</th>
+<th>弃用提案</th>
+<th>弃用版本</th>
+<th>官方推荐迁移路径</th>
+<th>最早可移除时间</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Roots（<code>roots/list</code> 等）</td>
+<td>SEP-2577</td>
+<td><code>2026-07-28</code></td>
+<td>通过工具参数、资源 URI 或服务端配置显式传递目录与文件</td>
+<td>2027-07-28 及之后的首个版本</td>
+</tr>
+<tr>
+<td>Sampling（<code>sampling/createMessage</code>）</td>
+<td>SEP-2577</td>
+<td><code>2026-07-28</code></td>
+<td>服务端直接调用 LLM 提供商 API，避免反向让客户端代跑推理</td>
+<td>2027-07-28 及之后的首个版本</td>
+</tr>
+<tr>
+<td>Logging（<code>logging/setLevel</code> 等）</td>
+<td>SEP-2577</td>
+<td><code>2026-07-28</code></td>
+<td>stdio 直接写 <code>stderr</code>，远程服务使用 OpenTelemetry（配合 SEP-414 <code>_meta</code> 透传 trace）</td>
+<td>2027-07-28 及之后的首个版本</td>
+</tr>
+<tr>
+<td>Dynamic Client Registration（RFC 7591）</td>
+<td>PR #2858</td>
+<td><code>2026-07-28</code></td>
+<td>迁移至 Client ID Metadata Documents（CIMD，SEP-991）</td>
+<td>2027-07-28 及之后的首个版本</td>
+</tr>
+<tr>
+<td>Sampling <code>includeContext</code> 非 <code>none</code> 值</td>
+<td>SEP-2596</td>
+<td><code>2025-11-25</code></td>
+<td>省略该字段或设为 <code>&quot;none&quot;</code></td>
+<td>随 Sampling 一并移除</td>
+</tr>
+<tr>
+<td>HTTP+SSE 传输</td>
+<td>SEP-2596</td>
+<td><code>2025-03-26</code></td>
+<td>迁移至 Streamable HTTP</td>
+<td>SEP-2596 终稿后满 3 个月</td>
+</tr>
+</tbody></table></div>
+<p><code>SEP-2577</code> 弃用 Roots、Sampling 和 Logging 背后的判断很清醒。Roots 在规范里只是信息性提示，服务端并不受强制约束，反而暴露了客户端本地目录结构；Sampling 允许服务端反向要求客户端执行模型补全，甚至在 <code>SEP-1577</code> 加入带工具循环的采样后，客户端要同时处理人工审批、模型路由、防提示注入和防数据外泄，复杂度极高而采用率极低；Logging 则纯粹是在应用协议层重复造轮子，远程服务本就有 OpenTelemetry，本地子进程直接写 <code>stderr</code> 更简单可靠。</p>
+<p>把这些高维护成本、低回报或边界模糊的机制清理出核心，再把 Tasks、Skills、Events、Apps 和企业授权放进独立版本化的官方扩展轨道，MCP 核心层在 <code>2026-07-28</code> 终于收敛成了一层精干、无状态、标准 HTTP 友好的传输与能力基座。接下来的一章，我们就钻进这层无状态 HTTP 内核，看看每一个请求头、错误码和缓存字段是怎么咬合在一起的。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="00-preface.html"><small>上一章</small><strong>前言：从狂热、退潮到 2027 拐点</strong></a><a class="next" href="02-stateless-http.html"><small>下一章</small><strong>无状态内核与 HTTP 标准化</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：从狂热、退潮到 2027 拐点</a><a href="../chapters/01-evolution.html"><span>01</span>协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></a><a href="../chapters/02-stateless-http.html"><span>02</span>无状态内核与 HTTP 标准化</a><a href="../chapters/03-primitives-schemas.html"><span>03</span>核心原语与强类型契约</a><a href="../chapters/04-code-mode.html"><span>04</span>Code Mode：终结上下文膨胀与 N 轮串行调用</a><a href="../chapters/05-mrtr-elicitation.html"><span>05</span>多往返请求（MRTR）与无状态追问</a><a href="../chapters/06-oauth-auth.html"><span>06</span>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</a><a href="../chapters/07-extensions-framework.html"><span>07</span>扩展机制与治理边界</a><a href="../chapters/08-skills-over-mcp.html"><span>08</span>Skills 进入 MCP：<code>io.modelcontextprotocol/skills</code></a><a href="../chapters/09-tasks-async.html"><span>09</span>长程异步执行：MCP Tasks</a><a href="../chapters/10-events-always-on.html"><span>10</span>常驻与多人协作代理：MCP Events</a><a href="../chapters/11-mcp-apps.html"><span>11</span>产品原生智能体化：MCP Apps</a><a href="../chapters/12-discovery-observability-security.html"><span>12</span>未解难题：发现、可观测性与纵深安全</a><a href="../chapters/13-harness-as-mcp.html"><span>13</span>超越远程工具：把 Harness 做成 MCP Server 与架构反模式</a><a href="../chapters/14-mini-mcp-lab.html"><span>14</span>动手验证：零依赖 Python MCP 2027 教学运行时</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：规范索引、关键 SEP 速查表与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立架构研究，非官方文档 · MCP Spec 2026-07-28 · 快照 2bbace557bbf · 2026-11-27</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

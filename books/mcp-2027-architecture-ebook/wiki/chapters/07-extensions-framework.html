@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 MCP 2026-07-28 正式规范与 2027 官方扩展栈的深度中文架构拆解"><meta name="author" content="独立规范研究">
+<title>扩展机制与治理边界 · MCP 2027</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">MCP</span><span>MCP 2027 架构与工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 07</div><div class="rail-title">扩展机制与治理边界</div><ol><li><a href="#命名空间-能力协商与默认关闭原则">命名空间、能力协商与默认关闭原则</a></li><li><a href="#sep-3392-四阶段成熟度生命周期">SEP-3392：四阶段成熟度生命周期</a></li><li><a href="#截至-2026-11-24-的官方扩展全景与客户端矩阵">截至 2026-11-24 的官方扩展全景与客户端矩阵</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 07 章</div><h1>扩展机制与治理边界</h1><div class="chapter-meta">MCP Spec 2026-07-28 快照 2026-11-24 · 约 18 分钟</div></header><div class="prose"><p>任何通用协议在爆火后的第二年都会撞上同一堵墙：社区每周都在提新需求，有的想要异步长任务，有的想要嵌入式交互 UI，有的想要企业 IdP 策略接入，有的想要事件推送或文件上传。把这些特性全部塞进核心规范，结果一定是核心体积失控、SDK 维护者疲于奔命、每一次小改动都要拉动整个社区做破坏性升级；反过来，如果核心规范一概拒之门外，各家大厂和开源项目就会各自发明互不兼容的私有 <code>_meta</code> 字段和魔改方法，协议很快四分五裂。</p>
+<p>MCP 在 <code>2026-07-28</code> 给出的工程解法，是把核心规范瘦身到最小公约数，再用 <strong><code>SEP-2133</code>（Extensions）</strong> 与 <strong><code>SEP-3392</code>（Extension Lifecycle）</strong> 搭出一套分层演进的扩展治理体系。今天我们看到的 Skills、Tasks、Events、Apps、Server Cards 和企业授权，全都是这套机制运转出来的产物。</p>
+<h2 id="命名空间-能力协商与默认关闭原则">命名空间、能力协商与默认关闭原则<a class="anchor" href="#命名空间-能力协商与默认关闭原则" aria-label="链接到本节">#</a></h2>
+<p>扩展机制的设计非常克制，不引入额外握手，直接复用核心协议的能力声明结构（<code>docs/extensions/overview.mdx</code>）。</p>
+<p><strong>反向域名标识符</strong>，每个扩展用 <code>{vendor-prefix}/{extension-name}</code> 格式唯一命名，前缀强制必填。官方扩展统一使用 <code>io.modelcontextprotocol/</code> 前缀（如 <code>io.modelcontextprotocol/skills</code>、<code>io.modelcontextprotocol/ui</code>）；第三方或企业内部扩展则使用自己拥有的反向域名（如 <code>com.example/my-extension</code>），从命名源头杜绝冲突。</p>
+<p><strong>双向按需协商</strong>，服务端在 <code>server/discover</code> 的 <code>capabilities.extensions</code> 中声明自己支持哪些扩展及配置对象；客户端则在每条请求的 <code>_meta[&quot;io.modelcontextprotocol/clientCapabilities&quot;].extensions</code> 中显式声明自己当前请求开启了哪些扩展。空对象 <code>{}</code> 表示开启该扩展且无额外参数。如果客户端连接的是 <code>2025-11-25</code> 旧版服务端，许多 SDK 也支持在旧 <code>initialize</code> 握手的 <code>capabilities.extensions</code> 里兼容传递相同结构。</p>
+<p><strong>默认关闭与优雅降级</strong>，规范定了一条硬规则：<strong>无论扩展处于哪个成熟阶段，在 SDK 和客户端里都默认关闭，必须由开发者或宿主显式选择启用（opt-in）</strong>。SDK 维护者拥有完全自主权决定支持哪些扩展，不受核心一致性测试的强制捆绑。当通信双方只有一侧支持某扩展时，支持方必须回退到核心协议行为（例如支持 MCP Apps 的服务端在面对纯文本客户端时，依然要返回可读的文本 <code>content</code>）；只有当该扩展对业务属于硬前提时（比如某工具必须异步创建 Task 或强制走企业托管授权），服务端才通过 <code>-32021</code>（<code>MissingRequiredClientCapability</code>）或授权错误明确拒掉请求。</p>
+<h2 id="sep-3392-四阶段成熟度生命周期"><code>SEP-3392</code>：四阶段成熟度生命周期<a class="anchor" href="#sep-3392-四阶段成熟度生命周期" aria-label="链接到本节">#</a></h2>
+<p>早期的 <code>SEP-2133</code> 只区分了实验仓库（<code>experimental-ext-*</code>）和官方仓库（<code>ext-*</code>），结果很快暴露出一个现实问题：实现者分不清哪个官方扩展已经定型可以放心上生产，哪个还在剧烈改动。为了把成熟度信号透明化，<code>SEP-3392</code> 在 2026 年 9 月落地，把扩展生命周期明确划成了四个阶段，并直接用仓库目录路径标明状态：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>仓库与目录路径</th>
+<th>允许的变更范围</th>
+<th>审批权限</th>
+<th>准入门槛</th>
+<th>对实现者的承诺</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Experimental</strong></td>
+<td><code>experimental-ext-&lt;name&gt;</code> 或 <code>ext-&lt;area&gt;/specification/experimental/</code></td>
+<td>随时可做任意变更，无预先通知</td>
+<td>Extension Maintainer</td>
+<td>关联 WG/IG，维护者即可创建</td>
+<td>无稳定承诺，建议锁死 tag 或 commit</td>
+</tr>
+<tr>
+<td><strong>Beta</strong></td>
+<td><code>ext-&lt;area&gt;/specification/beta/&lt;name&gt;</code></td>
+<td>优先增量变更；破坏性变更应罕见、打包公告并递增 <code>revision</code></td>
+<td>Extension Maintainer</td>
+<td>提交 Extensions Track SEP，且至少有 1 份官方 SDK 参考实现</td>
+<td>欢迎真实业务试用，文档记录破坏性变更</td>
+</tr>
+<tr>
+<td><strong>Stable</strong></td>
+<td><code>ext-&lt;area&gt;/specification/stable/&lt;name&gt;/&lt;revision&gt;/</code></td>
+<td>已发布修订版不可变，改动只在核心协议新版本发布时生效</td>
+<td>Extension Maintainer（升阶需 Core Maintainer 批）</td>
+<td>第二份 Extensions Track SEP，须具备客户端与服务端两份独立互操作实现及一致性测试场景</td>
+<td>在同一核心协议版本内行为完全冻结</td>
+</tr>
+<tr>
+<td><strong>Core</strong></td>
+<td>原扩展移入 <code>specification/archived/</code></td>
+<td>并入主规范，遵循核心发布周期</td>
+<td>Core Maintainers</td>
+<td>Standards Track SEP</td>
+<td>成为核心协议默认能力，无需再单独声明扩展</td>
+</tr>
+</tbody></table></div>
+<p>这里有一个精巧的版本处理细节。按 <code>SEP-2133</code> 最初的写法，只要发生破坏性变更就必须换新标识符（如 <code>-v2</code>），容易造成标识符泛滥。<code>SEP-3392</code> 修正了这一点：阶段跃迁时标识符保持不变；Experimental 和 Beta 阶段如果确实需要破坏性变更，可以在扩展设置对象里增加或递增 <code>revision</code> 字符串，对端不认识该 <code>revision</code> 就自动不启用扩展；到了 Stable 阶段，扩展行为直接锚定在双方协商的核心协议版本号上（如 <code>2026-07-28</code>）。只有当新旧两种不兼容行为必须在同一个核心协议版本里并存时，才需要启用 <code>-v2</code> 新标识符。</p>
+<h2 id="截至-2026-11-24-的官方扩展全景与客户端矩阵">截至 2026-11-24 的官方扩展全景与客户端矩阵<a class="anchor" href="#截至-2026-11-24-的官方扩展全景与客户端矩阵" aria-label="链接到本节">#</a></h2>
+<p>把 <code>docs/extensions/overview.mdx</code> 和 <code>docs/extensions/client-matrix.mdx</code> 的最新记录整理成一张状态表，就能看清 2027 年 Agent 运行时栈的真实成熟度，既不把 Beta 当成已经凝固的铁律，也不低估已经大规模落地的能力：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>官方扩展</th>
+<th>标识符</th>
+<th>仓库</th>
+<th>当前阶段（2026-11-24）</th>
+<th>社区矩阵记录的代表支持客户端</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>OAuth Client Credentials</td>
+<td><code>io.modelcontextprotocol/oauth-client-credentials</code></td>
+<td><code>ext-auth</code></td>
+<td><strong>Stable</strong></td>
+<td><code>mcpc</code> MCP CLI 及官方 TS/Python SDK</td>
+</tr>
+<tr>
+<td>Enterprise-Managed Auth</td>
+<td><code>io.modelcontextprotocol/enterprise-managed-authorization</code></td>
+<td><code>ext-auth</code></td>
+<td><strong>Stable</strong></td>
+<td>Archestra.AI、<code>mcpc</code>、Glean</td>
+</tr>
+<tr>
+<td>MCP Apps</td>
+<td><code>io.modelcontextprotocol/ui</code></td>
+<td><code>ext-apps</code></td>
+<td><strong>Stable</strong></td>
+<td>Claude Web/Desktop、ChatGPT、Cursor、VS Code Copilot、M365 Copilot、Goose、Postman、MCPJam、Glean</td>
+</tr>
+<tr>
+<td>MCP Tasks</td>
+<td><code>io.modelcontextprotocol/tasks</code></td>
+<td><code>ext-tasks</code></td>
+<td><strong>Beta（目标并入 Core）</strong></td>
+<td>Claude Web、Claude Code、MCPJam、Glean</td>
+</tr>
+<tr>
+<td>Skills over MCP</td>
+<td><code>io.modelcontextprotocol/skills</code></td>
+<td><code>ext-skills</code></td>
+<td><strong>Beta</strong></td>
+<td>Claude Web、Claude Code、VS Code Copilot、MCPJam、Glean、Archestra.AI；ChatGPT/fast-agent/Inspector 部分支持</td>
+</tr>
+<tr>
+<td>MCP Events</td>
+<td><code>io.modelcontextprotocol/events</code></td>
+<td><code>ext-events</code></td>
+<td><strong>Beta</strong></td>
+<td>MCPJam（全模式）；ChatGPT（Webhook 部分支持）</td>
+</tr>
+<tr>
+<td>MCP Server Cards</td>
+<td><code>ext-server-card</code></td>
+<td><code>ext-server-card</code></td>
+<td><strong>Beta</strong></td>
+<td>Python/Go SDK 与 Goose 实验性实现</td>
+</tr>
+</tbody></table></div>
+<p>除了这七项已毕业进入 Beta/Stable 的官方扩展，GitHub <code>modelcontextprotocol</code> 组织下还有五个处于 <strong>Experimental</strong> 孵化期的前沿方向，很值得做平台架构的团队提前留意：</p>
+<ul>
+<li><code>experimental-ext-interceptors</code>：拦截、校验和变换工具调用与资源读取的中间件协议。</li>
+<li><code>experimental-ext-variants</code>：让同一台服务器暴露多个变体供客户端按场景挑选。</li>
+<li><code>experimental-ext-tool-annotations</code>：更细粒度的动作元数据与信任注解草案。</li>
+<li><code>experimental-ext-file-uploads</code>：客户端与工具之间的带外文件传输机制。</li>
+<li><code>experimental-ext-filesystems</code>：超越单次 <code>resources/read</code> 的资源目录列举、搜索与写入操作。</li>
+</ul>
+<p>看清这张全景图，团队在做 2027 技术选型时就能掌握节奏：凡是已经进入 <strong>Stable</strong> 的能力（<code>2026-07-28</code> 无状态核心、<code>ext-auth</code>、<code>ext-apps</code>），可以放心按规范长期投入；处于 <strong>Beta</strong> 的高价值扩展（<code>tasks</code>、<code>skills</code>、<code>events</code>、<code>server-card</code>），架构上应当尽早按其接口契约预留抽象层，同时通过特性开关和适配器隔离协议小幅演进带来的变动成本。</p>
+<p>接下来四章，我们逐一深入拆解决定 2027 年 Agent 形态的四项核心扩展：先从终结 CLI 配合 <code>SKILL.md</code> 与 MCP 对立之争的 <strong>Skills over MCP</strong> 开始。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="06-oauth-auth.html"><small>上一章</small><strong>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</strong></a><a class="next" href="08-skills-over-mcp.html"><small>下一章</small><strong>Skills 进入 MCP：io.modelcontextprotocol/skills</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：从狂热、退潮到 2027 拐点</a><a href="../chapters/01-evolution.html"><span>01</span>协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></a><a href="../chapters/02-stateless-http.html"><span>02</span>无状态内核与 HTTP 标准化</a><a href="../chapters/03-primitives-schemas.html"><span>03</span>核心原语与强类型契约</a><a href="../chapters/04-code-mode.html"><span>04</span>Code Mode：终结上下文膨胀与 N 轮串行调用</a><a href="../chapters/05-mrtr-elicitation.html"><span>05</span>多往返请求（MRTR）与无状态追问</a><a href="../chapters/06-oauth-auth.html"><span>06</span>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</a><a href="../chapters/07-extensions-framework.html"><span>07</span>扩展机制与治理边界</a><a href="../chapters/08-skills-over-mcp.html"><span>08</span>Skills 进入 MCP：<code>io.modelcontextprotocol/skills</code></a><a href="../chapters/09-tasks-async.html"><span>09</span>长程异步执行：MCP Tasks</a><a href="../chapters/10-events-always-on.html"><span>10</span>常驻与多人协作代理：MCP Events</a><a href="../chapters/11-mcp-apps.html"><span>11</span>产品原生智能体化：MCP Apps</a><a href="../chapters/12-discovery-observability-security.html"><span>12</span>未解难题：发现、可观测性与纵深安全</a><a href="../chapters/13-harness-as-mcp.html"><span>13</span>超越远程工具：把 Harness 做成 MCP Server 与架构反模式</a><a href="../chapters/14-mini-mcp-lab.html"><span>14</span>动手验证：零依赖 Python MCP 2027 教学运行时</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：规范索引、关键 SEP 速查表与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立架构研究，非官方文档 · MCP Spec 2026-07-28 · 快照 2bbace557bbf · 2026-11-27</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

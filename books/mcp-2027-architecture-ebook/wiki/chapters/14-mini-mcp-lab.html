@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 MCP 2026-07-28 正式规范与 2027 官方扩展栈的深度中文架构拆解"><meta name="author" content="独立规范研究">
+<title>动手验证：零依赖 Python MCP 2027 教学运行时 · MCP 2027</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">MCP</span><span>MCP 2027 架构与工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 14</div><div class="rail-title">动手验证：零依赖 Python MCP 2027 教学运行时</div><ol><li><a href="#模块设计与协议映射">模块设计与协议映射</a></li><li><a href="#几个最值得细看的实现片段">几个最值得细看的实现片段</a></li><li><a href="#本地复现与实测输出">本地复现与实测输出</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 14 章</div><h1>动手验证：零依赖 Python MCP 2027 教学运行时</h1><div class="chapter-meta">MCP Spec 2026-07-28 快照 2026-11-24 · 约 12 分钟</div></header><div class="prose"><p>协议规范里写满了 <code>MUST</code> 和 <code>SHOULD</code>，光靠通读文档很容易漏掉边界细节。比如：当 <code>Mcp-Name</code> 恰好包含中文或者字面量以 <code>=?base64?</code> 开头时，编解码会不会出错？当负载均衡把 MRTR 重试打到另一台没有任何内存状态的新副本，而攻击者顺手调包了参数或复用了 JSON-RPC <code>id</code> 时，服务端到底靠哪几道校验把它拦下来？当远端服务器静默修改了 <code>SKILL.md</code> 的某一个支撑文件，宿主的缓存和持久化审批是怎么同步失效的？</p>
+<p>为了把全书最核心的协议不变量变成可执行、可单步调试的实证代码，我们在本书仓库的 <code>examples/</code> 目录下用纯 Python 3.10+ 标准库（零外部依赖）编写了一份约 570 行的教学运行时 <code>examples/mini_mcp_2027.py</code> 和 21 个单元测试 <code>examples/test_mini_mcp_2027.py</code>。</p>
+<h2 id="模块设计与协议映射">模块设计与协议映射<a class="anchor" href="#模块设计与协议映射" aria-label="链接到本节">#</a></h2>
+<p>整份教学模型把前十三章拆解的八块关键机制收拢成了八个独立组件，每个组件都直接对应具体的规范章节与 SEP 提案：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>运行时组件（<code>examples/mini_mcp_2027.py</code>）</th>
+<th>核验的协议规范与 SEP</th>
+<th>核心验证的不变量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>encode_mcp_header_value</code> / <code>decode_mcp_header_value</code></td>
+<td><code>SEP-2243</code></td>
+<td>非 ASCII、首尾空格、换行符及哨兵字面量走 <code>=?base64?...?=</code> 编码并无损往返</td>
+</tr>
+<tr>
+<td><code>StatelessMcpServer</code></td>
+<td><code>SEP-2575</code> / <code>SEP-2243</code> / <code>SEP-1303</code></td>
+<td>头与 Body 逐项核对（不符返 <code>-32020</code>）、版本协商（<code>-32022</code>）、未知方法 <code>404/-32601</code>、<code>x-mcp-header</code> 校验、入参缺失按 <code>isError: true</code> 返回工具执行错误</td>
+</tr>
+<tr>
+<td><code>McpListCache</code></td>
+<td><code>SEP-2549</code></td>
+<td><code>ttlMs</code> 懒惰过期判定、<code>public</code> 跨身份复用与 <code>private</code> 按授权上下文严格隔离、<code>list_changed</code> 立即失效</td>
+</tr>
+<tr>
+<td><code>OAuthResourceGuard</code></td>
+<td>OAuth 2.1 / RFC 8707 / RFC 6750</td>
+<td>令牌受众 <code>aud</code> 必须精确匹配规范资源 URI（不符返 <code>401</code>）；作用域不足返回 <code>403</code> 与 <code>insufficient_scope</code> 提权挑战头</td>
+</tr>
+<tr>
+<td><code>simulate_plain_tool_calling</code> vs <code>simulate_code_mode</code></td>
+<td>第 4 章 Code Mode 对比</td>
+<td>量化对比 20 条 issue 与 Sentry 统计跨服务 Join 时的推理轮次与进入模型上下文的字节开销</td>
+</tr>
+<tr>
+<td><code>MrtrReplica</code></td>
+<td><code>SEP-2322</code></td>
+<td>副本 A 签发 HMAC-SHA256 <code>requestState</code>，零共享内存的副本 B 验签续跑；拦截篡改、跨主体重放、超时、参数调包和复用 JSON-RPC <code>id</code></td>
+</tr>
+<tr>
+<td><code>SkillsServer</code> + <code>SkillHostLoader</code></td>
+<td><code>SEP-2640</code></td>
+<td><code>skills/list</code> 与未列举技能 <code>skills/get</code>、未知 URI 返 <code>-32602</code>、加载前校验字节数与 SHA-256、远端文件变更自动撤销旧审批、禁止越清单读取</td>
+</tr>
+<tr>
+<td><code>TasksManager</code></td>
+<td><code>SEP-2663</code></td>
+<td>缺失扩展能力返 <code>-32021</code>、128 位高熵 <code>taskId</code>、<code>input_required</code> 中途追问与 <code>tasks/update</code> 续跑、终态不可变、属主隔离与 <code>ttlMs</code> 超时失效</td>
+</tr>
+<tr>
+<td><code>EventBroker</code> + <code>EventHarnessConsumer</code></td>
+<td><code>SEP-3415</code></td>
+<td><code>whsec_</code> 24 至 64 字节密钥校验、HTTPS 与防 SSRF 私网拦截、Standard Webhooks HMAC 签名与时间窗校验、单订阅内 <code>eventId</code> 去重、跨订阅同 <code>eventId</code> 不误杀、<code>truncated: true</code> 缺口感知与同轨迹/隔离轨迹续跑</td>
+</tr>
+</tbody></table></div>
+<h2 id="几个最值得细看的实现片段">几个最值得细看的实现片段<a class="anchor" href="#几个最值得细看的实现片段" aria-label="链接到本节">#</a></h2>
+<p>先看 <code>StatelessMcpServer</code> 中对 <code>x-mcp-header</code> 和 <code>SEP-1303</code> 参数校验的处理逻辑。当请求体进入 <code>tools/call</code> 时，服务端先核验所有标注了 <code>x-mcp-header</code> 的自定义请求头是否与请求体里的实际参数一致（防代理网关与后端解析分裂），不符直接回 HTTP <code>400</code> 和 <code>-32020</code>；只有通过传输层校验后，才做业务参数完整性校验，一旦缺少必填字段，不再抛 <code>-32602</code> 协议错误，而是返回 HTTP <code>200</code> 加上 <code>isError: true</code> 的工具执行错误，把缺失字段名清晰地交还给模型自纠错：</p>
+<pre><code class="language-python"># Validate x-mcp-header mirrored parameters (SEP-2243)
+for arg_name, hdr_suffix in spec.x_mcp_headers.items():
+    hdr_key = f&quot;mcp-param-{hdr_suffix.lower()}&quot;
+    if arg_name in arguments and arguments[arg_name] is not None:
+        if hdr_key not in norm_headers:
+            err = McpProtocolError(400, ERR_HEADER_MISMATCH, f&quot;Missing header Mcp-Param-{hdr_suffix}&quot;)
+            return err.http_status, err.to_jsonrpc(req_id)
+        decoded = decode_mcp_header_value(norm_headers[hdr_key])
+        if decoded != expected_str:
+            err = McpProtocolError(400, ERR_HEADER_MISMATCH, f&quot;Mcp-Param-{hdr_suffix} mismatch&quot;)
+            return err.http_status, err.to_jsonrpc(req_id)
+
+# Validate required input arguments per SEP-1303 (tool execution error isError=True)
+missing_fields = [f for f in required_fields if f not in arguments]
+if missing_fields:
+    return 200, {
+        &quot;jsonrpc&quot;: &quot;2.0&quot;,
+        &quot;id&quot;: req_id,
+        &quot;result&quot;: {
+            &quot;resultType&quot;: &quot;complete&quot;,
+            &quot;isError&quot;: True,
+            &quot;content&quot;: [{&quot;type&quot;: &quot;text&quot;, &quot;text&quot;: f&quot;Input validation error: missing required fields {missing_fields}&quot;}],
+        },
+    }
+</code></pre>
+<p>再看 <code>MrtrReplica</code> 如何只靠一把集群共享 HMAC 密钥，就在完全无状态的两个副本（<code>replica-a</code> 与 <code>replica-b</code>）之间安全完成多往返追问：</p>
+<pre><code class="language-python">state_payload = {
+    &quot;principal&quot;: principal,
+    &quot;method&quot;: &quot;tools/call&quot;,
+    &quot;paramsDigest&quot;: params_digest,
+    &quot;initialReqId&quot;: req_id,
+    &quot;exp&quot;: now_s + 300.0,
+}
+</code></pre>
+<p>当重试打到 <code>replica-b</code> 时，代码依次校验签名、<code>principal</code>、<code>now_s &lt;= state[&quot;exp&quot;]</code>、<code>paramsDigest</code>（防止把 <code>v2.4.0</code> 偷换成 <code>v9.9.9-evil</code>）以及 <code>req_id != state[&quot;initialReqId&quot;]</code>（遵循重试必须更换 JSON-RPC <code>id</code> 的要求）。五道门禁任意一道没过立刻抛出异常。</p>
+<p>再看 <code>EventHarnessConsumer</code> 对 <code>eventId</code> 去重与双轨迹续跑的处理。规范明确规定去重作用域是单条订阅（<code>sub_id</code>），而不是全局，因此已见集合按 <code>sub_id</code> 分桶；验证完 Standard Webhooks HMAC 签名与时间窗后，若同一个 <code>eventId</code> 落在同一条订阅上则直接返回 <code>None</code> 丢弃，落在另一条不同订阅上则照常投递，并按 <code>same_thread</code> 或 <code>isolated</code> 路由到对应轨迹：</p>
+<pre><code class="language-python">seen_for_sub = self._seen.setdefault(sub_id, set())
+if event_id in seen_for_sub:
+    return None  # Duplicate within the same subscription
+seen_for_sub.add(event_id)
+if occ.get(&quot;cursor&quot;):
+    self.cursors[sub_id] = occ[&quot;cursor&quot;]
+traj_id = f&quot;thread:{sub_id}&quot; if continuation_mode == &quot;same_thread&quot; else f&quot;isolated:{sub_id}:{event_id}&quot;
+</code></pre>
+<h2 id="本地复现与实测输出">本地复现与实测输出<a class="anchor" href="#本地复现与实测输出" aria-label="链接到本节">#</a></h2>
+<p>在本书仓库根目录运行下面这条命令，无需安装任何第三方包，几毫秒内就能跑完全部 21 个单元测试：</p>
+<pre><code class="language-bash">python3 -m unittest discover -s examples -v
+</code></pre>
+<p>在当前快照环境实测结果如下（全部 21 项通过，耗时约 0.001 秒）：</p>
+<pre><code class="language-text">test_09_code_mode_slashes_turns_and_context_bytes ... ok
+test_07_list_cache_ttl_public_vs_private_and_invalidation ... ok
+test_08_oauth21_audience_binding_and_step_up_scope_challenge ... ok
+test_19_webhook_ssrf_and_secret_validation ... ok
+test_20_webhook_hmac_verification_eventid_dedup_and_continuation_modes ... ok
+test_21_poll_cursor_and_truncated_gap_detection ... ok
+test_16_task_requires_capability_declaration ... ok
+test_17_task_lifecycle_midflight_input_and_terminal_immutability ... ok
+test_18_task_owner_isolation_and_ttl_expiry ... ok
+test_10_mrtr_roundtrip_resumes_on_different_replica ... ok
+test_11_mrtr_rejects_tampered_state_wrong_principal_expired_and_same_id ... ok
+test_12_mrtr_rejects_client_without_elicitation_capability ... ok
+test_13_skills_list_and_unlisted_skills_get ... ok
+test_14_skills_digest_verification_and_approval_revocation_on_update ... ok
+test_15_skills_blocks_read_outside_retained_manifest ... ok
+test_01_header_base64_sentinel_roundtrip ... ok
+test_02_discover_and_unsupported_version_negotiation ... ok
+test_03_header_body_mismatch_rejected_with_32020 ... ok
+test_04_x_mcp_header_validation_passes_and_catches_spoofing ... ok
+test_05_unknown_method_returns_404_and_32601 ... ok
+test_06_sep1303_input_validation_error_is_tool_execution_error ... ok
+
+----------------------------------------------------------------------
+Ran 21 tests in 0.001s
+
+OK
+</code></pre>
+<p>读者在搭建自己的 MCP Server、企业网关或 Agent Harness 时，可以直接把 <code>examples/test_mini_mcp_2027.py</code> 里的 21 个测试场景改写成自家集成测试清单：只要这 21 条协议不变量全绿，至少在无状态路由、缓存隔离、OAuth 边界、MRTR 防重放、Skills 验签、Tasks 状态机和 Events 安全消费上，就已经稳稳站在了 <code>2026-07-28</code> 规范与 2027 扩展栈的正确起跑线上。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="13-harness-as-mcp.html"><small>上一章</small><strong>超越远程工具：把 Harness 做成 MCP Server 与架构反模式</strong></a><a class="next" href="appendix-sources.html"><small>下一章</small><strong>附录：规范索引、关键 SEP 速查表与核验命令</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：从狂热、退潮到 2027 拐点</a><a href="../chapters/01-evolution.html"><span>01</span>协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></a><a href="../chapters/02-stateless-http.html"><span>02</span>无状态内核与 HTTP 标准化</a><a href="../chapters/03-primitives-schemas.html"><span>03</span>核心原语与强类型契约</a><a href="../chapters/04-code-mode.html"><span>04</span>Code Mode：终结上下文膨胀与 N 轮串行调用</a><a href="../chapters/05-mrtr-elicitation.html"><span>05</span>多往返请求（MRTR）与无状态追问</a><a href="../chapters/06-oauth-auth.html"><span>06</span>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</a><a href="../chapters/07-extensions-framework.html"><span>07</span>扩展机制与治理边界</a><a href="../chapters/08-skills-over-mcp.html"><span>08</span>Skills 进入 MCP：<code>io.modelcontextprotocol/skills</code></a><a href="../chapters/09-tasks-async.html"><span>09</span>长程异步执行：MCP Tasks</a><a href="../chapters/10-events-always-on.html"><span>10</span>常驻与多人协作代理：MCP Events</a><a href="../chapters/11-mcp-apps.html"><span>11</span>产品原生智能体化：MCP Apps</a><a href="../chapters/12-discovery-observability-security.html"><span>12</span>未解难题：发现、可观测性与纵深安全</a><a href="../chapters/13-harness-as-mcp.html"><span>13</span>超越远程工具：把 Harness 做成 MCP Server 与架构反模式</a><a href="../chapters/14-mini-mcp-lab.html"><span>14</span>动手验证：零依赖 Python MCP 2027 教学运行时</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：规范索引、关键 SEP 速查表与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立架构研究，非官方文档 · MCP Spec 2026-07-28 · 快照 2bbace557bbf · 2026-11-27</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

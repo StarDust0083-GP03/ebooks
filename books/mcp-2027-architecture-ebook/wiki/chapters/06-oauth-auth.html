@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="基于 MCP 2026-07-28 正式规范与 2027 官方扩展栈的深度中文架构拆解"><meta name="author" content="独立规范研究">
+<title>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP · MCP 2027</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">MCP</span><span>MCP 2027 架构与工程实战</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 06</div><div class="rail-title">身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</div><ol><li><a href="#标准协议栈与三方角色">标准协议栈与三方角色</a></li><li><a href="#授权服务器发现与受众绑定">授权服务器发现与受众绑定</a></li><li><a href="#从-dcr-到-cimd-sep-991-与防-mix-up-sep-2468">从 DCR 到 CIMD（SEP-991）与防 Mix-Up（SEP-2468）</a></li><li><a href="#最小权限渐进提权与-refresh-token-约定">最小权限渐进提权与 Refresh Token 约定</a></li><li><a href="#企业级两大稳定授权扩展">企业级两大稳定授权扩展</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 06 章</div><h1>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</h1><div class="chapter-meta">MCP Spec 2026-07-28 快照 2026-11-24 · 约 26 分钟</div></header><div class="prose"><p>把远程 MCP Server 推向公司内部时，最先卡住的几乎从来不是工具写得好不好，而是安全团队的三个问题：第一，陌生客户端连上来之前既没有预分配的 <code>client_id</code>，企业 IdP 又为了防滥用关掉了动态客户端注册（DCR），怎么在不手工建几百个 OAuth 应用的前提下完成登录？第二，员工连了十几个 MCP Server，每个服务都要弹一次浏览器授权，员工离职时怎么保证一键回收全部 Agent 访问权限？第三，如果一个恶意 MCP Server 诱骗客户端把发给别家服务的 Token 拿来复用，或者用恶意授权服务器实施 Mix-Up 混肴攻击，协议层有没有硬防线？</p>
+<p><code>2026-07-28</code> 规范以及稳定版官方授权扩展仓库 <code>modelcontextprotocol/ext-auth</code>，已经把这一整套基于 IETF 标准协议栈的身份边界搭了起来。对 HTTP 传输层来说，授权是可选的，一旦启用就必须遵守这套规范；而本地 <code>stdio</code> 传输则明确<strong>不应</strong>套用 HTTP OAuth 流程，应从本地受控环境获取凭证。</p>
+<h2 id="标准协议栈与三方角色">标准协议栈与三方角色<a class="anchor" href="#标准协议栈与三方角色" aria-label="链接到本节">#</a></h2>
+<p>MCP 没有自己发明一套专有鉴权协议，而是把九份成熟 IETF/OIDC 标准拼成了一条可互操作的链路（<code>docs/specification/2026-07-28/basic/authorization/index.mdx</code>）：</p>
+<ul>
+<li><strong>OAuth 2.1（draft-ietf-oauth-v2-1-13）与 RFC 6750</strong>：要求 HTTPS、强制 PKCE（<code>S256</code>）、仅允许 <code>Authorization: Bearer &lt;token&gt;</code> 请求头（严禁把 Token 放进 URI 查询参数）、公开客户端强制 Refresh Token 轮换。</li>
+<li><strong>RFC 9728（OAuth 2.0 Protected Resource Metadata，<code>SEP-985</code>）</strong>：明确 MCP Server 是 OAuth <strong>资源服务器（Resource Server）</strong>，通过元数据向客户端指明背后对应的授权服务器（Authorization Server）是谁。</li>
+<li><strong>RFC 8414 与 OpenID Connect Discovery 1.0</strong>：客户端发现授权服务器端点与能力的标准机制。</li>
+<li><strong>RFC 8707（Resource Indicators）</strong>：把 Access Token 严格绑定到目标 MCP Server 的规范 URI（Canonical URI），从协议源头杜绝令牌跨服务滥用和 Token Passthrough。</li>
+<li><strong>OAuth Client ID Metadata Documents（CIMD，<code>SEP-991</code>）</strong>：用 HTTPS URL 作为 <code>client_id</code>，取代已弃用的 RFC 7591 动态注册。</li>
+<li><strong>RFC 9207（<code>SEP-2468</code>）</strong>：在授权响应里校验 <code>iss</code> 参数，防 OAuth Mix-Up 攻击。</li>
+</ul>
+<p>把 MCP Server 定位成标准 OAuth 资源服务器的好处非常直接：鉴权逻辑可以完全委托给专门的授权服务器（如 Okta、Auth0、Keycloak、Stytch、WorkOS 或自建 IdP），MCP Server 只需做好无状态的令牌验签、受众核对和作用域检查。</p>
+<h2 id="授权服务器发现与受众绑定">授权服务器发现与受众绑定<a class="anchor" href="#授权服务器发现与受众绑定" aria-label="链接到本节">#</a></h2>
+<p>客户端第一次无令牌访问受保护的 MCP Server 时，整条发现与换票链按严格顺序走完：</p>
+<ol>
+<li><strong>受保护资源发现（RFC 9728）</strong>：MCP Server 返回 <code>HTTP 401 Unauthorized</code>，并在 <code>WWW-Authenticate</code> 头里给出 <code>resource_metadata</code> URL（以及可选的最小初始 <code>scope</code> 建议）。客户端必须优先解析该头里的地址；如果头里没带，则依次探测路径级 <code>/.well-known/oauth-protected-resource/&lt;mcp-path&gt;</code> 和根路径 <code>/.well-known/oauth-protected-resource</code>。</li>
+<li><strong>授权服务器元数据发现（RFC 8414 / OIDC）</strong>：拿到 <code>authorization_servers</code> 后，客户端必须按优先级依次尝试路径插入和追加的 <code>.well-known/oauth-authorization-server</code> 与 <code>.well-known/openid-configuration</code> 端点。拉回文档后，客户端<strong>必须</strong>按 RFC 8414 Section 3.3 核对文档里的 <code>issuer</code> 字段与构造 URL 所用的发行方标识完全一致，否则立刻拒收（防止恶意站点伪造诚实发行方的元数据）。客户端还<strong>必须</strong>检查 <code>code_challenge_methods_supported</code> 存在以确认支持 PKCE，缺失则拒绝继续。</li>
+<li><strong>强制 <code>resource</code> 参数（RFC 8707）</strong>：客户端在授权请求和换票请求中都<strong>必须</strong>带上目标 MCP Server 的规范 URI（如 <code>https://mcp.example.com/mcp</code>，不含 fragment，一般不带末尾斜杠）。MCP Server 在收到每条带 Bearer Token 的请求时，<strong>必须</strong>验证令牌的受众（<code>aud</code>）确实指向自己，不匹配就返回 <code>401</code>。</li>
+</ol>
+<p>规范在 <code>2026-07-28</code> 补齐了一项容易踩坑的多授权服务器隔离要求（<code>SEP-2352</code>）：如果一个受保护资源列出多个授权服务器，或者后续切换了授权服务器，客户端<strong>必须</strong>按 <code>issuer</code> 标识分桶持久化客户端凭证和令牌，绝不能把 A 授权服务器颁发的 <code>client_id</code> 拿去 B 授权服务器复用。</p>
+<h2 id="从-dcr-到-cimd-sep-991-与防-mix-up-sep-2468">从 DCR 到 CIMD（<code>SEP-991</code>）与防 Mix-Up（<code>SEP-2468</code>）<a class="anchor" href="#从-dcr-到-cimd-sep-991-与防-mix-up-sep-2468" aria-label="链接到本节">#</a></h2>
+<p>在早期的 MCP 规范里，面对客户端和服务端素不相识的场景，默认推荐的是 RFC 7591 动态客户端注册（DCR）。但运行一年后，DCR 暴露了两个现实顽疾：大量企业 IdP 出于防垃圾注册和合规考虑根本不开放公开 <code>/register</code> 接口；而在代理型 MCP Server 场景下，DCR 叠加静态上游 <code>client_id</code> 和浏览器 Consent Cookie，还会诱发严重的 Confused Deputy 攻击（攻击者注册一个指向自己域名的恶意客户端，利用用户浏览器里残留的同意 Cookie 静默跳过授权确认页，偷走授权码）。</p>
+<p>于是 <code>2026-07-28</code> 正式将 DCR 标为 Deprecated（<code>PR #2858</code>），并把 <strong>Client ID Metadata Documents（CIMD，<code>SEP-991</code>）</strong> 扶正为无预置关系时的首选注册方案（最新 <code>draft/</code> 规范已将其引用升级到 <code>draft-ietf-oauth-client-id-metadata-document-03</code>）。</p>
+<p>CIMD 的思路非常清爽：客户端把自己的元数据 JSON 托管在一个带路径的 HTTPS URL 上，比如 <code>https://app.example.com/oauth/client-metadata.json</code>，文档内包含 <code>client_id</code>（必须与文档 URL 逐字符一致）、<code>client_name</code> 和 <code>redirect_uris</code>。发授权请求时，直接把这个 URL 当作 <code>client_id</code> 传给授权服务器。授权服务器看到 URL 形态的 <code>client_id</code>，主动 GET 拉取并缓存这份文档，核验 <code>client_id</code> 一致性、<code>redirect_uri</code> 白名单以及自身信任策略（例如按域名白名单管控，并做好出站 SSRF 防护），无需预先建库、也无需跨授权服务器反复注册，同一个 URL <code>client_id</code> 天生跨所有支持 <code>client_id_metadata_document_supported: true</code> 的授权服务器通用。</p>
+<p>客户端注册的推荐优先级由此收敛为四档：优先用预注册凭证，其次用 CIMD，再次回退到 DCR（且 OIDC 场景下按 <code>SEP-837</code> 必须显式指定 <code>application_type: &quot;native&quot;</code> 或 <code>&quot;web&quot;</code> 以免本地回调 URI 冲突），最后才提示用户手动填写。</p>
+<p>但 CIMD 的静态文档无法为每个不同发行方配唯一的 <code>redirect_uri</code>，这让多 IdP 环境下的 OAuth Mix-Up 攻击风险抬头。为此，<code>2026-07-28</code> 并入了 <strong><code>SEP-2468</code>（RFC 9207 <code>iss</code> 校验）</strong>：客户端重定向前必须在与 PKCE <code>code_verifier</code> 相同的单次请求记录里保存预期 <code>issuer</code>；收到回调时（包括错误回调），只要响应里带了 <code>iss</code>，或者授权服务器元数据声明了 <code>authorization_response_iss_parameter_supported: true</code>，客户端就<strong>必须</strong>在兑换授权码前用逐字符精确匹配（严禁大小写折叠、默认端口省略或路径归一化）核对 <code>iss</code>。声明支持却缺 <code>iss</code>、或者 <code>iss</code> 对不上，一律立刻中止，且不得把错误响应里的 <code>error_description</code> 展示给用户。</p>
+<h2 id="最小权限渐进提权与-refresh-token-约定">最小权限渐进提权与 Refresh Token 约定<a class="anchor" href="#最小权限渐进提权与-refresh-token-约定" aria-label="链接到本节">#</a></h2>
+<p>MCP 遵循最小权限原则，并不鼓励客户端一上来就索要全部读写删权限。如果客户端拿着只读令牌调用了写操作工具，MCP Server 返回 <code>HTTP 403 Forbidden</code>，并在 <code>WWW-Authenticate</code> 头里明确给出本操作所需作用域：</p>
+<pre><code class="language-http">HTTP/1.1 403 Forbidden
+WWW-Authenticate: Bearer error=&quot;insufficient_scope&quot;,
+                         scope=&quot;files:write&quot;,
+                         resource_metadata=&quot;https://mcp.example.com/.well-known/oauth-protected-resource&quot;
+</code></pre>
+<p>服务端应当在单次挑战里一次性给出当前操作所需的全部作用域，避免逐个挤牙膏导致用户连点好几次授权页。客户端收到挑战后执行 <strong>Step-Up 授权流</strong>：计算已有作用域与新挑战作用域的并集重新发起授权（避免丢掉先前其他操作已获批的权限），并限制重试次数防止死循环。</p>
+<p>对于长时运行所需的 Refresh Token，<code>SEP-2207</code> 补齐了 OAuth 2.1 与 OIDC 的互操作细节：需要刷新令牌的客户端应当在元数据 <code>grant_types</code> 里声明 <code>refresh_token</code>，并在授权服务器 <code>scopes_supported</code> 包含 <code>offline_access</code> 时主动追加该作用域；反过来，MCP Server（资源服务器）<strong>不应</strong>把 <code>offline_access</code> 放进 <code>WWW-Authenticate</code> 或受保护资源元数据中，因为刷新令牌是客户端与授权服务器之间的事，不是资源本身的访问权限。</p>
+<h2 id="企业级两大稳定授权扩展">企业级两大稳定授权扩展<a class="anchor" href="#企业级两大稳定授权扩展" aria-label="链接到本节">#</a></h2>
+<p>当 MCP 离开个人浏览器、进入后台流水线和万人规模企业内网时，核心规范的交互式登录就不够用了。官方 <code>ext-auth</code> 仓库已经把两项扩展推到了 <strong>Stable</strong> 阶段：</p>
+<p><strong>机器对机器授权（<code>io.modelcontextprotocol/oauth-client-credentials</code>，<code>SEP-1046</code>）</strong>，面向 CI/CD 流水线、定时后台代理和服务端到服务端集成。客户端通过 <code>grant_type=client_credentials</code> 直接拿应用凭证换票，依然必须携带 <code>resource</code> 参数绑定目标 MCP Server。规范强烈推荐采用 <strong>RFC 7523 JWT Bearer 断言</strong>（私钥签发短效 JWT，且按 RFC 10070 规定 <code>aud</code> 只能填授权服务器 <code>issuer</code> 标识，不得填 token 端点 URL），避免在环境里存放一旦泄露就长期有效的明文 <code>client_secret</code>。官方 SDK 示例还特意要求配置 <code>expectedIssuer</code> 钉死颁发凭证的授权服务器，拒绝把密钥发给任何第三方广告的未知授权端点。</p>
+<p><strong>企业托管授权（<code>io.modelcontextprotocol/enterprise-managed-authorization</code>，<code>SEP-990</code>）</strong>，彻底解决文章开头安全团队问的第二个问题：员工不需要逐个去几十个 SaaS MCP Server 点同意，IT 管理员直接在企业 IdP（如 Okta、PingFederate、Descope、Athenz、ThunderID 等）里集中配置访问策略。流程基于 IETF 正在推进的 <strong>ID-JAG（Identity Assertion JWT Authorization Grant）</strong> 草案与 <strong>RFC 8693 Token Exchange</strong>：</p>
+<ol>
+<li>员工使用企业 SSO 登录 MCP Client，客户端拿到企业 IdP 签发的 OIDC ID Token 或 SAML 断言。</li>
+<li>客户端连接企业批准的 MCP Server 时，拿着该身份断言去企业 IdP 的 Token 端点发起 RFC 8693 令牌交换（<code>requested_token_type: urn:ietf:params:oauth:token-type:id-jag</code>），指定目标 MCP 授权服务器的 <code>audience</code> 和可选的 <code>resource</code>。</li>
+<li>企业 IdP 实时评估群组、角色和条件访问策略，策略通过才签发 ID-JAG；离职或无权限员工在这一步就被挡住，客户端拿不到任何票据。</li>
+<li>客户端用 <code>urn:ietf:params:oauth:grant-type:jwt-bearer</code> 拿着 ID-JAG 向 MCP 授权服务器直接换取访问令牌，全程无须弹窗跳转，且后续在企业 IdP 侧一键吊销即可全局生效。</li>
+</ol>
+<p>截至 2026 年 11 月官方扩展文档记录，Okta（Cross App Access）、PingFederate 13.1+、Athenz、Descope、Janssen、ThunderID 已正式支持签发与校验 ID-JAG，Auth0、Keycloak、Stytch、WorkOS、Cloudflare <code>workers-oauth-provider</code> 和 FastMCP 4.0 也已进入可用或早期体验阶段。而在官方 2026 年 8 月路线图里，新筹建的 Agent Identity 工作组正沿着这条线继续往深处走：推动 <strong>DPoP</strong>（防截获令牌重放的持有证明）、<strong>工作负载身份联邦（SEP-1933）</strong>，以及面向无头子代理的窄权限委托（与 IETF WIMSE 协同）。</p>
+<p>至此，MCP 的无状态传输、强类型原语、MRTR 追问和企业级身份底座已经全部立稳。接下来的问题是如何让协议既能快速长出 Skills、Tasks、Events、Apps 这些高迭代能力，又不至于把核心规范撑成一个臃肿难改的巨无霸。下一章我们看 <code>SEP-2133</code> 与 <code>SEP-3392</code> 的扩展治理框架。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="05-mrtr-elicitation.html"><small>上一章</small><strong>多往返请求（MRTR）与无状态追问</strong></a><a class="next" href="07-extensions-framework.html"><small>下一章</small><strong>扩展机制与治理边界</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>前言：从狂热、退潮到 2027 拐点</a><a href="../chapters/01-evolution.html"><span>01</span>协议演进史：从 <code>2024-11-05</code> 到 <code>2026-07-28</code></a><a href="../chapters/02-stateless-http.html"><span>02</span>无状态内核与 HTTP 标准化</a><a href="../chapters/03-primitives-schemas.html"><span>03</span>核心原语与强类型契约</a><a href="../chapters/04-code-mode.html"><span>04</span>Code Mode：终结上下文膨胀与 N 轮串行调用</a><a href="../chapters/05-mrtr-elicitation.html"><span>05</span>多往返请求（MRTR）与无状态追问</a><a href="../chapters/06-oauth-auth.html"><span>06</span>身份与授权体系：OAuth 2.1、CIMD 与企业 IdP</a><a href="../chapters/07-extensions-framework.html"><span>07</span>扩展机制与治理边界</a><a href="../chapters/08-skills-over-mcp.html"><span>08</span>Skills 进入 MCP：<code>io.modelcontextprotocol/skills</code></a><a href="../chapters/09-tasks-async.html"><span>09</span>长程异步执行：MCP Tasks</a><a href="../chapters/10-events-always-on.html"><span>10</span>常驻与多人协作代理：MCP Events</a><a href="../chapters/11-mcp-apps.html"><span>11</span>产品原生智能体化：MCP Apps</a><a href="../chapters/12-discovery-observability-security.html"><span>12</span>未解难题：发现、可观测性与纵深安全</a><a href="../chapters/13-harness-as-mcp.html"><span>13</span>超越远程工具：把 Harness 做成 MCP Server 与架构反模式</a><a href="../chapters/14-mini-mcp-lab.html"><span>14</span>动手验证：零依赖 Python MCP 2027 教学运行时</a><a href="../chapters/appendix-sources.html"><span>A</span>附录：规范索引、关键 SEP 速查表与核验命令</a></nav>
+</dialog>
+<footer class="site-footer">独立架构研究，非官方文档 · MCP Spec 2026-07-28 · 快照 2bbace557bbf · 2026-11-27</footer>
+<script src="../assets/reader.js"></script>
+</body></html>
